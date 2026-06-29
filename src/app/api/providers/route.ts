@@ -12,6 +12,8 @@ export async function GET() {
       type: true,
       isActive: true,
       refreshIntervalMin: true,
+      groupId: true,
+      label: true,
       createdAt: true,
       snapshots: {
         orderBy: { fetchedAt: "desc" },
@@ -49,6 +51,8 @@ export async function POST(request: NextRequest) {
     apiKey,
     config,
     refreshIntervalMin,
+    groupId: bodyGroupId,
+    label,
   } = body;
 
   if (!name || !displayName) {
@@ -58,12 +62,25 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  const existing = await prisma.provider.findUnique({ where: { name } });
-  if (existing) {
-    return NextResponse.json(
-      { error: `Provider "${name}" already exists` },
-      { status: 409 }
-    );
+  let groupId = bodyGroupId ?? undefined;
+
+  if (!groupId) {
+    const existingWithSameName = await prisma.provider.findFirst({
+      where: { name },
+      orderBy: { createdAt: "asc" },
+    });
+
+    if (existingWithSameName) {
+      if (existingWithSameName.groupId) {
+        groupId = existingWithSameName.groupId;
+      } else {
+        groupId = name;
+        await prisma.provider.updateMany({
+          where: { name, groupId: null },
+          data: { groupId },
+        });
+      }
+    }
   }
 
   const encryptedKey = apiKey ? encrypt(apiKey) : null;
@@ -76,6 +93,8 @@ export async function POST(request: NextRequest) {
       apiKey: encryptedKey,
       config: config ?? undefined,
       refreshIntervalMin: refreshIntervalMin ?? 60,
+      groupId,
+      label,
     },
     select: {
       id: true,
@@ -84,6 +103,8 @@ export async function POST(request: NextRequest) {
       type: true,
       isActive: true,
       refreshIntervalMin: true,
+      groupId: true,
+      label: true,
       createdAt: true,
     },
   });

@@ -10,6 +10,8 @@ interface Provider {
   displayName: string;
   type: string;
   isActive: boolean;
+  groupId: string | null;
+  label: string | null;
   latestSnapshot: {
     balance: number | null;
     totalCost: number | null;
@@ -43,10 +45,22 @@ export default function DashboardPage() {
     fetchProviders();
   }, [fetchProviders]);
 
-  const totalBalance = providers.reduce(
-    (sum, p) => sum + (p.latestSnapshot?.balance || 0),
-    0
-  );
+  // Deduplicate balance by groupId: only count each group's balance once
+  const seenGroups = new Set<string | null>();
+  const totalBalance = providers.reduce((sum, p) => {
+    const balance = p.latestSnapshot?.balance || 0;
+    if (!p.groupId) {
+      return sum + balance;
+    }
+    if (seenGroups.has(p.groupId)) {
+      return sum;
+    }
+    seenGroups.add(p.groupId);
+    // Use the first non-null balance in the group
+    const groupProviders = providers.filter((x) => x.groupId === p.groupId);
+    const groupBalance = groupProviders.find((x) => x.latestSnapshot?.balance != null)?.latestSnapshot?.balance;
+    return sum + (groupBalance ?? 0);
+  }, 0);
   const totalCost = providers.reduce(
     (sum, p) => sum + (p.latestSnapshot?.totalCost || 0),
     0
@@ -150,6 +164,7 @@ export default function DashboardPage() {
               name={provider.name}
               displayName={provider.displayName}
               type={provider.type}
+              label={provider.label}
               latestSnapshot={provider.latestSnapshot}
             />
           ))}

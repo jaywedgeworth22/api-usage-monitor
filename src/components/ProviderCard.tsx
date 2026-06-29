@@ -8,6 +8,7 @@ interface ProviderCardProps {
   name: string;
   displayName: string;
   type: string;
+  label?: string | null;
   latestSnapshot: {
     balance: number | null;
     totalCost: number | null;
@@ -49,6 +50,7 @@ export default function ProviderCard({
   displayName,
   name,
   type,
+  label,
   latestSnapshot,
 }: ProviderCardProps) {
   const dotColor =
@@ -69,10 +71,15 @@ export default function ProviderCard({
     >
       <div className="flex items-center gap-3 mb-4">
         <div className={`w-3 h-3 rounded-full ${dotColor} flex-shrink-0`} />
-        <h3 className="text-lg font-semibold text-gray-900 truncate">
-          {displayName}
-        </h3>
-        <span className="ml-auto text-xs font-medium text-gray-400 uppercase bg-gray-50 px-2 py-0.5 rounded">
+        <div className="min-w-0 flex-1">
+          <h3 className="text-lg font-semibold text-gray-900 truncate">
+            {displayName}
+          </h3>
+          {label && (
+            <p className="text-xs text-gray-400 truncate">{label}</p>
+          )}
+        </div>
+        <span className="ml-auto text-xs font-medium text-gray-400 uppercase bg-gray-50 px-2 py-0.5 rounded flex-shrink-0">
           {type}
         </span>
       </div>
