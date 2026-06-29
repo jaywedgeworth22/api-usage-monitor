@@ -1,94 +1,75 @@
-import {
-  emptyResult,
-  errorResult,
-  fetchJson,
-  isoDateTimeDaysAgo,
-  parseNumber,
-  sumDailyCosts,
-  type UsageResult,
-} from "./helpers";
+import type { UsageResult } from "./openai";
 
 export async function fetchUsage(
   apiKey: string,
   config?: Record<string, unknown>
 ): Promise<UsageResult> {
-  const headers = {
-    "x-api-key": apiKey,
-    "anthropic-version": "2023-06-01",
-    "Content-Type": "application/json",
-  };
-
-  const end = new Date().toISOString().replace(/\.\d{3}Z$/, "Z");
-  const start = isoDateTimeDaysAgo(30);
-  const orgId = config?.orgId as string | undefined;
   const rawData: Record<string, unknown> = {};
-
-  const requests: Promise<unknown>[] = [
-    fetchJson("https://api.anthropic.com/v1/organizations/cost_report", {
-      headers,
-      method: "POST",
-      body: JSON.stringify({
-        starting_at: start,
-        ending_at: end,
-        bucket_width: "1d",
-        limit: 31,
-      }),
-    }).then((res) => {
-      rawData.costReport = res.data;
-      return res;
-    }),
-    fetchJson("https://api.anthropic.com/v1/billing/usage", { headers }).then(
-      (res) => {
-        rawData.billingUsage = res.data;
-        return res;
-      }
-    ),
-  ];
-
-  if (orgId) {
-    requests.push(
-      fetchJson(
-        `https://console.anthropic.com/api/organizations/${orgId}/prepaid/credits`,
-        { headers }
-      ).then((res) => {
-        rawData.prepaidCredits = res.data;
-        return res;
-      })
-    );
-  }
-
-  const results = await Promise.all(requests);
-  const costRes = results[0] as Awaited<ReturnType<typeof fetchJson>>;
-  const billingRes = results[1] as Awaited<ReturnType<typeof fetchJson>>;
-
-  if (!costRes.ok && !billingRes.ok) {
-    return errorResult(costRes.status || billingRes.status, rawData);
-  }
-
-  let balance: number | null = null;
   let totalCost: number | null = null;
   let totalRequests: number | null = null;
 
-  if (orgId && rawData.prepaidCredits && typeof rawData.prepaidCredits === "object") {
-    const prepaid = rawData.prepaidCredits as Record<string, unknown>;
-    const amountCents = parseNumber(prepaid.amount);
-    if (amountCents != null) balance = amountCents / 100;
+  // Anthropic's billing/usage API is behind the Console and not fully public.
+  // Try the organizations usage endpoint and the rate-limit headers as fallback.
+
+  // 1. Try the organizations usage endpoint if orgId is provided
+  const orgId = config?.orgId as string | undefined;
+  if (orgId) {
+    try {
+      const usageRes = await fetch(
+        `https://api.anthropic.com/v1/organizations/${orgId}/usage`,
+        {
+          headers: {
+            "x-api-key": apiKey,
+            "anthropic-version": "2023-06-01",
+            "Content-Type": "application/json",
+          },
+        }
+      );
+      if (usageRes.ok) {
+        const data = await usageRes.json();
+        rawData.usage = data;
+        if (typeof data.total_cost === "number") totalCost = data.total_cost;
+        if (typeof data.total_requests === "number") totalRequests = data.total_requests;
+      } else {
+        rawData.usageStatus = `HTTP ${usageRes.status}`;
+      }
+    } catch (err) {
+      rawData.usageError = err instanceof Error ? err.message : "Failed";
+    }
   }
 
-  if (costRes.ok && costRes.data && typeof costRes.data === "object") {
-    const report = costRes.data as { data?: Array<{ results?: Array<{ amount?: string | number }> }> };
-    totalCost = sumDailyCosts(report.data || []);
+  // 2. Probe rate-limit headers from a lightweight Messages API call
+  try {
+    const probeRes = await fetch("https://api.anthropic.com/v1/messages", {
+      method: "POST",
+      headers: {
+        "x-api-key": apiKey,
+        "anthropic-version": "2023-06-01",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model: "claude-haiku-3-5",
+        max_tokens: 1,
+        messages: [{ role: "user", content: "hi" }],
+      }),
+    });
+    // We deliberately throw away the response; we just want the headers
+    const remaining = probeRes.headers.get("anthropic-ratelimit-requests-remaining");
+    const limit = probeRes.headers.get("anthropic-ratelimit-requests-limit");
+    const reset = probeRes.headers.get("anthropic-ratelimit-requests-reset");
+    rawData.rateLimit = {
+      remaining: remaining ? parseInt(remaining) : null,
+      limit: limit ? parseInt(limit) : null,
+      reset: reset || null,
+      probeStatus: probeRes.status,
+    };
+  } catch (err) {
+    rawData.rateLimitError = err instanceof Error ? err.message : "Failed";
   }
 
-  if (
-    billingRes.ok &&
-    billingRes.data &&
-    typeof billingRes.data === "object"
-  ) {
-    const billing = billingRes.data as Record<string, unknown>;
-    if (totalCost == null) totalCost = parseNumber(billing.total_cost);
-    totalRequests = parseNumber(billing.total_requests);
+  if (Object.keys(rawData).length === 0) {
+    rawData.note = "No orgId configured. Add orgId in provider config to enable usage tracking. Anthropic does not expose a public billing REST API.";
   }
 
-  return { balance, totalCost, totalRequests, credits: null, rawData };
+  return { balance: null, totalCost, totalRequests, credits: null, rawData };
 }

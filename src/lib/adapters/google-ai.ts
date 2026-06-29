@@ -1,37 +1,47 @@
-import {
-  emptyResult,
-  errorResult,
-  fetchJson,
-  parseNumber,
-  type UsageResult,
-} from "./helpers";
+import type { UsageResult } from "./openai";
 
 export async function fetchUsage(apiKey: string): Promise<UsageResult> {
-  const modelsRes = await fetchJson(
-    `https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(apiKey)}`
-  );
+  const rawData: Record<string, unknown> = {};
+  let totalRequests: number | null = null;
 
-  if (!modelsRes.ok) {
-    return errorResult(modelsRes.status, { models: modelsRes.data });
+  // Google AI Studio does not expose a public billing/usage REST API.
+  // Usage is visible only at https://aistudio.google.com/app/apikey.
+  // As a workaround, we probe the rate-limit headers from a lightweight call.
+
+  try {
+    const probeRes = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models?key=${apiKey}`,
+      { headers: { "Content-Type": "application/json" } }
+    );
+
+    if (probeRes.ok) {
+      const data = await probeRes.json();
+      rawData.availableModels = Array.isArray(data.models)
+        ? data.models.length
+        : null;
+
+      // Google returns rate-limit headers (RPQ = requests per quota, usually per minute)
+      const remaining = probeRes.headers.get("x-ratelimit-remaining");
+      const limit = probeRes.headers.get("x-ratelimit-limit");
+      const reset = probeRes.headers.get("x-ratelimit-reset");
+      if (remaining || limit) {
+        rawData.rateLimit = {
+          remaining: remaining ? parseInt(remaining) : null,
+          limit: limit ? parseInt(limit) : null,
+          reset: reset || null,
+        };
+      }
+
+      // Count models as a proxy for available services
+      totalRequests = Array.isArray(data.models) ? data.models.length : null;
+    } else {
+      rawData.probeStatus = `HTTP ${probeRes.status}`;
+    }
+  } catch (err) {
+    rawData.probeError = err instanceof Error ? err.message : "Failed";
   }
 
-  const models =
-    modelsRes.data &&
-    typeof modelsRes.data === "object" &&
-    Array.isArray((modelsRes.data as { models?: unknown[] }).models)
-      ? (modelsRes.data as { models: unknown[] }).models
-      : [];
+  rawData.note = "Google AI Studio does not expose a public billing/usage REST API. Usage is visible at https://aistudio.google.com/app/apikey. To track actual spend, configure Google Cloud Billing API instead.";
 
-  const rawData: Record<string, unknown> = {
-    models,
-    note: "Google AI Studio does not expose remaining balance via API key. Key validated via models list.",
-  };
-
-  return {
-    balance: null,
-    totalCost: null,
-    totalRequests: models.length > 0 ? models.length : null,
-    credits: null,
-    rawData,
-  };
+  return { balance: null, totalCost: null, totalRequests, credits: null, rawData };
 }

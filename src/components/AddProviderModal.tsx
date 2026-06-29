@@ -27,59 +27,61 @@ interface ProviderDef {
   type: string;
   category: string;
   needsAccountId?: boolean;
-  creditBased?: boolean;
+  needsOrgId?: boolean;
   needsOrgSlug?: boolean;
+  creditBased?: boolean;
+  helpNote?: string;
   needsConfig?: { fields: { key: string; label: string; placeholder: string }[] };
 }
 
 const BUILT_IN_PROVIDERS: ProviderDef[] = [
   // LLM/AI
   { name: "openai", displayName: "OpenAI", type: "builtin", category: "LLM/AI" },
-  { name: "anthropic", displayName: "Anthropic", type: "builtin", category: "LLM/AI" },
-  { name: "google-ai", displayName: "Google AI", type: "builtin", category: "LLM/AI" },
-  { name: "deepseek", displayName: "DeepSeek", type: "builtin", category: "LLM/AI" },
-  { name: "xai", displayName: "xAI (Grok)", type: "builtin", category: "LLM/AI" },
-  { name: "mistral", displayName: "Mistral AI", type: "builtin", category: "LLM/AI" },
+  { name: "anthropic", displayName: "Anthropic", type: "builtin", category: "LLM/AI", needsOrgId: true, helpNote: "Add your Organization ID to enable usage tracking. Find it in console.anthropic.com > Settings > Organization." },
+  { name: "google-ai", displayName: "Google AI", type: "builtin", category: "LLM/AI", helpNote: "Google AI Studio has no public usage API. Usage is visible at aistudio.google.com/app/apikey. Configure Google Cloud Billing for spend tracking." },
+  { name: "deepseek", displayName: "DeepSeek", type: "builtin", category: "LLM/AI", helpNote: "No public usage API. Check dashboard at platform.deepseek.com." },
+  { name: "xai", displayName: "xAI (Grok)", type: "builtin", category: "LLM/AI", helpNote: "No public usage API. Check dashboard at console.x.ai." },
+  { name: "mistral", displayName: "Mistral AI", type: "builtin", category: "LLM/AI", helpNote: "No public usage API. Check dashboard at console.mistral.ai." },
 
   // Vector DB & Embeddings
-  { name: "pinecone", displayName: "Pinecone", type: "builtin", category: "Vector DB" },
-  { name: "voyage", displayName: "Voyage AI", type: "builtin", category: "Vector DB", creditBased: true },
+  { name: "pinecone", displayName: "Pinecone", type: "builtin", category: "Vector DB", helpNote: "Fetches index stats (record count, dimension). No billing API." },
+  { name: "voyage", displayName: "Voyage AI", type: "builtin", category: "Vector DB", creditBased: true, helpNote: "Credit-based embedding service. Check dashboard at voyageai.com." },
 
   // Market Data
-  { name: "fmp", displayName: "FMP", type: "builtin", category: "Market Data" },
-  { name: "finnhub", displayName: "Finnhub", type: "builtin", category: "Market Data" },
-  { name: "alphavantage", displayName: "Alpha Vantage", type: "builtin", category: "Market Data" },
-  { name: "tradier", displayName: "Tradier", type: "builtin", category: "Market Data" },
-  { name: "marketstack", displayName: "Marketstack", type: "builtin", category: "Market Data" },
-  { name: "intrinio", displayName: "Intrinio", type: "builtin", category: "Market Data" },
-  { name: "tiingo", displayName: "Tiingo", type: "builtin", category: "Market Data" },
-  { name: "twelvedata", displayName: "Twelve Data", type: "builtin", category: "Market Data" },
-  { name: "fintech-studios", displayName: "Fintech Studios", type: "builtin", category: "Market Data" },
-  { name: "massive", displayName: "Massive", type: "builtin", category: "Market Data" },
-  { name: "fred", displayName: "FRED", type: "builtin", category: "Market Data" },
+  { name: "fmp", displayName: "FMP", type: "builtin", category: "Market Data", helpNote: "No public usage API. Track calls via dashboard. Rate limits in response headers." },
+  { name: "finnhub", displayName: "Finnhub", type: "builtin", category: "Market Data", helpNote: "No public usage API. Free: 60 calls/min. Check finnhub.io." },
+  { name: "alphavantage", displayName: "Alpha Vantage", type: "builtin", category: "Market Data", helpNote: "No public usage API. Free: 25 calls/day. Check dashboard." },
+  { name: "tradier", displayName: "Tradier", type: "builtin", category: "Market Data", helpNote: "No public usage API. Tiered plans. Check dashboard.tradier.com." },
+  { name: "marketstack", displayName: "Marketstack", type: "builtin", category: "Market Data", helpNote: "No public usage API. Check marketstack.com dashboard." },
+  { name: "intrinio", displayName: "Intrinio", type: "builtin", category: "Market Data", helpNote: "No public usage API. Paid tiers. Check intrinio.com." },
+  { name: "tiingo", displayName: "Tiingo", type: "builtin", category: "Market Data", helpNote: "No public usage API. Freemium. Check tiingo.com." },
+  { name: "twelvedata", displayName: "Twelve Data", type: "builtin", category: "Market Data", helpNote: "No public usage API. Free: 800 calls/day. Check dashboard." },
+  { name: "fintech-studios", displayName: "Fintech Studios", type: "builtin", category: "Market Data", helpNote: "No public usage API. Paid service." },
+  { name: "massive", displayName: "Massive", type: "builtin", category: "Market Data", helpNote: "No public usage API. Paid unlimited plan available." },
+  { name: "fred", displayName: "FRED", type: "builtin", category: "Market Data", helpNote: "Free federal data. No usage limits or billing." },
 
   // Observability
-  { name: "sentry", displayName: "Sentry", type: "builtin", category: "Observability", needsOrgSlug: true },
-  { name: "langfuse", displayName: "Langfuse", type: "builtin", category: "Observability", creditBased: true },
+  { name: "sentry", displayName: "Sentry", type: "builtin", category: "Observability", needsOrgSlug: true, helpNote: "Enter your Sentry org slug to fetch error/transaction quotas." },
+  { name: "langfuse", displayName: "Langfuse", type: "builtin", category: "Observability", creditBased: true, helpNote: "LLM observability. Usage visible at cloud.langfuse.com." },
 
   // Notifications
-  { name: "twilio", displayName: "Twilio", type: "builtin", category: "Notifications", needsAccountId: true },
-  { name: "resend", displayName: "Resend", type: "builtin", category: "Notifications" },
-  { name: "pushover", displayName: "Pushover", type: "builtin", category: "Notifications" },
+  { name: "twilio", displayName: "Twilio", type: "builtin", category: "Notifications", needsAccountId: true, helpNote: "Enter your Account SID to track message/minute usage." },
+  { name: "resend", displayName: "Resend", type: "builtin", category: "Notifications", helpNote: "Email provider. Free: 100/day. Check resend.com dashboard." },
+  { name: "pushover", displayName: "Pushover", type: "builtin", category: "Notifications", helpNote: "Push notification service. Tracks monthly message allowance." },
 
   // Infrastructure
-  { name: "cloudflare", displayName: "Cloudflare", type: "builtin", category: "Infrastructure", needsAccountId: true },
+  { name: "cloudflare", displayName: "Cloudflare", type: "builtin", category: "Infrastructure", needsAccountId: true, helpNote: "Requires Account ID + Email. Tracks Workers, D1, R2, KV, Queue analytics." },
 
   // Data
-  { name: "apify", displayName: "Apify", type: "builtin", category: "Data", creditBased: true },
-  { name: "llamaindex", displayName: "LlamaIndex Cloud", type: "builtin", category: "Data", creditBased: true },
+  { name: "apify", displayName: "Apify", type: "builtin", category: "Data", creditBased: true, helpNote: "Credit-based web scraping. Check console.apify.com for usage." },
+  { name: "llamaindex", displayName: "LlamaIndex Cloud", type: "builtin", category: "Data", creditBased: true, helpNote: "Credit-based OCR/parsing (free: 10k credits/mo). Check cloud.llamaindex.ai." },
 
   // Payments
-  { name: "stripe", displayName: "Stripe", type: "builtin", category: "Payments" },
+  { name: "stripe", displayName: "Stripe", type: "builtin", category: "Payments", helpNote: "Tracks account balance and MRR. Uses Stripe Balance API." },
 
   // Brokerage
-  { name: "robinhood", displayName: "Robinhood", type: "builtin", category: "Brokerage" },
-  { name: "alpaca", displayName: "Alpaca", type: "builtin", category: "Brokerage" },
+  { name: "robinhood", displayName: "Robinhood", type: "builtin", category: "Brokerage", helpNote: "Portfolio tracking. Best-effort via MCP. No public usage API." },
+  { name: "alpaca", displayName: "Alpaca", type: "builtin", category: "Brokerage", helpNote: "Tracks portfolio value and day trade count via account endpoint." },
 ];
 
 const CATEGORIES = [
@@ -242,77 +244,40 @@ export default function AddProviderModal({
       fields.push({ key: "orgSlug", label: "Organization Slug", placeholder: "Sentry org slug" });
     }
 
-    if (selectedDef.name === "alpaca") {
-      fields.push({ key: "apiSecret", label: "API Secret", placeholder: "Alpaca API secret key" });
-      fields.push({ key: "environment", label: "Environment", placeholder: "paper or live" });
+    if (selectedDef.needsOrgId) {
+      fields.push({ key: "orgId", label: "Organization ID", placeholder: "Anthropic Organization ID" });
     }
 
-    if (selectedDef.name === "xai") {
-      fields.push({ key: "teamId", label: "Team ID", placeholder: "xAI team ID from console" });
-      fields.push({
-        key: "managementKey",
-        label: "Management Key (optional)",
-        placeholder: "Uses API key if blank",
-      });
-    }
+    const hasHelp = !!selectedDef.helpNote;
 
-    if (selectedDef.name === "anthropic") {
-      fields.push({
-        key: "orgId",
-        label: "Organization ID (optional)",
-        placeholder: "For prepaid credit balance lookup",
-      });
-    }
-
-    if (selectedDef.name === "langfuse") {
-      fields.push({ key: "secretKey", label: "Secret Key", placeholder: "Langfuse secret key" });
-      fields.push({
-        key: "host",
-        label: "Host (optional)",
-        placeholder: "https://cloud.langfuse.com",
-      });
-    }
-
-    if (selectedDef.name === "tradier") {
-      fields.push({
-        key: "accountId",
-        label: "Account ID (optional)",
-        placeholder: "Auto-detected from profile if blank",
-      });
-    }
-
-    if (selectedDef.name === "llamaindex") {
-      fields.push({
-        key: "host",
-        label: "Host (optional)",
-        placeholder: "https://api.cloud.llamaindex.ai",
-      });
-      fields.push({
-        key: "projectId",
-        label: "Project ID (optional)",
-        placeholder: "Specific LlamaIndex project ID",
-      });
-    }
-
-    return fields.length > 0 ? (
+    return fields.length > 0 || hasHelp ? (
       <div className="space-y-3">
-        <p className="text-xs font-medium text-gray-500">Extra Configuration</p>
-        {fields.map((f) => (
-          <div key={f.key}>
-            <label className="block text-sm font-medium text-gray-700 mb-1">
-              {f.label}
-            </label>
-            <input
-              type={f.type || "text"}
-              value={extraFields[f.key] || ""}
-              onChange={(e) =>
-                setExtraFields((prev) => ({ ...prev, [f.key]: e.target.value }))
-              }
-              placeholder={f.placeholder}
-              className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-            />
+        {fields.length > 0 && (
+          <>
+            <p className="text-xs font-medium text-gray-500">Extra Configuration</p>
+            {fields.map((f) => (
+              <div key={f.key}>
+                <label className="block text-sm font-medium text-gray-700 mb-1">
+                  {f.label}
+                </label>
+                <input
+                  type={f.type || "text"}
+                  value={extraFields[f.key] || ""}
+                  onChange={(e) =>
+                    setExtraFields((prev) => ({ ...prev, [f.key]: e.target.value }))
+                  }
+                  placeholder={f.placeholder}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                />
+              </div>
+            ))}
+          </>
+        )}
+        {hasHelp && (
+          <div className="rounded-lg bg-blue-50 border border-blue-100 p-3">
+            <p className="text-xs text-blue-800 leading-relaxed">{selectedDef.helpNote}</p>
           </div>
-        ))}
+        )}
       </div>
     ) : null;
   };
