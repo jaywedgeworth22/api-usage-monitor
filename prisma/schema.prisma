@@ -1,0 +1,35 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Provider {
+  id                 String           @id @default(uuid())
+  name               String           @unique
+  displayName        String
+  type               String           @default("builtin")
+  apiKey             String?
+  config             Json?
+  isActive           Boolean          @default(true)
+  credits            Float            @default(0)
+  refreshIntervalMin Int              @default(60)
+  createdAt          DateTime         @default(now())
+  snapshots          UsageSnapshot[]
+}
+
+model UsageSnapshot {
+  id            String   @id @default(uuid())
+  providerId    String
+  provider      Provider @relation(fields: [providerId], references: [id], onDelete: Cascade)
+  fetchedAt     DateTime
+  balance       Float?
+  totalCost     Float?
+  totalRequests Int?
+  credits       Float?
+  rawData       Json?
+  createdAt     DateTime @default(now())
+}

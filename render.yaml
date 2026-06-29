@@ -1,0 +1,29 @@
+# Custom domain: usage.jays.services
+# DNS is managed by Cloudflare (CNAME to api-usage-monitor.onrender.com, proxied)
+# SSL: Cloudflare "Full (strict)" mode + Render's own cert
+services:
+  - type: web
+    name: api-usage-monitor
+    env: node
+    buildCommand: npm install && npx prisma generate && npm run build
+    startCommand: npm start
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: api-usage-monitor-db
+          property: connectionString
+      - key: ENCRYPTION_KEY
+        generateValue: true
+      - key: CRON_SECRET
+        generateValue: true
+
+  - type: cron
+    name: fetch-all-usage
+    schedule: "*/15 * * * *"
+    buildCommand: npm install
+    startCommand: curl -H "x-cron-secret: $CRON_SECRET" "https://$RENDER_EXTERNAL_HOSTNAME/api/cron/fetch-all"
+
+databases:
+  - name: api-usage-monitor-db
+    databaseName: api_usage_monitor
+    plan: free

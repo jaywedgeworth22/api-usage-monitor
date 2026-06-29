@@ -1,0 +1,121 @@
+"use client";
+
+import Link from "next/link";
+import BalanceBadge from "./BalanceBadge";
+
+interface ProviderCardProps {
+  id: string;
+  name: string;
+  displayName: string;
+  type: string;
+  latestSnapshot: {
+    balance: number | null;
+    totalCost: number | null;
+    totalRequests: number | null;
+    credits: number | null;
+    fetchedAt: string;
+  } | null;
+}
+
+const typeColors: Record<string, string> = {
+  openai: "bg-emerald-500",
+  anthropic: "bg-amber-500",
+  "google-ai": "bg-blue-500",
+  google_ai: "bg-blue-500",
+  pinecone: "bg-indigo-500",
+  cloudflare: "bg-orange-500",
+  deepseek: "bg-teal-500",
+  xai: "bg-slate-500",
+  mistral: "bg-rose-500",
+  llamaindex: "bg-violet-500",
+  voyage: "bg-purple-500",
+  sentry: "bg-red-500",
+  langfuse: "bg-cyan-500",
+  twilio: "bg-red-600",
+  resend: "bg-sky-500",
+  pushover: "bg-lime-500",
+  apify: "bg-orange-600",
+  stripe: "bg-indigo-600",
+  robinhood: "bg-green-500",
+  alpaca: "bg-gray-600",
+};
+
+const creditBasedProviders = new Set([
+  "llamaindex", "voyage", "langfuse", "apify",
+]);
+
+export default function ProviderCard({
+  id,
+  displayName,
+  name,
+  type,
+  latestSnapshot,
+}: ProviderCardProps) {
+  const dotColor =
+    typeColors[name.toLowerCase()] ?? "bg-purple-500";
+
+  const isCreditBased = creditBasedProviders.has(name.toLowerCase());
+  const hasCredits = latestSnapshot?.credits != null;
+
+  const formatNumber = (n: number | null) => {
+    if (n == null) return "--";
+    return new Intl.NumberFormat("en-US").format(n);
+  };
+
+  return (
+    <Link
+      href={`/providers/${id}`}
+      className="block bg-white rounded-xl border border-gray-200 p-6 transition-all duration-200 hover:shadow-md hover:border-gray-300 hover:-translate-y-0.5"
+    >
+      <div className="flex items-center gap-3 mb-4">
+        <div className={`w-3 h-3 rounded-full ${dotColor} flex-shrink-0`} />
+        <h3 className="text-lg font-semibold text-gray-900 truncate">
+          {displayName}
+        </h3>
+        <span className="ml-auto text-xs font-medium text-gray-400 uppercase bg-gray-50 px-2 py-0.5 rounded">
+          {type}
+        </span>
+      </div>
+
+      <div className="grid grid-cols-2 gap-4">
+        <div>
+          <p className="text-xs text-gray-500 mb-1">Balance</p>
+          <BalanceBadge amount={latestSnapshot?.balance ?? null} />
+        </div>
+        <div>
+          <p className="text-xs text-gray-500 mb-1">Cost</p>
+          <p className="text-sm font-medium text-gray-900">
+            {latestSnapshot?.totalCost != null ? (
+              <BalanceBadge
+                amount={-latestSnapshot.totalCost}
+                className=""
+              />
+            ) : (
+              "--"
+            )}
+          </p>
+        </div>
+        {(isCreditBased || hasCredits) && (
+          <div>
+            <p className="text-xs text-gray-500 mb-1">Credits</p>
+            <p className="text-sm font-medium text-purple-600">
+              {formatNumber(latestSnapshot?.credits ?? null)}
+            </p>
+          </div>
+        )}
+        <div>
+          <p className="text-xs text-gray-500 mb-1">Requests</p>
+          <p className="text-sm font-medium text-gray-900">
+            {formatNumber(latestSnapshot?.totalRequests ?? null)}
+          </p>
+        </div>
+      </div>
+
+      {latestSnapshot && (
+        <p className="mt-3 text-xs text-gray-400">
+          Last updated: {new Date(latestSnapshot.fetchedAt).toLocaleString()}
+        </p>
+      )}
+    </Link>
+  );
+}
