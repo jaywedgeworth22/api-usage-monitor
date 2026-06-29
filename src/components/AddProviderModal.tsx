@@ -10,6 +10,7 @@ interface Provider {
   config?: Record<string, unknown>;
   apiKey?: string;
   label?: string | null;
+  keyPreview?: string | null;
 }
 
 interface AddProviderModalProps {
@@ -17,6 +18,7 @@ interface AddProviderModalProps {
   onClose: () => void;
   onSave: (provider: Provider) => Promise<void>;
   editProvider?: Provider | null;
+  existingProviders?: Provider[];
 }
 
 interface ProviderDef {
@@ -99,6 +101,7 @@ export default function AddProviderModal({
   onClose,
   onSave,
   editProvider,
+  existingProviders = [],
 }: AddProviderModalProps) {
   const [tab, setTab] = useState<Tab>(editProvider?.type === "custom" ? "custom" : "builtin");
   const [saving, setSaving] = useState(false);
@@ -112,6 +115,10 @@ export default function AddProviderModal({
   );
 
   const selectedDef = BUILT_IN_PROVIDERS.find((p) => p.name === selectedBuiltin);
+
+  const matchingExisting = existingProviders.filter(
+    (p) => p.name === selectedBuiltin
+  );
 
   // Custom fields
   const [customName, setCustomName] = useState(
@@ -341,6 +348,28 @@ export default function AddProviderModal({
                 )}
               </div>
 
+              {matchingExisting.length > 0 && (
+                <div className="bg-blue-50 border border-blue-200 rounded-lg px-4 py-3">
+                  <p className="text-xs font-medium text-blue-700 mb-2">
+                    You already have {matchingExisting.length}{" "}
+                    {matchingExisting.length === 1 ? "provider" : "providers"} configured
+                    for {selectedDef?.displayName ?? selectedBuiltin}:
+                  </p>
+                  <ul className="space-y-1">
+                    {matchingExisting.map((p) => (
+                      <li key={p.id} className="text-xs text-blue-600 flex items-center gap-2">
+                        <code className="bg-blue-100 px-1.5 py-0.5 rounded text-[11px]">
+                          {p.keyPreview ?? "(no key preview)"}
+                        </code>
+                        {p.label && (
+                          <span className="text-blue-500">({p.label})</span>
+                        )}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">
                   API Key
@@ -352,6 +381,14 @@ export default function AddProviderModal({
                   placeholder={editProvider ? "Leave blank to keep current" : "Your API key"}
                   className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
                 />
+                {editProvider && !apiKey && editProvider.keyPreview && (
+                  <p className="text-xs text-gray-500 mt-1">
+                    Current key:{" "}
+                    <code className="bg-gray-100 px-1.5 py-0.5 rounded text-[11px]">
+                      {editProvider.keyPreview}
+                    </code>
+                  </p>
+                )}
               </div>
 
               <div>
@@ -410,6 +447,14 @@ export default function AddProviderModal({
                   placeholder={editProvider ? "Leave blank to keep current" : "Your API key"}
                   className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
                 />
+                {editProvider && !apiKey && editProvider.keyPreview && (
+                  <p className="text-xs text-gray-500 mt-1">
+                    Current key:{" "}
+                    <code className="bg-gray-100 px-1.5 py-0.5 rounded text-[11px]">
+                      {editProvider.keyPreview}
+                    </code>
+                  </p>
+                )}
               </div>
 
               <div>

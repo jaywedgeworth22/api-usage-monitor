@@ -1,6 +1,19 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
-import { encrypt } from "@/lib/crypto";
+import { encrypt, decrypt } from "@/lib/crypto";
+
+function buildKeyPreview(encryptedKey: string | null): string | null {
+  if (!encryptedKey) return null;
+  try {
+    const decrypted = decrypt(encryptedKey);
+    if (decrypted.length <= 10) return null;
+    const first = decrypted.slice(0, 6);
+    const last = decrypted.slice(-4);
+    return `${first}...${last}`;
+  } catch {
+    return null;
+  }
+}
 
 export async function GET() {
   const providers = await prisma.provider.findMany({
@@ -14,6 +27,7 @@ export async function GET() {
       refreshIntervalMin: true,
       groupId: true,
       label: true,
+      apiKey: true,
       createdAt: true,
       snapshots: {
         orderBy: { fetchedAt: "desc" },
@@ -31,9 +45,10 @@ export async function GET() {
 
   // Flatten latest snapshot into the provider object
   const result = providers.map((p) => {
-    const { snapshots, ...rest } = p;
+    const { snapshots, apiKey, ...rest } = p;
     return {
       ...rest,
+      keyPreview: buildKeyPreview(apiKey),
       latestSnapshot: snapshots[0] ?? null,
     };
   });

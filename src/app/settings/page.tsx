@@ -12,6 +12,7 @@ interface Provider {
   refreshIntervalMin: number;
   groupId: string | null;
   label: string | null;
+  keyPreview?: string | null;
   createdAt: string;
   latestSnapshot: {
     balance: number | null;
@@ -334,6 +335,7 @@ export default function SettingsPage() {
         }}
         onSave={handleSave}
         editProvider={editProvider}
+        existingProviders={providers}
       />
     </div>
   );

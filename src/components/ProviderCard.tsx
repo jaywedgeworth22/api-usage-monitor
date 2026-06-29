@@ -9,6 +9,7 @@ interface ProviderCardProps {
   displayName: string;
   type: string;
   label?: string | null;
+  keyPreview?: string | null;
   latestSnapshot: {
     balance: number | null;
     totalCost: number | null;
@@ -51,6 +52,7 @@ export default function ProviderCard({
   name,
   type,
   label,
+  keyPreview,
   latestSnapshot,
 }: ProviderCardProps) {
   const dotColor =
@@ -77,6 +79,9 @@ export default function ProviderCard({
           </h3>
           {label && (
             <p className="text-xs text-gray-400 truncate">{label}</p>
+          )}
+          {keyPreview && (
+            <p className="text-[10px] text-gray-400 truncate font-mono">{keyPreview}</p>
           )}
         </div>
         <span className="ml-auto text-xs font-medium text-gray-400 uppercase bg-gray-50 px-2 py-0.5 rounded flex-shrink-0">

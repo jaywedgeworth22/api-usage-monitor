@@ -12,6 +12,7 @@ interface Provider {
   isActive: boolean;
   groupId: string | null;
   label: string | null;
+  keyPreview?: string | null;
   latestSnapshot: {
     balance: number | null;
     totalCost: number | null;
@@ -165,6 +166,7 @@ export default function DashboardPage() {
               displayName={provider.displayName}
               type={provider.type}
               label={provider.label}
+              keyPreview={provider.keyPreview}
               latestSnapshot={provider.latestSnapshot}
             />
           ))}
