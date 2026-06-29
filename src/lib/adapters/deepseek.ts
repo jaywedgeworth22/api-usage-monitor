@@ -1,5 +1,55 @@
-import type { UsageResult } from "./openai";
+import {
+  emptyResult,
+  errorResult,
+  fetchJson,
+  parseNumber,
+  type UsageResult,
+} from "./helpers";
 
 export async function fetchUsage(apiKey: string): Promise<UsageResult> {
-  return { balance: null, totalCost: null, totalRequests: null, credits: null, rawData: null };
+  const res = await fetchJson("https://api.deepseek.com/user/balance", {
+    headers: { Authorization: `Bearer ${apiKey}` },
+  });
+
+  if (!res.ok) {
+    return errorResult(res.status, { response: res.data });
+  }
+
+  if (!res.data || typeof res.data !== "object") {
+    return emptyResult(res.data);
+  }
+
+  const data = res.data as {
+    is_available?: boolean;
+    balance_infos?: Array<{
+      currency?: string;
+      total_balance?: string;
+      granted_balance?: string;
+      topped_up_balance?: string;
+    }>;
+  };
+
+  let balance: number | null = null;
+  let credits: number | null = null;
+
+  for (const info of data.balance_infos || []) {
+    if (info.currency === "USD") {
+      balance = parseNumber(info.total_balance);
+      credits = parseNumber(info.granted_balance);
+      break;
+    }
+  }
+
+  if (balance == null && data.balance_infos?.[0]) {
+    balance = parseNumber(data.balance_infos[0].total_balance);
+    credits = parseNumber(data.balance_infos[0].granted_balance);
+  }
+
+  return {
+    balance,
+    totalCost: null,
+    totalRequests: null,
+    credits,
+    rawData: data,
+  };
 }

@@ -1,4 +1,4 @@
-import type { UsageResult } from "./openai";
+import type { UsageResult } from "./helpers";
 
 export async function fetchUsage(apiKey: string): Promise<UsageResult> {
   // Fetch list of indexes, then get stats for each
