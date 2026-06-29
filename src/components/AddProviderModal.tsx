@@ -9,6 +9,7 @@ interface Provider {
   type: string;
   config?: Record<string, unknown>;
   apiKey?: string;
+  label?: string | null;
 }
 
 interface AddProviderModalProps {
@@ -105,6 +106,7 @@ export default function AddProviderModal({
 
   const [selectedBuiltin, setSelectedBuiltin] = useState(editProvider?.name || "");
   const [apiKey, setApiKey] = useState(editProvider?.apiKey || "");
+  const [label, setLabel] = useState(editProvider?.label || "");
   const [extraFields, setExtraFields] = useState<Record<string, string>>(
     (editProvider?.config as Record<string, string>) || {}
   );
@@ -172,6 +174,7 @@ export default function AddProviderModal({
           type: "builtin",
           apiKey: apiKey || undefined,
           config: Object.keys(config).length > 0 ? config : undefined,
+          label: label || undefined,
         });
       } else {
         if (!customName || !customDisplayName || !customEndpoint) {
@@ -199,6 +202,7 @@ export default function AddProviderModal({
           type: "custom",
           apiKey: apiKey || undefined,
           config,
+          label: label || undefined,
         });
       }
       onClose();
@@ -350,6 +354,20 @@ export default function AddProviderModal({
                 />
               </div>
 
+              <div>
+                <label className="block text-xs font-medium text-gray-500 mb-1">
+                  Label (optional)
+                </label>
+                <input
+                  type="text"
+                  value={label}
+                  onChange={(e) => setLabel(e.target.value)}
+                  placeholder="e.g. Agentic Trading, Congress.Trade"
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                />
+                <p className="text-xs text-gray-400 mt-0.5">Tag this key to distinguish it from others with the same provider name</p>
+              </div>
+
               {renderExtraFields()}
             </div>
           ) : (
@@ -392,6 +410,20 @@ export default function AddProviderModal({
                   placeholder={editProvider ? "Leave blank to keep current" : "Your API key"}
                   className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
                 />
+              </div>
+
+              <div>
+                <label className="block text-xs font-medium text-gray-500 mb-1">
+                  Label (optional)
+                </label>
+                <input
+                  type="text"
+                  value={label}
+                  onChange={(e) => setLabel(e.target.value)}
+                  placeholder="e.g. Production, Staging"
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                />
+                <p className="text-xs text-gray-400 mt-0.5">Tag this key to distinguish it from others</p>
               </div>
 
               <div>

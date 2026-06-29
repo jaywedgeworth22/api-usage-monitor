@@ -9,7 +9,7 @@ datasource db {
 
 model Provider {
   id                 String           @id @default(uuid())
-  name               String           @unique
+  name               String
   displayName        String
   type               String           @default("builtin")
   apiKey             String?
@@ -17,6 +17,8 @@ model Provider {
   isActive           Boolean          @default(true)
   credits            Float            @default(0)
   refreshIntervalMin Int              @default(60)
+  groupId            String?
+  label              String?
   createdAt          DateTime         @default(now())
   snapshots          UsageSnapshot[]
 }

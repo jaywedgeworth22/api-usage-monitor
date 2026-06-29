@@ -10,6 +10,8 @@ interface Provider {
   type: string;
   isActive: boolean;
   refreshIntervalMin: number;
+  groupId: string | null;
+  label: string | null;
   createdAt: string;
   latestSnapshot: {
     balance: number | null;
@@ -55,6 +57,7 @@ export default function SettingsPage() {
     type: string;
     apiKey?: string;
     config?: Record<string, unknown>;
+    label?: string | null;
   }) => {
     if (provider.id) {
       const res = await fetch(`/api/providers/${provider.id}`, {
@@ -64,6 +67,7 @@ export default function SettingsPage() {
           displayName: provider.displayName,
           apiKey: provider.apiKey,
           config: provider.config,
+          label: provider.label,
         }),
       });
       if (!res.ok) {
@@ -188,6 +192,9 @@ export default function SettingsPage() {
                   Name
                 </th>
                 <th className="text-left px-6 py-3 font-medium text-gray-500">
+                  Label
+                </th>
+                <th className="text-left px-6 py-3 font-medium text-gray-500">
                   Type
                 </th>
                 <th className="text-left px-6 py-3 font-medium text-gray-500">
@@ -218,7 +225,20 @@ export default function SettingsPage() {
                         {provider.displayName}
                       </p>
                       <p className="text-xs text-gray-400">{provider.name}</p>
+                      {provider.groupId && (
+                        <span className="inline-flex items-center gap-1 mt-1 px-1.5 py-0.5 text-[10px] font-medium rounded bg-amber-50 text-amber-700 border border-amber-200">
+                          <svg className="w-2.5 h-2.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1" />
+                          </svg>
+                          Shared balance
+                        </span>
+                      )}
                     </div>
+                  </td>
+                  <td className="px-6 py-4">
+                    <span className="text-xs text-gray-400">
+                      {provider.label || "--"}
+                    </span>
                   </td>
                   <td className="px-6 py-4">
                     <span className="inline-flex px-2 py-0.5 text-xs font-medium uppercase rounded bg-gray-100 text-gray-500">

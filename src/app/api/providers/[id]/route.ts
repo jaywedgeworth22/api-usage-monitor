@@ -41,7 +41,7 @@ export async function PUT(
   }
 
   const body = await request.json();
-  const { displayName, apiKey, config, isActive, refreshIntervalMin } = body;
+  const { displayName, apiKey, config, isActive, refreshIntervalMin, groupId, label } = body;
 
   const updateData: Record<string, unknown> = {};
   if (displayName !== undefined) updateData.displayName = displayName;
@@ -49,6 +49,8 @@ export async function PUT(
   if (isActive !== undefined) updateData.isActive = isActive;
   if (refreshIntervalMin !== undefined)
     updateData.refreshIntervalMin = refreshIntervalMin;
+  if (groupId !== undefined) updateData.groupId = groupId;
+  if (label !== undefined) updateData.label = label;
   if (apiKey !== undefined && apiKey !== "") {
     updateData.apiKey = encrypt(apiKey);
   }
@@ -63,6 +65,8 @@ export async function PUT(
       type: true,
       isActive: true,
       refreshIntervalMin: true,
+      groupId: true,
+      label: true,
       createdAt: true,
     },
   });
