@@ -1,4 +1,4 @@
-import type { UsageResult } from "./openai";
+import type { UsageResult } from "./helpers";
 
 function makeHeaders(
   apiKey: string,

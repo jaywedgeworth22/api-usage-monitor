@@ -242,6 +242,58 @@ export default function AddProviderModal({
       fields.push({ key: "orgSlug", label: "Organization Slug", placeholder: "Sentry org slug" });
     }
 
+    if (selectedDef.name === "alpaca") {
+      fields.push({ key: "apiSecret", label: "API Secret", placeholder: "Alpaca API secret key" });
+      fields.push({ key: "environment", label: "Environment", placeholder: "paper or live" });
+    }
+
+    if (selectedDef.name === "xai") {
+      fields.push({ key: "teamId", label: "Team ID", placeholder: "xAI team ID from console" });
+      fields.push({
+        key: "managementKey",
+        label: "Management Key (optional)",
+        placeholder: "Uses API key if blank",
+      });
+    }
+
+    if (selectedDef.name === "anthropic") {
+      fields.push({
+        key: "orgId",
+        label: "Organization ID (optional)",
+        placeholder: "For prepaid credit balance lookup",
+      });
+    }
+
+    if (selectedDef.name === "langfuse") {
+      fields.push({ key: "secretKey", label: "Secret Key", placeholder: "Langfuse secret key" });
+      fields.push({
+        key: "host",
+        label: "Host (optional)",
+        placeholder: "https://cloud.langfuse.com",
+      });
+    }
+
+    if (selectedDef.name === "tradier") {
+      fields.push({
+        key: "accountId",
+        label: "Account ID (optional)",
+        placeholder: "Auto-detected from profile if blank",
+      });
+    }
+
+    if (selectedDef.name === "llamaindex") {
+      fields.push({
+        key: "host",
+        label: "Host (optional)",
+        placeholder: "https://api.cloud.llamaindex.ai",
+      });
+      fields.push({
+        key: "projectId",
+        label: "Project ID (optional)",
+        placeholder: "Specific LlamaIndex project ID",
+      });
+    }
+
     return fields.length > 0 ? (
       <div className="space-y-3">
         <p className="text-xs font-medium text-gray-500">Extra Configuration</p>

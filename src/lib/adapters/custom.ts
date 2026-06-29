@@ -1,4 +1,4 @@
-import type { UsageResult } from "./openai";
+import type { UsageResult } from "./helpers";
 
 function resolveJsonPath(obj: unknown, path: string): unknown {
   // Simple JSONPath-like resolution: $.balance -> obj.balance

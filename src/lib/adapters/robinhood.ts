@@ -1,5 +1,9 @@
-import type { UsageResult } from "./openai";
+import { emptyResult, type UsageResult } from "./helpers";
 
 export async function fetchUsage(apiKey: string): Promise<UsageResult> {
-  return { balance: null, totalCost: null, totalRequests: null, credits: null, rawData: null };
+  return emptyResult({
+    error: "Robinhood does not offer a public retail API for account balance",
+    keyProvided: Boolean(apiKey),
+    note: "Use a custom provider if you have access to an unofficial or partner API endpoint.",
+  });
 }
