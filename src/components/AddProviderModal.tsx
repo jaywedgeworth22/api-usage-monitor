@@ -1,6 +1,20 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
+
+type BillingMode = "actual" | "estimated" | "manual";
+
+interface ProviderPlan {
+  billingMode: BillingMode;
+  fixedMonthlyCostUsd: number | null;
+  monthlyBudgetUsd: number | null;
+  monthlyRequestLimit: number | null;
+  lowBalanceUsd: number | null;
+  lowCredits: number | null;
+  renewalDate: string | null;
+  mustKeepFunded: boolean;
+  notes: string | null;
+}
 
 interface Provider {
   id?: string;
@@ -11,6 +25,7 @@ interface Provider {
   apiKey?: string;
   label?: string | null;
   keyPreview?: string | null;
+  plan?: ProviderPlan | null;
 }
 
 interface AddProviderModalProps {
@@ -98,6 +113,15 @@ const CATEGORIES = [
 
 type Tab = "builtin" | "custom";
 
+function planNumber(value: number | null | undefined): string {
+  return value == null ? "" : String(value);
+}
+
+function dateInputValue(value: string | null | undefined): string {
+  if (!value) return "";
+  return value.slice(0, 10);
+}
+
 export default function AddProviderModal({
   open,
   onClose,
@@ -153,14 +177,105 @@ export default function AddProviderModal({
   const [customCreditsPath, setCustomCreditsPath] = useState(
     (editProvider?.config as Record<string, string>)?.creditsPath || "$.credits"
   );
+  const [billingMode, setBillingMode] = useState<BillingMode>(
+    editProvider?.plan?.billingMode ?? "manual"
+  );
+  const [fixedMonthlyCostUsd, setFixedMonthlyCostUsd] = useState(
+    planNumber(editProvider?.plan?.fixedMonthlyCostUsd)
+  );
+  const [monthlyBudgetUsd, setMonthlyBudgetUsd] = useState(
+    planNumber(editProvider?.plan?.monthlyBudgetUsd)
+  );
+  const [monthlyRequestLimit, setMonthlyRequestLimit] = useState(
+    planNumber(editProvider?.plan?.monthlyRequestLimit)
+  );
+  const [lowBalanceUsd, setLowBalanceUsd] = useState(
+    planNumber(editProvider?.plan?.lowBalanceUsd)
+  );
+  const [lowCredits, setLowCredits] = useState(
+    planNumber(editProvider?.plan?.lowCredits)
+  );
+  const [renewalDate, setRenewalDate] = useState(
+    dateInputValue(editProvider?.plan?.renewalDate)
+  );
+  const [mustKeepFunded, setMustKeepFunded] = useState(
+    editProvider?.plan?.mustKeepFunded ?? false
+  );
+  const [planNotes, setPlanNotes] = useState(editProvider?.plan?.notes ?? "");
+
+  useEffect(() => {
+    if (!open) return;
+
+    const config = (editProvider?.config as Record<string, string>) || {};
+    const nextTab: Tab = editProvider?.type === "custom" ? "custom" : "builtin";
+    setTab(nextTab);
+    setError("");
+    setSelectedBuiltin(editProvider?.name || "");
+    setApiKey("");
+    setLabel(editProvider?.label || "");
+    setExtraFields(config);
+    setCustomName(nextTab === "custom" ? editProvider?.name || "" : "");
+    setCustomDisplayName(nextTab === "custom" ? editProvider?.displayName || "" : "");
+    setCustomEndpoint(config.endpoint || "");
+    setCustomAuthType(config.authType || "bearer");
+    setCustomAuthHeader(config.authHeaderName || "Authorization");
+    setCustomBalancePath(config.balancePath || "$.balance");
+    setCustomCostPath(config.costPath || "$.cost");
+    setCustomRequestsPath(config.requestsPath || "$.requests");
+    setTrackCredits(!!config.creditsPath);
+    setCustomCreditsPath(config.creditsPath || "$.credits");
+    setBillingMode(editProvider?.plan?.billingMode ?? "manual");
+    setFixedMonthlyCostUsd(planNumber(editProvider?.plan?.fixedMonthlyCostUsd));
+    setMonthlyBudgetUsd(planNumber(editProvider?.plan?.monthlyBudgetUsd));
+    setMonthlyRequestLimit(planNumber(editProvider?.plan?.monthlyRequestLimit));
+    setLowBalanceUsd(planNumber(editProvider?.plan?.lowBalanceUsd));
+    setLowCredits(planNumber(editProvider?.plan?.lowCredits));
+    setRenewalDate(dateInputValue(editProvider?.plan?.renewalDate));
+    setMustKeepFunded(editProvider?.plan?.mustKeepFunded ?? false);
+    setPlanNotes(editProvider?.plan?.notes ?? "");
+  }, [editProvider, open]);
 
   if (!open) return null;
+
+  const parseNumberField = (value: string, labelText: string, integer = false) => {
+    const trimmed = value.trim();
+    if (!trimmed) return null;
+    const parsed = Number(trimmed);
+    if (!Number.isFinite(parsed) || parsed < 0) {
+      throw new Error(`${labelText} must be a non-negative number`);
+    }
+    if (integer && !Number.isInteger(parsed)) {
+      throw new Error(`${labelText} must be a whole number`);
+    }
+    return parsed;
+  };
+
+  const buildPlan = () => ({
+    billingMode,
+    fixedMonthlyCostUsd: parseNumberField(
+      fixedMonthlyCostUsd,
+      "Fixed monthly cost"
+    ),
+    monthlyBudgetUsd: parseNumberField(monthlyBudgetUsd, "Monthly budget"),
+    monthlyRequestLimit: parseNumberField(
+      monthlyRequestLimit,
+      "Monthly request limit",
+      true
+    ),
+    lowBalanceUsd: parseNumberField(lowBalanceUsd, "Low balance alert"),
+    lowCredits: parseNumberField(lowCredits, "Low credit alert"),
+    renewalDate: renewalDate || null,
+    mustKeepFunded,
+    notes: planNotes.trim() || null,
+  });
 
   const handleSave = async () => {
     setError("");
     setSaving(true);
 
     try {
+      const plan = buildPlan();
+
       if (tab === "builtin") {
         if (!selectedDef) {
           setError("Please select a provider");
@@ -184,6 +299,7 @@ export default function AddProviderModal({
           apiKey: apiKey || undefined,
           config: Object.keys(config).length > 0 ? config : undefined,
           label: label || undefined,
+          plan,
         });
       } else {
         if (!customName || !customDisplayName || !customEndpoint) {
@@ -212,6 +328,7 @@ export default function AddProviderModal({
           apiKey: apiKey || undefined,
           config,
           label: label || undefined,
+          plan,
         });
       }
       onClose();
@@ -221,6 +338,132 @@ export default function AddProviderModal({
       setSaving(false);
     }
   };
+
+  const renderBillingFields = () => (
+    <fieldset className="border border-gray-200 rounded-lg p-3 space-y-3">
+      <legend className="text-sm font-medium text-gray-700 px-1">
+        Billing and Limits
+      </legend>
+      <div>
+        <label className="block text-xs text-gray-500 mb-1">Cost visibility</label>
+        <select
+          value={billingMode}
+          onChange={(e) => setBillingMode(e.target.value as BillingMode)}
+          className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+        >
+          <option value="actual">Actual from provider</option>
+          <option value="estimated">Estimated from usage</option>
+          <option value="manual">Manual / plan price only</option>
+        </select>
+      </div>
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+        <div>
+          <label className="block text-xs text-gray-500 mb-1">
+            Plan price / mo
+          </label>
+          <input
+            type="number"
+            min="0"
+            step="0.01"
+            value={fixedMonthlyCostUsd}
+            onChange={(e) => setFixedMonthlyCostUsd(e.target.value)}
+            placeholder="49"
+            className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+          />
+        </div>
+        <div>
+          <label className="block text-xs text-gray-500 mb-1">
+            Budget / mo
+          </label>
+          <input
+            type="number"
+            min="0"
+            step="0.01"
+            value={monthlyBudgetUsd}
+            onChange={(e) => setMonthlyBudgetUsd(e.target.value)}
+            placeholder="100"
+            className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+          />
+        </div>
+      </div>
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+        <div>
+          <label className="block text-xs text-gray-500 mb-1">
+            Request limit / mo
+          </label>
+          <input
+            type="number"
+            min="0"
+            step="1"
+            value={monthlyRequestLimit}
+            onChange={(e) => setMonthlyRequestLimit(e.target.value)}
+            placeholder="100000"
+            className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+          />
+        </div>
+        <div>
+          <label className="block text-xs text-gray-500 mb-1">
+            Renewal date
+          </label>
+          <input
+            type="date"
+            value={renewalDate}
+            onChange={(e) => setRenewalDate(e.target.value)}
+            className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+          />
+        </div>
+      </div>
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+        <div>
+          <label className="block text-xs text-gray-500 mb-1">
+            Low balance alert
+          </label>
+          <input
+            type="number"
+            min="0"
+            step="0.01"
+            value={lowBalanceUsd}
+            onChange={(e) => setLowBalanceUsd(e.target.value)}
+            placeholder="10"
+            className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+          />
+        </div>
+        <div>
+          <label className="block text-xs text-gray-500 mb-1">
+            Low credit alert
+          </label>
+          <input
+            type="number"
+            min="0"
+            step="1"
+            value={lowCredits}
+            onChange={(e) => setLowCredits(e.target.value)}
+            placeholder="1000"
+            className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+          />
+        </div>
+      </div>
+      <label className="flex items-center gap-2 cursor-pointer">
+        <input
+          type="checkbox"
+          checked={mustKeepFunded}
+          onChange={(e) => setMustKeepFunded(e.target.checked)}
+          className="w-4 h-4 text-blue-600 border-gray-300 rounded focus:ring-blue-500"
+        />
+        <span className="text-sm text-gray-700">Must stay funded</span>
+      </label>
+      <div>
+        <label className="block text-xs text-gray-500 mb-1">Notes</label>
+        <textarea
+          value={planNotes}
+          onChange={(e) => setPlanNotes(e.target.value)}
+          rows={2}
+          placeholder="Plan name, billing owner, pricing caveats"
+          className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+        />
+      </div>
+    </fieldset>
+  );
 
   const renderExtraFields = () => {
     if (!selectedDef) return null;
@@ -423,10 +666,12 @@ export default function AddProviderModal({
               </div>
 
               {renderExtraFields()}
+
+              {renderBillingFields()}
             </div>
           ) : (
             <div className="space-y-4">
-              <div className="grid grid-cols-2 gap-4">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1">
                     Name (slug)
@@ -586,6 +831,8 @@ export default function AddProviderModal({
                   </div>
                 )}
               </fieldset>
+
+              {renderBillingFields()}
             </div>
           )}
 

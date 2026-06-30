@@ -16,6 +16,8 @@ services:
         generateValue: true
       - key: CRON_SECRET
         generateValue: true
+      - key: USAGE_INGEST_TOKEN
+        generateValue: true
 
   - type: cron
     name: fetch-all-usage

@@ -20,7 +20,25 @@ model Provider {
   groupId            String?
   label              String?
   createdAt          DateTime         @default(now())
+  plan               ProviderPlan?
   snapshots          UsageSnapshot[]
+}
+
+model ProviderPlan {
+  id                   String   @id @default(uuid())
+  providerId           String   @unique
+  provider             Provider @relation(fields: [providerId], references: [id], onDelete: Cascade)
+  billingMode          String   @default("manual")
+  fixedMonthlyCostUsd  Float?
+  monthlyBudgetUsd     Float?
+  monthlyRequestLimit  Int?
+  lowBalanceUsd        Float?
+  lowCredits           Float?
+  renewalDate          DateTime?
+  mustKeepFunded       Boolean  @default(false)
+  notes                String?
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
 }
 
 model UsageSnapshot {
@@ -34,4 +52,34 @@ model UsageSnapshot {
   credits       Float?
   rawData       Json?
   createdAt     DateTime @default(now())
+}
+
+model ExternalUsageEvent {
+  id          String   @id @default(uuid())
+  sourceApp   String
+  environment String?
+  provider    String
+  service     String?
+  label       String?
+  keyRef      String?
+  billingMode String   @default("estimated")
+  metricType  String   @default("usage")
+  quantity    Float?
+  unit        String?
+  costUsd     Float?
+  requests    Int?
+  credits     Float?
+  limit       Float?
+  limitWindow String?
+  tier        String?
+  confidence  String   @default("estimated")
+  windowStart DateTime?
+  windowEnd   DateTime?
+  occurredAt  DateTime
+  metadata    Json?
+  createdAt   DateTime @default(now())
+
+  @@index([sourceApp, occurredAt])
+  @@index([provider, occurredAt])
+  @@index([keyRef, occurredAt])
 }

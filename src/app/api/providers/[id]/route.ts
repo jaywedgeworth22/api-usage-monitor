@@ -1,6 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
+import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { encrypt } from "@/lib/crypto";
+import { parseProviderUpdateInput, readJsonBody } from "@/lib/provider-input";
+import { buildProviderAlertState } from "@/lib/provider-alerts";
+import { toPrismaProviderPlanData } from "@/lib/provider-plan";
 
 export async function GET(
   _request: NextRequest,
@@ -18,6 +22,20 @@ export async function GET(
       isActive: true,
       config: true,
       refreshIntervalMin: true,
+      groupId: true,
+      label: true,
+      plan: true,
+      snapshots: {
+        orderBy: { fetchedAt: "desc" },
+        take: 1,
+        select: {
+          balance: true,
+          totalCost: true,
+          totalRequests: true,
+          credits: true,
+          fetchedAt: true,
+        },
+      },
       createdAt: true,
     },
   });
@@ -26,7 +44,22 @@ export async function GET(
     return NextResponse.json({ error: "Not found" }, { status: 404 });
   }
 
-  return NextResponse.json(provider);
+  const { snapshots, ...rest } = provider;
+  const latestSnapshot = snapshots[0] ?? null;
+  const alertState = buildProviderAlertState({
+    isActive: provider.isActive,
+    refreshIntervalMin: provider.refreshIntervalMin,
+    plan: provider.plan,
+    latestSnapshot,
+  });
+
+  return NextResponse.json({
+    ...rest,
+    latestSnapshot,
+    alerts: alertState.alerts,
+    estimatedMonthlyCostUsd: alertState.estimatedMonthlyCostUsd,
+    billingMode: alertState.billingMode,
+  });
 }
 
 export async function PUT(
@@ -40,19 +73,41 @@ export async function PUT(
     return NextResponse.json({ error: "Not found" }, { status: 404 });
   }
 
-  const body = await request.json();
-  const { displayName, apiKey, config, isActive, refreshIntervalMin, groupId, label } = body;
+  let input;
+  try {
+    input = parseProviderUpdateInput(await readJsonBody(request));
+  } catch (error) {
+    return NextResponse.json(
+      { error: error instanceof Error ? error.message : "Invalid request" },
+      { status: 400 }
+    );
+  }
 
-  const updateData: Record<string, unknown> = {};
-  if (displayName !== undefined) updateData.displayName = displayName;
-  if (config !== undefined) updateData.config = config;
-  if (isActive !== undefined) updateData.isActive = isActive;
-  if (refreshIntervalMin !== undefined)
-    updateData.refreshIntervalMin = refreshIntervalMin;
-  if (groupId !== undefined) updateData.groupId = groupId;
-  if (label !== undefined) updateData.label = label;
-  if (apiKey !== undefined && apiKey !== "") {
-    updateData.apiKey = encrypt(apiKey);
+  const updateData: Prisma.ProviderUpdateInput = {};
+  if (input.displayName !== undefined) updateData.displayName = input.displayName;
+  if (input.config !== undefined) {
+    updateData.config =
+      input.config === null
+        ? Prisma.JsonNull
+        : (input.config as Prisma.InputJsonObject);
+  }
+  if (input.isActive !== undefined) updateData.isActive = input.isActive;
+  if (input.refreshIntervalMin !== undefined) {
+    updateData.refreshIntervalMin = input.refreshIntervalMin;
+  }
+  if (input.groupId !== undefined) updateData.groupId = input.groupId;
+  if (input.label !== undefined) updateData.label = input.label;
+  if (input.apiKey !== undefined) {
+    updateData.apiKey = encrypt(input.apiKey);
+  }
+  if (input.plan !== undefined) {
+    const planData = toPrismaProviderPlanData(input.plan);
+    updateData.plan = {
+      upsert: {
+        create: planData,
+        update: planData,
+      },
+    };
   }
 
   const provider = await prisma.provider.update({
@@ -67,6 +122,7 @@ export async function PUT(
       refreshIntervalMin: true,
       groupId: true,
       label: true,
+      plan: true,
       createdAt: true,
     },
   });

@@ -1,6 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
+import type { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { encrypt, decrypt } from "@/lib/crypto";
+import { parseProviderCreateInput, readJsonBody } from "@/lib/provider-input";
+import { buildProviderAlertState } from "@/lib/provider-alerts";
+import { toPrismaProviderPlanData } from "@/lib/provider-plan";
 
 function buildKeyPreview(encryptedKey: string | null): string | null {
   if (!encryptedKey) return null;
@@ -27,8 +31,23 @@ export async function GET() {
       refreshIntervalMin: true,
       groupId: true,
       label: true,
+      config: true,
       apiKey: true,
       createdAt: true,
+      plan: {
+        select: {
+          id: true,
+          billingMode: true,
+          fixedMonthlyCostUsd: true,
+          monthlyBudgetUsd: true,
+          monthlyRequestLimit: true,
+          lowBalanceUsd: true,
+          lowCredits: true,
+          renewalDate: true,
+          mustKeepFunded: true,
+          notes: true,
+        },
+      },
       snapshots: {
         orderBy: { fetchedAt: "desc" },
         take: 1,
@@ -46,10 +65,21 @@ export async function GET() {
   // Flatten latest snapshot into the provider object
   const result = providers.map((p) => {
     const { snapshots, apiKey, ...rest } = p;
+    const latestSnapshot = snapshots[0] ?? null;
+    const alertState = buildProviderAlertState({
+      isActive: p.isActive,
+      refreshIntervalMin: p.refreshIntervalMin,
+      plan: p.plan,
+      latestSnapshot,
+    });
+
     return {
       ...rest,
       keyPreview: buildKeyPreview(apiKey),
-      latestSnapshot: snapshots[0] ?? null,
+      latestSnapshot,
+      alerts: alertState.alerts,
+      estimatedMonthlyCostUsd: alertState.estimatedMonthlyCostUsd,
+      billingMode: alertState.billingMode,
     };
   });
 
@@ -57,31 +87,21 @@ export async function GET() {
 }
 
 export async function POST(request: NextRequest) {
-  const body = await request.json();
-
-  const {
-    name,
-    displayName,
-    type = "builtin",
-    apiKey,
-    config,
-    refreshIntervalMin,
-    groupId: bodyGroupId,
-    label,
-  } = body;
-
-  if (!name || !displayName) {
+  let input;
+  try {
+    input = parseProviderCreateInput(await readJsonBody(request));
+  } catch (error) {
     return NextResponse.json(
-      { error: "name and displayName are required" },
+      { error: error instanceof Error ? error.message : "Invalid request" },
       { status: 400 }
     );
   }
 
-  let groupId = bodyGroupId ?? undefined;
+  let groupId = input.groupId;
 
   if (!groupId) {
     const existingWithSameName = await prisma.provider.findFirst({
-      where: { name },
+      where: { name: input.name },
       orderBy: { createdAt: "asc" },
     });
 
@@ -89,27 +109,30 @@ export async function POST(request: NextRequest) {
       if (existingWithSameName.groupId) {
         groupId = existingWithSameName.groupId;
       } else {
-        groupId = name;
+        groupId = input.name;
         await prisma.provider.updateMany({
-          where: { name, groupId: null },
+          where: { name: input.name, groupId: null },
           data: { groupId },
         });
       }
     }
   }
 
-  const encryptedKey = apiKey ? encrypt(apiKey) : null;
+  const encryptedKey = input.apiKey ? encrypt(input.apiKey) : null;
 
   const provider = await prisma.provider.create({
     data: {
-      name,
-      displayName,
-      type,
+      name: input.name,
+      displayName: input.displayName,
+      type: input.type,
       apiKey: encryptedKey,
-      config: config ?? undefined,
-      refreshIntervalMin: refreshIntervalMin ?? 60,
+      config: input.config as Prisma.InputJsonObject | undefined,
+      refreshIntervalMin: input.refreshIntervalMin,
       groupId,
-      label,
+      label: input.label,
+      plan: input.plan
+        ? { create: toPrismaProviderPlanData(input.plan) }
+        : undefined,
     },
     select: {
       id: true,
@@ -120,6 +143,7 @@ export async function POST(request: NextRequest) {
       refreshIntervalMin: true,
       groupId: true,
       label: true,
+      plan: true,
       createdAt: true,
     },
   });

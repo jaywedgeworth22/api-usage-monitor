@@ -12,6 +12,23 @@ interface Provider {
   displayName: string;
   type: string;
   isActive: boolean;
+  label: string | null;
+  billingMode: "actual" | "estimated" | "manual";
+  estimatedMonthlyCostUsd: number;
+  plan: {
+    fixedMonthlyCostUsd: number | null;
+    monthlyBudgetUsd: number | null;
+    monthlyRequestLimit: number | null;
+    lowBalanceUsd: number | null;
+    lowCredits: number | null;
+    renewalDate: string | null;
+    mustKeepFunded: boolean;
+    notes: string | null;
+  } | null;
+  alerts: {
+    severity: "critical" | "warning" | "info";
+    message: string;
+  }[];
 }
 
 interface Snapshot {
@@ -57,6 +74,15 @@ export default function ProviderDetailPage() {
   }, [fetchData]);
 
   const hasCredits = snapshots.some((s) => s.credits != null);
+  const openAlerts = provider?.alerts.filter((a) => a.severity !== "info") ?? [];
+
+  const formatUsd = (amount: number | null | undefined) => {
+    if (amount == null) return "--";
+    return new Intl.NumberFormat("en-US", {
+      style: "currency",
+      currency: "USD",
+    }).format(amount);
+  };
 
   if (loading) {
     return (
@@ -101,8 +127,36 @@ export default function ProviderDetailPage() {
         </span>
       </div>
 
+      {openAlerts.length > 0 && (
+        <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
+          <div className="px-6 py-4 border-b border-gray-100">
+            <h2 className="text-sm font-semibold text-gray-700">Alerts</h2>
+          </div>
+          <div className="divide-y divide-gray-100">
+            {openAlerts.map((alert, index) => (
+              <div key={index} className="px-6 py-4 flex items-start gap-3">
+                <span
+                  className={`mt-0.5 text-xs font-medium px-2 py-1 rounded-full ${
+                    alert.severity === "critical"
+                      ? "bg-red-50 text-red-700"
+                      : "bg-amber-50 text-amber-700"
+                  }`}
+                >
+                  {alert.severity}
+                </span>
+                <p className="text-sm text-gray-700">{alert.message}</p>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
       {/* Summary stats */}
-      <div className={`grid ${hasCredits ? "grid-cols-4" : "grid-cols-3"} gap-4`}>
+      <div
+        className={`grid grid-cols-1 sm:grid-cols-2 ${
+          hasCredits ? "lg:grid-cols-5" : "lg:grid-cols-4"
+        } gap-4`}
+      >
         <div className="bg-white rounded-xl border border-gray-200 p-4">
           <p className="text-xs text-gray-500 mb-1">Balance</p>
           <BalanceBadge
@@ -113,12 +167,16 @@ export default function ProviderDetailPage() {
         <div className="bg-white rounded-xl border border-gray-200 p-4">
           <p className="text-xs text-gray-500 mb-1">Total Cost (30d)</p>
           <p className="text-lg font-semibold text-amber-600">
-            {latest?.totalCost != null
-              ? new Intl.NumberFormat("en-US", {
-                  style: "currency",
-                  currency: "USD",
-                }).format(latest.totalCost)
-              : "--"}
+            {formatUsd(latest?.totalCost)}
+          </p>
+        </div>
+        <div className="bg-white rounded-xl border border-gray-200 p-4">
+          <p className="text-xs text-gray-500 mb-1">Projected Monthly</p>
+          <p className="text-lg font-semibold text-gray-900">
+            {formatUsd(provider.estimatedMonthlyCostUsd)}
+          </p>
+          <p className="text-[10px] uppercase text-gray-400">
+            {provider.billingMode}
           </p>
         </div>
         {hasCredits && (
@@ -139,6 +197,47 @@ export default function ProviderDetailPage() {
               : "--"}
           </p>
         </div>
+      </div>
+
+      <div className="bg-white rounded-xl border border-gray-200 p-4">
+        <h2 className="text-sm font-semibold text-gray-700 mb-3">
+          Billing Plan
+        </h2>
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
+          <div>
+            <p className="text-xs text-gray-500 mb-1">Plan Price</p>
+            <p className="font-medium text-gray-900">
+              {formatUsd(provider.plan?.fixedMonthlyCostUsd)}
+            </p>
+          </div>
+          <div>
+            <p className="text-xs text-gray-500 mb-1">Monthly Budget</p>
+            <p className="font-medium text-gray-900">
+              {formatUsd(provider.plan?.monthlyBudgetUsd)}
+            </p>
+          </div>
+          <div>
+            <p className="text-xs text-gray-500 mb-1">Request Limit</p>
+            <p className="font-medium text-gray-900">
+              {provider.plan?.monthlyRequestLimit != null
+                ? new Intl.NumberFormat("en-US").format(
+                    provider.plan.monthlyRequestLimit
+                  )
+                : "--"}
+            </p>
+          </div>
+          <div>
+            <p className="text-xs text-gray-500 mb-1">Renewal</p>
+            <p className="font-medium text-gray-900">
+              {provider.plan?.renewalDate
+                ? new Date(provider.plan.renewalDate).toLocaleDateString()
+                : "--"}
+            </p>
+          </div>
+        </div>
+        {provider.plan?.notes && (
+          <p className="text-xs text-gray-500 mt-4">{provider.plan.notes}</p>
+        )}
       </div>
 
       {/* Chart */}

@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
-import { fetchProviderUsage } from "@/lib/adapters";
+import { recordProviderUsage } from "@/lib/usage-recorder";
 
 export async function POST(
   _request: NextRequest,
@@ -14,21 +14,21 @@ export async function POST(
   }
 
   try {
-    const usage = await fetchProviderUsage(provider);
+    const snapshot = await recordProviderUsage(provider);
 
-    const snapshot = await prisma.usageSnapshot.create({
-      data: {
-        providerId: provider.id,
-        fetchedAt: new Date(),
-        balance: usage.balance,
-        totalCost: usage.totalCost,
-        totalRequests: usage.totalRequests,
-        credits: usage.credits,
-        rawData: usage.rawData ?? undefined,
+    return NextResponse.json(
+      {
+        id: snapshot.id,
+        providerId: snapshot.providerId,
+        fetchedAt: snapshot.fetchedAt,
+        balance: snapshot.balance,
+        totalCost: snapshot.totalCost,
+        totalRequests: snapshot.totalRequests,
+        credits: snapshot.credits,
+        createdAt: snapshot.createdAt,
       },
-    });
-
-    return NextResponse.json(snapshot, { status: 201 });
+      { status: 201 }
+    );
   } catch (error) {
     const message = error instanceof Error ? error.message : "Failed to fetch";
     return NextResponse.json({ error: message }, { status: 500 });

@@ -3,16 +3,40 @@
 import { useState, useEffect, useCallback } from "react";
 import AddProviderModal from "@/components/AddProviderModal";
 
+type BillingMode = "actual" | "estimated" | "manual";
+
+interface ProviderPlan {
+  billingMode: BillingMode;
+  fixedMonthlyCostUsd: number | null;
+  monthlyBudgetUsd: number | null;
+  monthlyRequestLimit: number | null;
+  lowBalanceUsd: number | null;
+  lowCredits: number | null;
+  renewalDate: string | null;
+  mustKeepFunded: boolean;
+  notes: string | null;
+}
+
+interface ProviderAlert {
+  severity: "critical" | "warning" | "info";
+  message: string;
+}
+
 interface Provider {
   id: string;
   name: string;
   displayName: string;
   type: string;
+  config?: Record<string, unknown>;
   isActive: boolean;
   refreshIntervalMin: number;
   groupId: string | null;
   label: string | null;
   keyPreview?: string | null;
+  plan: ProviderPlan | null;
+  alerts: ProviderAlert[];
+  estimatedMonthlyCostUsd: number;
+  billingMode: BillingMode;
   createdAt: string;
   latestSnapshot: {
     balance: number | null;
@@ -59,6 +83,7 @@ export default function SettingsPage() {
     apiKey?: string;
     config?: Record<string, unknown>;
     label?: string | null;
+    plan?: ProviderPlan | null;
   }) => {
     if (provider.id) {
       const res = await fetch(`/api/providers/${provider.id}`, {
@@ -69,6 +94,7 @@ export default function SettingsPage() {
           apiKey: provider.apiKey,
           config: provider.config,
           label: provider.label,
+          plan: provider.plan,
         }),
       });
       if (!res.ok) {
@@ -141,9 +167,29 @@ export default function SettingsPage() {
     return new Date(dateStr).toLocaleString();
   };
 
+  const formatUsd = (amount: number | null | undefined) => {
+    if (amount == null) return "--";
+    return new Intl.NumberFormat("en-US", {
+      style: "currency",
+      currency: "USD",
+      maximumFractionDigits: 2,
+    }).format(amount);
+  };
+
+  const formatDateOnly = (dateStr: string | null | undefined) => {
+    if (!dateStr) return "--";
+    return new Date(dateStr).toLocaleDateString();
+  };
+
   const hasAnyCredits = providers.some(
     (p) => p.latestSnapshot?.credits != null
   );
+
+  const countProviderAlerts = (provider: Provider) => ({
+    open: provider.alerts.filter((a) => a.severity !== "info").length,
+    info: provider.alerts.filter((a) => a.severity === "info").length,
+    critical: provider.alerts.filter((a) => a.severity === "critical").length,
+  });
 
   if (loading) {
     return (
@@ -185,8 +231,8 @@ export default function SettingsPage() {
           </button>
         </div>
       ) : (
-        <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
-          <table className="w-full text-sm">
+        <div className="bg-white rounded-xl border border-gray-200 overflow-x-auto">
+          <table className="w-full min-w-[1100px] text-sm">
             <thead>
               <tr className="border-b border-gray-100 bg-gray-50">
                 <th className="text-left px-6 py-3 font-medium text-gray-500">
@@ -200,6 +246,15 @@ export default function SettingsPage() {
                 </th>
                 <th className="text-left px-6 py-3 font-medium text-gray-500">
                   Status
+                </th>
+                <th className="text-left px-6 py-3 font-medium text-gray-500">
+                  Spend / Budget
+                </th>
+                <th className="text-left px-6 py-3 font-medium text-gray-500">
+                  Renewal
+                </th>
+                <th className="text-left px-6 py-3 font-medium text-gray-500">
+                  Alerts
                 </th>
                 {hasAnyCredits && (
                   <th className="text-right px-6 py-3 font-medium text-gray-500">
@@ -215,7 +270,10 @@ export default function SettingsPage() {
               </tr>
             </thead>
             <tbody>
-              {providers.map((provider) => (
+              {providers.map((provider) => {
+                const alertCounts = countProviderAlerts(provider);
+
+                return (
                 <tr
                   key={provider.id}
                   className="border-b border-gray-50 hover:bg-gray-50"
@@ -263,6 +321,44 @@ export default function SettingsPage() {
                       />
                       {provider.isActive ? "Active" : "Inactive"}
                     </button>
+                  </td>
+                  <td className="px-6 py-4">
+                    <div className="text-xs">
+                      <p className="font-medium text-gray-900">
+                        {formatUsd(provider.estimatedMonthlyCostUsd)}
+                      </p>
+                      <p className="text-gray-400">
+                        Budget {formatUsd(provider.plan?.monthlyBudgetUsd)}
+                      </p>
+                      <span className="inline-flex mt-1 px-1.5 py-0.5 rounded bg-gray-100 text-[10px] font-medium uppercase text-gray-500">
+                        {provider.billingMode}
+                      </span>
+                    </div>
+                  </td>
+                  <td className="px-6 py-4 text-xs text-gray-500">
+                    {formatDateOnly(provider.plan?.renewalDate)}
+                  </td>
+                  <td className="px-6 py-4">
+                    {alertCounts.open > 0 ? (
+                      <span
+                        className={`inline-flex px-2 py-1 rounded-full text-xs font-medium ${
+                          alertCounts.critical > 0
+                            ? "bg-red-50 text-red-700"
+                            : "bg-amber-50 text-amber-700"
+                        }`}
+                      >
+                        {alertCounts.open}{" "}
+                        open
+                      </span>
+                    ) : alertCounts.info > 0 ? (
+                      <span className="inline-flex px-2 py-1 rounded-full bg-blue-50 text-blue-700 text-xs font-medium">
+                        Needs setup
+                      </span>
+                    ) : (
+                      <span className="inline-flex px-2 py-1 rounded-full bg-emerald-50 text-emerald-700 text-xs font-medium">
+                        OK
+                      </span>
+                    )}
                   </td>
                   {hasAnyCredits && (
                     <td className="px-6 py-4 text-right text-purple-600 text-xs">
@@ -321,7 +417,8 @@ export default function SettingsPage() {
                     </div>
                   </td>
                 </tr>
-              ))}
+              );
+              })}
             </tbody>
           </table>
         </div>

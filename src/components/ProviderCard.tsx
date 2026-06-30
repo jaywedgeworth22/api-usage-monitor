@@ -10,6 +10,12 @@ interface ProviderCardProps {
   type: string;
   label?: string | null;
   keyPreview?: string | null;
+  estimatedMonthlyCostUsd?: number;
+  billingMode?: "actual" | "estimated" | "manual";
+  alerts?: {
+    severity: "critical" | "warning" | "info";
+    message: string;
+  }[];
   latestSnapshot: {
     balance: number | null;
     totalCost: number | null;
@@ -53,6 +59,9 @@ export default function ProviderCard({
   type,
   label,
   keyPreview,
+  estimatedMonthlyCostUsd = 0,
+  billingMode = "manual",
+  alerts = [],
   latestSnapshot,
 }: ProviderCardProps) {
   const dotColor =
@@ -60,11 +69,20 @@ export default function ProviderCard({
 
   const isCreditBased = creditBasedProviders.has(name.toLowerCase());
   const hasCredits = latestSnapshot?.credits != null;
+  const openAlerts = alerts.filter((alert) => alert.severity !== "info");
+  const hasCritical = openAlerts.some((alert) => alert.severity === "critical");
 
   const formatNumber = (n: number | null) => {
     if (n == null) return "--";
     return new Intl.NumberFormat("en-US").format(n);
   };
+
+  const formatUsd = (amount: number) =>
+    new Intl.NumberFormat("en-US", {
+      style: "currency",
+      currency: "USD",
+      maximumFractionDigits: 2,
+    }).format(amount);
 
   return (
     <Link
@@ -84,9 +102,22 @@ export default function ProviderCard({
             <p className="text-[10px] text-gray-400 truncate font-mono">{keyPreview}</p>
           )}
         </div>
-        <span className="ml-auto text-xs font-medium text-gray-400 uppercase bg-gray-50 px-2 py-0.5 rounded flex-shrink-0">
-          {type}
-        </span>
+        <div className="ml-auto flex flex-col items-end gap-1 flex-shrink-0">
+          <span className="text-xs font-medium text-gray-400 uppercase bg-gray-50 px-2 py-0.5 rounded">
+            {type}
+          </span>
+          {openAlerts.length > 0 && (
+            <span
+              className={`text-[10px] font-medium px-2 py-0.5 rounded ${
+                hasCritical
+                  ? "bg-red-50 text-red-700"
+                  : "bg-amber-50 text-amber-700"
+              }`}
+            >
+              {openAlerts.length} alert{openAlerts.length === 1 ? "" : "s"}
+            </span>
+          )}
+        </div>
       </div>
 
       <div className="grid grid-cols-2 gap-4">
@@ -121,7 +152,26 @@ export default function ProviderCard({
             {formatNumber(latestSnapshot?.totalRequests ?? null)}
           </p>
         </div>
+        <div>
+          <p className="text-xs text-gray-500 mb-1">Monthly</p>
+          <p className="text-sm font-medium text-gray-900">
+            {formatUsd(estimatedMonthlyCostUsd)}
+          </p>
+          <p className="text-[10px] uppercase text-gray-400">{billingMode}</p>
+        </div>
       </div>
+
+      {openAlerts[0] && (
+        <p
+          className={`mt-3 text-xs rounded-lg px-3 py-2 ${
+            openAlerts[0].severity === "critical"
+              ? "bg-red-50 text-red-700"
+              : "bg-amber-50 text-amber-700"
+          }`}
+        >
+          {openAlerts[0].message}
+        </p>
+      )}
 
       {latestSnapshot && (
         <p className="mt-3 text-xs text-gray-400">

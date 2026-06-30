@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
-import { fetchProviderUsage } from "@/lib/adapters";
+import { recordProviderUsage } from "@/lib/usage-recorder";
 
 export async function GET(request: NextRequest) {
   const cronSecret = request.headers.get("x-cron-secret");
@@ -12,28 +12,39 @@ export async function GET(request: NextRequest) {
 
   const providers = await prisma.provider.findMany({
     where: { isActive: true },
+    include: {
+      snapshots: {
+        orderBy: { fetchedAt: "desc" },
+        take: 1,
+        select: { fetchedAt: true },
+      },
+    },
   });
 
   let successes = 0;
   let failures = 0;
+  let skipped = 0;
+  const errors: Array<{ providerId: string; name: string; error: string }> = [];
+  const now = Date.now();
 
-  for (const provider of providers) {
+  for (const { snapshots, ...provider } of providers) {
+    const latestFetchedAt = snapshots[0]?.fetchedAt.getTime();
+    const intervalMs = provider.refreshIntervalMin * 60 * 1000;
+    if (latestFetchedAt && now - latestFetchedAt < intervalMs) {
+      skipped++;
+      continue;
+    }
+
     try {
-      const usage = await fetchProviderUsage(provider);
-      await prisma.usageSnapshot.create({
-        data: {
-          providerId: provider.id,
-          fetchedAt: new Date(),
-          balance: usage.balance,
-          totalCost: usage.totalCost,
-          totalRequests: usage.totalRequests,
-          credits: usage.credits,
-          rawData: usage.rawData ?? undefined,
-        },
-      });
+      await recordProviderUsage(provider);
       successes++;
-    } catch {
+    } catch (error) {
       failures++;
+      errors.push({
+        providerId: provider.id,
+        name: provider.name,
+        error: error instanceof Error ? error.message : "Failed to fetch",
+      });
     }
   }
 
@@ -41,5 +52,7 @@ export async function GET(request: NextRequest) {
     total: providers.length,
     successes,
     failures,
+    skipped,
+    errors,
   });
 }
