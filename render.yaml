@@ -5,6 +5,7 @@ services:
   - type: web
     name: api-usage-monitor
     env: node
+    plan: starter
     buildCommand: npm install && npx prisma generate && npx prisma db push && npm run build
     startCommand: npm start
     envVars:
@@ -28,4 +29,4 @@ services:
 databases:
   - name: api-usage-monitor-db
     databaseName: api_usage_monitor
-    plan: free
+    plan: basic-256mb
