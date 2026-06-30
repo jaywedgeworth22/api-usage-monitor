@@ -3,6 +3,17 @@
 import { useState, Suspense } from "react";
 import { useSearchParams } from "next/navigation";
 
+// Only allow same-origin, relative redirect targets after login (e.g. "/" or
+// "/providers"). Rejects absolute/protocol-relative URLs (e.g.
+// "https://evil.example/" or "//evil.example/") that could be used to phish
+// a user immediately after they authenticate with the real dashboard
+// password, since `next` is attacker-controlled via the query string.
+function sanitizeNextPath(next: string | null): string {
+  if (!next) return "/";
+  if (!next.startsWith("/") || next.startsWith("//")) return "/";
+  return next;
+}
+
 function LoginForm() {
   const searchParams = useSearchParams();
   const [password, setPassword] = useState("");
@@ -23,7 +34,7 @@ function LoginForm() {
         const data = await res.json().catch(() => ({}));
         throw new Error(data.error || "Invalid password");
       }
-      const next = searchParams.get("next") || "/";
+      const next = sanitizeNextPath(searchParams.get("next"));
       window.location.href = next;
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to log in");

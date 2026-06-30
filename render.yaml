@@ -6,7 +6,21 @@ services:
     name: api-usage-monitor
     env: node
     plan: starter
-    buildCommand: npm install && npx prisma generate && npx prisma db push && npm run build
+    # --accept-data-loss is required because prisma db push always flags adding a
+    # new UNIQUE constraint as a potential data-loss risk (it cannot statically
+    # prove there are no duplicate values), even when the column is safely
+    # backfilled via a DB-level default (see ExternalUsageEvent.idempotencyKey in
+    # prisma/schema.prisma, which uses dbgenerated(gen_random_uuid()) so existing
+    # rows get unique values automatically). Verified locally against a real
+    # Postgres 16 instance with pre-existing ExternalUsageEvent rows: db push
+    # without this flag aborts with P3019-style "Use the --accept-data-loss flag"
+    # and makes no changes; with the flag, it succeeds and all pre-existing rows
+    # are preserved with backfilled idempotencyKey values. Any FUTURE schema
+    # change that adds a required column with no default to a populated table
+    # would also need this flag, and that case genuinely can lose/truncate data
+    # if --accept-data-loss is passed blindly - vet such changes (e.g. with
+    # `prisma migrate diff --script`) before merging.
+    buildCommand: npm install && npx prisma generate && npx prisma db push --accept-data-loss && npm run build
     startCommand: npm start
     envVars:
       - key: DATABASE_URL

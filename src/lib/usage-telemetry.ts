@@ -146,6 +146,18 @@ function readMetadata(
   return Object.keys(clean).length ? clean : undefined;
 }
 
+// Length-prefixes each field before joining, so two fields that straddle a
+// delimiter character (e.g. provider="b|c" + keyRef="" vs provider="b" +
+// keyRef="c") can never hash to the same basis string. Each field is encoded
+// as `<utf8-byte-length>:<value>` (a la netstrings), which is unambiguous
+// because the length prefix tells the reader exactly where the value ends -
+// no value can contain a byte sequence that gets misread as a boundary.
+// CONTRACT: this MUST stay byte-for-byte identical to the client-side
+// algorithm in the congress-trading-shared package's usageTelemetry.ts.
+function encodeIdempotencyField(value: string): string {
+  return `${Buffer.byteLength(value, "utf8")}:${value}`;
+}
+
 function deriveIdempotencyKey(
   record: Record<string, unknown>,
   resolved: { sourceApp: string; provider: string; metricType: string; keyRef?: string }
@@ -161,9 +173,9 @@ function deriveIdempotencyKey(
     return crypto
       .createHash("sha256")
       .update(
-        [resolved.sourceApp, resolved.provider, resolved.metricType, resolved.keyRef ?? "", rawOccurredAt].join(
-          "|"
-        )
+        [resolved.sourceApp, resolved.provider, resolved.metricType, resolved.keyRef ?? "", rawOccurredAt]
+          .map(encodeIdempotencyField)
+          .join("")
       )
       .digest("hex");
   }
