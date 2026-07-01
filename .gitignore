@@ -4,3 +4,11 @@ node_modules/
 *.log
 .DS_Store
 tsconfig.tsbuildinfo
+
+# Local SQLite dev database (Prisma's `prisma db push`/`prisma migrate dev`
+# create these next to prisma/schema.prisma; SQLite also creates -journal
+# and, in WAL mode, -wal/-shm sidecar files alongside the main .db file)
+*.db
+*.db-journal
+*.db-wal
+*.db-shm

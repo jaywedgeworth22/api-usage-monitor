@@ -1,7 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
-import { prisma } from "@/lib/prisma";
-import { recordProviderUsage } from "@/lib/usage-recorder";
+import { fetchAllDueProviders } from "@/lib/usage-recorder";
 
+// This endpoint is no longer called on a schedule (usage polling now runs
+// in-process, see src/instrumentation.ts / src/lib/usage-recorder.ts). It's
+// kept as an authenticated manual-trigger/debug route - cheap to keep and
+// useful for on-demand triggering.
 export async function GET(request: NextRequest) {
   const cronSecret = request.headers.get("x-cron-secret");
   const expectedSecret = process.env.CRON_SECRET;
@@ -10,49 +13,7 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  const providers = await prisma.provider.findMany({
-    where: { isActive: true },
-    include: {
-      snapshots: {
-        orderBy: { fetchedAt: "desc" },
-        take: 1,
-        select: { fetchedAt: true },
-      },
-    },
-  });
+  const result = await fetchAllDueProviders();
 
-  let successes = 0;
-  let failures = 0;
-  let skipped = 0;
-  const errors: Array<{ providerId: string; name: string; error: string }> = [];
-  const now = Date.now();
-
-  for (const { snapshots, ...provider } of providers) {
-    const latestFetchedAt = snapshots[0]?.fetchedAt.getTime();
-    const intervalMs = provider.refreshIntervalMin * 60 * 1000;
-    if (latestFetchedAt && now - latestFetchedAt < intervalMs) {
-      skipped++;
-      continue;
-    }
-
-    try {
-      await recordProviderUsage(provider);
-      successes++;
-    } catch (error) {
-      failures++;
-      errors.push({
-        providerId: provider.id,
-        name: provider.name,
-        error: error instanceof Error ? error.message : "Failed to fetch",
-      });
-    }
-  }
-
-  return NextResponse.json({
-    total: providers.length,
-    successes,
-    failures,
-    skipped,
-    errors,
-  });
+  return NextResponse.json(result);
 }

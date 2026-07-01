@@ -3,7 +3,7 @@ generator client {
 }
 
 datasource db {
-  provider = "postgresql"
+  provider = "sqlite"
   url      = env("DATABASE_URL")
 }
 
@@ -56,16 +56,14 @@ model UsageSnapshot {
 
 model ExternalUsageEvent {
   id             String   @id @default(uuid())
-  // dbgenerated(gen_random_uuid()) is a DATABASE-level default (unlike Prisma's
-  // client-side @default(uuid())), so `prisma db push` can add this NOT NULL
-  // UNIQUE column to a non-empty production table by backfilling existing rows
-  // with generated UUIDs at the SQL level, without --accept-data-loss or a
-  // separate manual migration. The app always supplies an explicit,
-  // content-derived idempotencyKey on insert (see usage-telemetry.ts); this
-  // default only ever applies to rows that existed before this column did.
-  // Requires the pgcrypto extension (gen_random_uuid()) to be available, which
-  // is built into Postgres 13+ and enabled by default on Render Postgres.
-  idempotencyKey String   @unique @default(dbgenerated("gen_random_uuid()::text"))
+  // Prisma's client-side @default(uuid()) generates the value in the app process
+  // before the INSERT is sent, so it works the same way on SQLite as it does on
+  // any other datasource - no database-side function (e.g. Postgres's
+  // gen_random_uuid()/pgcrypto) is required. In practice this default is a
+  // safety net that's essentially never exercised: the app always supplies an
+  // explicit, content-derived idempotencyKey on insert (see
+  // usage-telemetry.ts's deriveIdempotencyKey).
+  idempotencyKey String   @unique @default(uuid())
   sourceApp      String
   environment    String?
   provider       String
