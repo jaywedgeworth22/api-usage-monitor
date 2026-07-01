@@ -7,7 +7,7 @@ export const config = {
     // Exclusions are anchored to full path segments (via `(?:/|$)`) so that
     // routes merely *prefixed* with an excluded name (e.g. /api/crontab,
     // /api/ingestor, /loginpage) are NOT accidentally left unauthenticated.
-    "/((?!_next/static|_next/image|favicon\\.ico|login(?:/|$)|api/auth/login(?:/|$)|api/cron(?:/|$)|api/ingest(?:/|$)).*)",
+    "/((?!_next/static|_next/image|favicon\\.ico|login(?:/|$)|api/auth/login(?:/|$)|api/cron(?:/|$)|api/ingest(?:/|$)|api/health(?:/|$)).*)",
   ],
 };
 

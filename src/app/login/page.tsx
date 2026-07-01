@@ -8,10 +8,19 @@ import { useSearchParams } from "next/navigation";
 // "https://evil.example/" or "//evil.example/") that could be used to phish
 // a user immediately after they authenticate with the real dashboard
 // password, since `next` is attacker-controlled via the query string.
+//
+// Browsers strip ASCII tab/CR/LF before parsing a URL and treat backslashes
+// the same as forward slashes in relative URLs, so a value that looks safe
+// here (starts with a single "/") can still resolve to a protocol-relative
+// off-site redirect once assigned to window.location.href — e.g.
+// "/\evil.example/" is parsed as "//evil.example/" -> https://evil.example/.
+// Strip the whitespace trick first, then reject any backslash outright.
 function sanitizeNextPath(next: string | null): string {
   if (!next) return "/";
-  if (!next.startsWith("/") || next.startsWith("//")) return "/";
-  return next;
+  const stripped = next.replace(/[\t\r\n]/g, "");
+  if (stripped.includes("\\")) return "/";
+  if (!stripped.startsWith("/") || stripped.startsWith("//")) return "/";
+  return stripped;
 }
 
 function LoginForm() {
