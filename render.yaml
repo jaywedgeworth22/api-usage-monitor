@@ -16,6 +16,13 @@ services:
       name: api-usage-monitor-data
       mountPath: /data
       sizeGB: 1
+    # Render only mounts a service's persistent disk at RUNTIME, not during the
+    # build step (the build environment's filesystem is read-only at /data) -
+    # confirmed empirically: `prisma db push` in buildCommand failed with
+    # "Read-only file system" trying to create /data/prod.db. So the schema
+    # push has to run in startCommand instead, once the disk is actually
+    # mounted, before `npm start` boots the server.
+    #
     # --accept-data-loss is required because prisma db push always flags certain
     # schema changes as a potential data-loss risk that it cannot statically
     # prove is safe. On SQLite specifically, be extra cautious with this flag:
@@ -27,8 +34,8 @@ services:
     # change here should be reviewed carefully - e.g. by running
     # `prisma migrate diff --script` against a copy of the real production SQLite
     # file - before assuming --accept-data-loss is safe to keep passing blindly.
-    buildCommand: npm install && npx prisma generate && npx prisma db push --accept-data-loss && npm run build
-    startCommand: npm start
+    buildCommand: npm install && npx prisma generate && npm run build
+    startCommand: npx prisma db push --accept-data-loss && npm start
     envVars:
       - key: DATABASE_URL
         value: file:/data/prod.db
