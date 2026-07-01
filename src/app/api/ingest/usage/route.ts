@@ -47,31 +47,39 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  await prisma.externalUsageEvent.createMany({
-    data: events.map((event) => ({
-      sourceApp: event.sourceApp,
-      environment: event.environment,
-      provider: event.provider,
-      service: event.service,
-      label: event.label,
-      keyRef: event.keyRef,
-      billingMode: event.billingMode,
-      metricType: event.metricType,
-      quantity: event.quantity,
-      unit: event.unit,
-      costUsd: event.costUsd,
-      requests: event.requests,
-      credits: event.credits,
-      limit: event.limit,
-      limitWindow: event.limitWindow,
-      tier: event.tier,
-      confidence: event.confidence,
-      windowStart: event.windowStart,
-      windowEnd: event.windowEnd,
-      occurredAt: event.occurredAt,
-      metadata: event.metadata as Prisma.InputJsonObject | undefined,
-    })),
-  });
+  await prisma.$transaction(
+    events.map((event) => {
+      const fields = {
+        sourceApp: event.sourceApp,
+        environment: event.environment,
+        provider: event.provider,
+        service: event.service,
+        label: event.label,
+        keyRef: event.keyRef,
+        billingMode: event.billingMode,
+        metricType: event.metricType,
+        quantity: event.quantity,
+        unit: event.unit,
+        costUsd: event.costUsd,
+        requests: event.requests,
+        credits: event.credits,
+        limit: event.limit,
+        limitWindow: event.limitWindow,
+        tier: event.tier,
+        confidence: event.confidence,
+        windowStart: event.windowStart,
+        windowEnd: event.windowEnd,
+        occurredAt: event.occurredAt,
+        metadata: event.metadata as Prisma.InputJsonObject | undefined,
+      };
+      return prisma.externalUsageEvent.upsert({
+        where: { idempotencyKey: event.idempotencyKey },
+        create: { idempotencyKey: event.idempotencyKey, ...fields },
+        // A duplicate replay (retry) is a no-op: first write wins.
+        update: {},
+      });
+    })
+  );
 
   return NextResponse.json({ ok: true, accepted: events.length }, { status: 202 });
 }

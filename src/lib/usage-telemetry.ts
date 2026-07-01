@@ -1,3 +1,5 @@
+import crypto from "crypto";
+
 const MAX_EVENTS = 100;
 const MAX_METADATA_KEYS = 50;
 const MAX_METADATA_STRING_LENGTH = 500;
@@ -41,6 +43,7 @@ export interface ParsedUsageTelemetryEvent {
   windowEnd?: Date;
   occurredAt: Date;
   metadata?: Record<string, string | number | boolean | null>;
+  idempotencyKey: string;
 }
 
 function asRecord(value: unknown): Record<string, unknown> {
@@ -143,23 +146,100 @@ function readMetadata(
   return Object.keys(clean).length ? clean : undefined;
 }
 
+// Length-prefixes each field before joining, so two fields that straddle a
+// delimiter character (e.g. provider="b|c" + keyRef="" vs provider="b" +
+// keyRef="c") can never hash to the same basis string. Each field is encoded
+// as `<utf8-byte-length>:<value>` (a la netstrings), which is unambiguous
+// because the length prefix tells the reader exactly where the value ends -
+// no value can contain a byte sequence that gets misread as a boundary.
+// CONTRACT: this MUST stay byte-for-byte identical to the client-side
+// algorithm in the congress-trading-shared package's usageTelemetry.ts.
+function encodeIdempotencyField(value: string): string {
+  return `${Buffer.byteLength(value, "utf8")}:${value}`;
+}
+
+function deriveIdempotencyKey(
+  record: Record<string, unknown>,
+  resolved: {
+    sourceApp: string;
+    provider: string;
+    metricType: string;
+    keyRef?: string;
+    environment?: string;
+    service?: string;
+    label?: string;
+    quantity?: number;
+    costUsd?: number;
+    requests?: number;
+    credits?: number;
+  }
+): string {
+  const explicit = readString(record, "idempotencyKey", { max: 200 });
+  if (explicit) return explicit;
+
+  // Derive from the raw (pre-default) occurredAt string the caller sent, so that
+  // retries of the same logical event collapse to the same key. This fallback
+  // only runs when the caller sends no explicit idempotencyKey, so it's the
+  // *only* signal separating two such events - it must include every field
+  // that can legitimately differ between two rows of a batched snapshot that
+  // happen to share sourceApp/provider/metricType/keyRef/occurredAt, or the
+  // second row silently collides with the first and its data is dropped.
+  const rawOccurredAt = readString(record, "occurredAt", { max: 80 });
+  if (rawOccurredAt) {
+    const basisFields = [
+      resolved.sourceApp,
+      resolved.provider,
+      resolved.metricType,
+      resolved.keyRef ?? "",
+      resolved.environment ?? "",
+      resolved.service ?? "",
+      resolved.label ?? "",
+      resolved.quantity != null ? String(resolved.quantity) : "",
+      resolved.costUsd != null ? String(resolved.costUsd) : "",
+      resolved.requests != null ? String(resolved.requests) : "",
+      resolved.credits != null ? String(resolved.credits) : "",
+      rawOccurredAt,
+    ];
+    return crypto
+      .createHash("sha256")
+      .update(basisFields.map(encodeIdempotencyField).join(""))
+      .digest("hex");
+  }
+
+  // No stable basis to dedupe on (no explicit key, no occurredAt supplied) -
+  // fall back to a random key, which means no idempotency guarantee for this event.
+  return crypto.randomUUID();
+}
+
 function parseEvent(value: unknown): ParsedUsageTelemetryEvent {
   const record = asRecord(value);
   const occurredAt = readDate(record, "occurredAt") ?? new Date();
+  const sourceApp = readString(record, "sourceApp", { required: true, max: 80 })!;
+  const provider = readString(record, "provider", { required: true, max: 80 })!;
+  const metricType = readEnum(record, "metricType", metricTypes, "usage");
+  const keyRef = readString(record, "keyRef", { max: 160 });
+  const environment = readString(record, "environment", { max: 80 });
+  const service = readString(record, "service", { max: 120 });
+  const label = readString(record, "label", { max: 160 });
+  const quantity = readNumber(record, "quantity");
+  const costUsd = readNumber(record, "costUsd");
+  const requests = readInteger(record, "requests");
+  const credits = readNumber(record, "credits");
+
   return {
-    sourceApp: readString(record, "sourceApp", { required: true, max: 80 })!,
-    environment: readString(record, "environment", { max: 80 }),
-    provider: readString(record, "provider", { required: true, max: 80 })!,
-    service: readString(record, "service", { max: 120 }),
-    label: readString(record, "label", { max: 160 }),
-    keyRef: readString(record, "keyRef", { max: 160 }),
+    sourceApp,
+    environment,
+    provider,
+    service,
+    label,
+    keyRef,
     billingMode: readEnum(record, "billingMode", billingModes, "estimated"),
-    metricType: readEnum(record, "metricType", metricTypes, "usage"),
-    quantity: readNumber(record, "quantity"),
+    metricType,
+    quantity,
     unit: readOptionalEnum(record, "unit", units),
-    costUsd: readNumber(record, "costUsd"),
-    requests: readInteger(record, "requests"),
-    credits: readNumber(record, "credits"),
+    costUsd,
+    requests,
+    credits,
     limit: readNumber(record, "limit"),
     limitWindow: readOptionalEnum(record, "limitWindow", limitWindows),
     tier: readString(record, "tier", { max: 80 }),
@@ -168,6 +248,19 @@ function parseEvent(value: unknown): ParsedUsageTelemetryEvent {
     windowEnd: readDate(record, "windowEnd"),
     occurredAt,
     metadata: readMetadata(record),
+    idempotencyKey: deriveIdempotencyKey(record, {
+      sourceApp,
+      provider,
+      metricType,
+      keyRef,
+      environment,
+      service,
+      label,
+      quantity,
+      costUsd,
+      requests,
+      credits,
+    }),
   };
 }
 
