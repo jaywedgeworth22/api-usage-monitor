@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback } from "react";
 import Link from "next/link";
 import ProviderCard from "@/components/ProviderCard";
+import SentryHealthCard from "@/components/SentryHealthCard";
 
 interface Provider {
   id: string;
@@ -295,6 +296,8 @@ export default function DashboardPage() {
           )}
         </div>
       )}
+
+      <SentryHealthCard />
 
       <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
         <div className="px-6 py-4 border-b border-gray-100 flex items-center justify-between">

@@ -51,8 +51,14 @@
 - `CRON_SECRET` (auto-generated; the `/api/cron/fetch-all` route still checks
   this, kept as an authenticated manual-trigger/debug endpoint even though
   nothing calls it on a schedule anymore)
-- `USAGE_INGEST_TOKEN` (auto-generated; copy this into reporting apps as their usage monitor ingest token)
+- `USAGE_INGEST_TOKEN` (auto-generated; copy this into reporting apps as their usage monitor ingest
+  token — this is also the token Claude Code's OTLP exporter authenticates with against
+  `POST /api/otlp/v1/metrics`, see AGENTS.md's "Claude Code OTLP ingest" section)
 - `DASHBOARD_PASSWORD` (auto-generated; after the first deploy, copy this value from Render's Environment tab to log in at `/login`)
+- `SENTRY_READ_TOKEN` (optional; enables the read-only Sentry Health dashboard card, an org-auth
+  token or internal integration token with `project:read`/`event:read` scope — never sent to the
+  client, absent by default)
+- `SENTRY_ORG` (optional; Sentry org slug for the Health card, defaults to `jays-services`)
 
 ## SSL/TLS
 - Cloudflare handles SSL with "Full (strict)" mode
