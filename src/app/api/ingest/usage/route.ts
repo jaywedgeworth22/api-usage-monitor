@@ -3,9 +3,14 @@ import { NextRequest, NextResponse } from "next/server";
 import type { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { parseUsageTelemetryBatch } from "@/lib/usage-telemetry";
+import { createRateLimiter, getClientIp } from "@/lib/rate-limit";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
+
+// 10 requests per second per source IP — generous enough for normal
+// fire-and-forget telemetry pushes while preventing abuse.
+const ingestRateLimiter = createRateLimiter(1_000, 10);
 
 function tokenFromRequest(request: NextRequest): string {
   const authorization = request.headers.get("authorization") ?? "";
@@ -31,6 +36,14 @@ function isAuthorized(request: NextRequest): boolean {
 export async function POST(request: NextRequest) {
   if (!process.env.USAGE_INGEST_TOKEN?.trim()) {
     return NextResponse.json({ error: "Usage ingest is not configured" }, { status: 503 });
+  }
+
+  const ip = getClientIp(request);
+  if (!ingestRateLimiter.check(ip)) {
+    return NextResponse.json(
+      { error: "Too many requests. Slow down." },
+      { status: 429 }
+    );
   }
 
   if (!isAuthorized(request)) {
