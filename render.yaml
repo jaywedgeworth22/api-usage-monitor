@@ -43,3 +43,11 @@ services:
         generateValue: true
       - key: DASHBOARD_PASSWORD
         generateValue: true
+      # Optional: enables the read-only Sentry Health dashboard card
+      # (GET /api/sentry-health). `sync: false` means Render won't generate
+      # or sync a value - set these manually in the dashboard's Environment
+      # tab if/when wanted; the card renders nothing while they're unset.
+      - key: SENTRY_READ_TOKEN
+        sync: false
+      - key: SENTRY_ORG
+        sync: false

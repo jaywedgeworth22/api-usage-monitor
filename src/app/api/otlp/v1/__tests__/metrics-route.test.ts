@@ -1,0 +1,234 @@
+import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
+import { execSync } from "child_process";
+import fs from "fs";
+import os from "os";
+import path from "path";
+import { NextRequest } from "next/server";
+import protobuf from "protobufjs";
+
+// This test exercises the real POST /api/otlp/v1/metrics route handler
+// against a throwaway SQLite file (never the dev `data`/`dev.db`), following
+// this repo's convention (see src/lib/__tests__/usage-telemetry.test.ts's
+// sibling contract test in congress-trading-shared, and Socratic.Trade's
+// documented `DATABASE_URL=file:<tmpdir>/...` pattern) of pointing
+// DATABASE_URL at a fresh tmp file before the Prisma client module loads.
+
+let dbPath: string;
+let POST: typeof import("../metrics/route").POST;
+let prisma: typeof import("@/lib/prisma").prisma;
+
+beforeAll(async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "otlp-metrics-test-"));
+  dbPath = path.join(dir, "test.db");
+  process.env.DATABASE_URL = `file:${dbPath}`;
+  process.env.USAGE_INGEST_TOKEN = "test-token-123";
+
+  execSync("npx prisma db push --skip-generate --accept-data-loss", {
+    cwd: process.cwd(),
+    env: { ...process.env, DATABASE_URL: `file:${dbPath}` },
+    stdio: "pipe",
+  });
+
+  ({ POST } = await import("../metrics/route"));
+  ({ prisma } = await import("@/lib/prisma"));
+});
+
+afterAll(async () => {
+  await prisma?.$disconnect();
+  if (dbPath && fs.existsSync(dbPath)) fs.rmSync(dbPath);
+});
+
+beforeEach(async () => {
+  await prisma.externalUsageEvent.deleteMany({ where: { sourceApp: "claude-code" } });
+  await prisma.provider.deleteMany({ where: { name: { in: ["anthropic", "Anthropic"] } } });
+});
+
+// Each call gets its own x-forwarded-for so tests don't share the route
+// module's in-memory rate-limit bucket (rate limiting itself isn't what
+// these tests are checking; a shared IP across ~10+ requests in one file
+// would otherwise start tripping the 10-req/sec limiter as a test-isolation
+// artifact, not a real bug).
+let ipCounter = 0;
+function jsonRequest(body: unknown, headers: Record<string, string> = {}): NextRequest {
+  ipCounter += 1;
+  return new NextRequest("https://usage.jays.services/api/otlp/v1/metrics", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "x-forwarded-for": `10.0.0.${ipCounter}`,
+      ...headers,
+    },
+    body: JSON.stringify(body),
+  });
+}
+
+const samplePayload = {
+  resourceMetrics: [
+    {
+      resource: {
+        attributes: [{ key: "service.name", value: { stringValue: "claude-code" } }],
+      },
+      scopeMetrics: [
+        {
+          scope: { name: "com.anthropic.claude_code" },
+          metrics: [
+            {
+              name: "claude_code.cost.usage",
+              unit: "USD",
+              sum: {
+                aggregationTemporality: 2,
+                isMonotonic: true,
+                dataPoints: [
+                  {
+                    attributes: [{ key: "model", value: { stringValue: "claude-sonnet-5" } }],
+                    startTimeUnixNano: "1751500000000000000",
+                    timeUnixNano: "1751500060000000000",
+                    asDouble: 0.0231,
+                  },
+                ],
+              },
+            },
+          ],
+        },
+      ],
+    },
+  ],
+};
+
+describe("POST /api/otlp/v1/metrics", () => {
+  it("rejects requests with no auth header", async () => {
+    const res = await POST(jsonRequest(samplePayload));
+    expect(res.status).toBe(401);
+  });
+
+  it("rejects requests with the wrong token", async () => {
+    const res = await POST(jsonRequest(samplePayload, { authorization: "Bearer wrong-token" }));
+    expect(res.status).toBe(401);
+  });
+
+  it("accepts a valid bearer token and writes a usage row", async () => {
+    const res = await POST(jsonRequest(samplePayload, { authorization: "Bearer test-token-123" }));
+    expect(res.status).toBe(202);
+    const body = await res.json();
+    expect(body.ok).toBe(true);
+    expect(body.accepted).toBe(1);
+
+    const rows = await prisma.externalUsageEvent.findMany({ where: { sourceApp: "claude-code" } });
+    expect(rows).toHaveLength(1);
+    expect(rows[0].provider).toBe("anthropic");
+    expect(rows[0].service).toBe("claude-code");
+    expect(rows[0].costUsd).toBeCloseTo(0.0231);
+  });
+
+  it("lazily seeds an anthropic Provider row with no budget on first ingest", async () => {
+    const before = await prisma.provider.findMany({ where: { name: "anthropic" } });
+    expect(before).toHaveLength(0);
+
+    const res = await POST(jsonRequest(samplePayload, { authorization: "Bearer test-token-123" }));
+    expect(res.status).toBe(202);
+
+    const after = await prisma.provider.findMany({ where: { name: "anthropic" }, include: { plan: true } });
+    expect(after).toHaveLength(1);
+    expect(after[0].displayName).toBe("Anthropic (Claude Code)");
+    expect(after[0].plan).toBeNull();
+  });
+
+  it("does not create a second anthropic provider row if one already exists", async () => {
+    await prisma.provider.create({
+      data: { name: "anthropic", displayName: "Anthropic", type: "builtin", refreshIntervalMin: 60 },
+    });
+
+    const res = await POST(jsonRequest(samplePayload, { authorization: "Bearer test-token-123" }));
+    expect(res.status).toBe(202);
+
+    const providers = await prisma.provider.findMany({ where: { name: "anthropic" } });
+    expect(providers).toHaveLength(1);
+    // The pre-existing row (created by the user via the poll adapter flow)
+    // is left untouched, not overwritten.
+    expect(providers[0].displayName).toBe("Anthropic");
+  });
+
+  it("accepts the x-usage-ingest-token header as an alternative to Authorization", async () => {
+    const res = await POST(jsonRequest(samplePayload, { "x-usage-ingest-token": "test-token-123" }));
+    expect(res.status).toBe(202);
+  });
+
+  it("is idempotent: posting the identical payload twice does not double-count", async () => {
+    const first = await POST(jsonRequest(samplePayload, { authorization: "Bearer test-token-123" }));
+    expect(first.status).toBe(202);
+    const second = await POST(jsonRequest(samplePayload, { authorization: "Bearer test-token-123" }));
+    expect(second.status).toBe(202);
+
+    const rows = await prisma.externalUsageEvent.findMany({ where: { sourceApp: "claude-code" } });
+    expect(rows).toHaveLength(1);
+  });
+
+  it("tolerates unknown metric names without a 500 and does not persist them", async () => {
+    const payload = {
+      resourceMetrics: [
+        {
+          scopeMetrics: [
+            {
+              metrics: [
+                {
+                  name: "claude_code.brand_new_metric.count",
+                  sum: { dataPoints: [{ timeUnixNano: "1751500060000000000", asInt: "3" }] },
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    };
+    const res = await POST(jsonRequest(payload, { authorization: "Bearer test-token-123" }));
+    expect(res.status).toBe(202);
+    const body = await res.json();
+    expect(body.accepted).toBe(0);
+    expect(body.unknownMetrics).toEqual([
+      { name: "claude_code.brand_new_metric.count", dataPointCount: 1 },
+    ]);
+
+    const rows = await prisma.externalUsageEvent.findMany({ where: { sourceApp: "claude-code" } });
+    expect(rows).toHaveLength(0);
+  });
+
+  it("rejects a gRPC-style content type with a helpful 415", async () => {
+    const res = await POST(
+      jsonRequest(samplePayload, {
+        authorization: "Bearer test-token-123",
+        "content-type": "application/grpc",
+      })
+    );
+    expect(res.status).toBe(415);
+    const body = await res.json();
+    expect(body.error).toMatch(/http\/json|http\/protobuf/);
+  });
+
+  it("decodes a valid application/x-protobuf body", async () => {
+    const protoDir = path.join(process.cwd(), "src/lib/otlp/proto");
+    const root = new protobuf.Root();
+    root.resolvePath = (_origin: string, importPath: string) =>
+      path.isAbsolute(importPath) ? importPath : path.join(protoDir, importPath);
+    root.loadSync("opentelemetry/proto/collector/metrics/v1/metrics_service.proto");
+    const RequestType = root.lookupType(
+      "opentelemetry.proto.collector.metrics.v1.ExportMetricsServiceRequest"
+    );
+    const message = RequestType.fromObject(samplePayload);
+    const bytes = RequestType.encode(message).finish();
+
+    ipCounter += 1;
+    const request = new NextRequest("https://usage.jays.services/api/otlp/v1/metrics", {
+      method: "POST",
+      headers: {
+        "content-type": "application/x-protobuf",
+        authorization: "Bearer test-token-123",
+        "x-forwarded-for": `10.0.0.${ipCounter}`,
+      },
+      body: Buffer.from(bytes),
+    });
+    const res = await POST(request);
+    expect(res.status).toBe(202);
+    const body = await res.json();
+    expect(body.accepted).toBe(1);
+  });
+});
