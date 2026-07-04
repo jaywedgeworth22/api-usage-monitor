@@ -5,15 +5,27 @@ import {
   createSessionToken,
   verifyPassword,
 } from "@/lib/auth";
+import { createRateLimiter, getClientIp } from "@/lib/rate-limit";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
+
+// 5 attempts per IP per minute
+const loginRateLimiter = createRateLimiter(60_000, 5);
 
 export async function POST(request: NextRequest) {
   if (!process.env.DASHBOARD_PASSWORD?.trim()) {
     return NextResponse.json(
       { error: "Dashboard auth is not configured" },
       { status: 503 }
+    );
+  }
+
+  const ip = getClientIp(request);
+  if (!loginRateLimiter.check(ip)) {
+    return NextResponse.json(
+      { error: "Too many login attempts. Try again later." },
+      { status: 429 }
     );
   }
 

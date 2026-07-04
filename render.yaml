@@ -23,19 +23,15 @@ services:
     # push has to run in startCommand instead, once the disk is actually
     # mounted, before `npm start` boots the server.
     #
-    # --accept-data-loss is required because prisma db push always flags certain
-    # schema changes as a potential data-loss risk that it cannot statically
-    # prove is safe. On SQLite specifically, be extra cautious with this flag:
-    # SQLite's ALTER TABLE support is very limited, so `prisma db push` frequently
-    # has to recreate whole tables (copy to a temp table, drop, recreate, copy
-    # back) to apply many kinds of schema changes - not just a lightweight ALTER
-    # like Postgres can usually do. That's a heavier, easier-to-get-wrong
-    # operation against a live production database file. Any FUTURE schema
-    # change here should be reviewed carefully - e.g. by running
-    # `prisma migrate diff --script` against a copy of the real production SQLite
-    # file - before assuming --accept-data-loss is safe to keep passing blindly.
+    # migrate-safe.mjs runs at startup and:
+    #   - Creates the DB from scratch if it doesn't exist (first deploy)
+    #   - Applies additive-only changes (new tables, new columns) safely
+    #   - Refuses to apply destructive changes (removed tables/columns,
+    #     table recreation) and prints manual-migration instructions
+    # This replaces the previous `prisma db push --accept-data-loss` which
+    # could silently drop and recreate tables on every deploy.
     buildCommand: npm install && npx prisma generate && npm run build
-    startCommand: npx prisma db push --accept-data-loss && npm start
+    startCommand: node scripts/migrate-safe.mjs && npm start
     envVars:
       - key: DATABASE_URL
         value: file:/data/prod.db
