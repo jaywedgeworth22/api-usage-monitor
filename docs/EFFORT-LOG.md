@@ -26,6 +26,12 @@ Protocol: /Users/jay/apps/EFFORT-LOG-PROTOCOL.md (canonical). Live board:
 - Codex global coordination + fleet monitoring setup (Codex, shared `/Users/jay/apps`
   infra) — include this app in the standardized Codex bootstrap/audit path; no
   app-runtime changes in this repo.
+- GitHub Issues mirror of this board (claude/effort-issues-mirror, CLAUDE) — additive
+  `scripts/sync-effort-issues.py` + `.github/workflows/effort-issues-sync.yml`, ported verbatim from
+  Socratic.Trade (canonical pattern in `/Users/jay/apps/EFFORT-LOG-PROTOCOL.md`). Read-only mirror:
+  this board stays the source of truth, only the workflow writes issues. Disjoint from the
+  concurrent `claude/otlp-claude-code-ingest` lane (worktree `/tmp/wt-monitor-otlp`) — no shared
+  files touched.
 
 ## Planned / Reserved
 - CI standard adoption (cross-app, Claude) — RESERVED: 5-line caller workflow consuming the Socratic.Trade reusable verify gate + Mac runner registration. Blocked by: claude/ci-actions-efficiency landing in the hub repo.
