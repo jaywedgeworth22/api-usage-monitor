@@ -7,7 +7,11 @@ export const config = {
     // Exclusions are anchored to full path segments (via `(?:/|$)`) so that
     // routes merely *prefixed* with an excluded name (e.g. /api/crontab,
     // /api/ingestor, /loginpage) are NOT accidentally left unauthenticated.
-    "/((?!_next/static|_next/image|favicon\\.ico|login(?:/|$)|api/auth/login(?:/|$)|api/cron(?:/|$)|api/ingest(?:/|$)|api/health(?:/|$)).*)",
+    // api/otlp is excluded for the same reason as api/ingest: both routes
+    // authenticate pushed telemetry with their own Bearer USAGE_INGEST_TOKEN
+    // check (see src/lib/ingest-auth.ts), not the dashboard session cookie —
+    // an OTLP exporter (Claude Code) has no way to obtain that cookie.
+    "/((?!_next/static|_next/image|favicon\\.ico|login(?:/|$)|api/auth/login(?:/|$)|api/cron(?:/|$)|api/ingest(?:/|$)|api/otlp(?:/|$)|api/health(?:/|$)).*)",
   ],
 };
 
