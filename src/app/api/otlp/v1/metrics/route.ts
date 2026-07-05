@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import type { Prisma } from "@prisma/client";
-import { prisma } from "@/lib/prisma";
+import { persistExternalUsageEvents } from "@/lib/external-usage-events";
 import { isUsageIngestAuthorized } from "@/lib/ingest-auth";
 import { createRateLimiter, getClientIp } from "@/lib/rate-limit";
 import { decodeMetricsJson } from "@/lib/otlp/json-decode";
@@ -112,34 +112,28 @@ export async function POST(request: NextRequest) {
     }
   }
 
+  let skippedPrunedDuplicates = 0;
   if (events.length > 0) {
-    await prisma.$transaction(
-      events.map((event) =>
-        prisma.externalUsageEvent.upsert({
-          where: { idempotencyKey: event.idempotencyKey },
-          create: {
-            idempotencyKey: event.idempotencyKey,
-            sourceApp: event.sourceApp,
-            environment: event.environment,
-            provider: event.provider,
-            service: event.service,
-            label: event.label,
-            keyRef: event.keyRef,
-            billingMode: event.billingMode,
-            metricType: event.metricType,
-            quantity: event.quantity,
-            unit: event.unit,
-            costUsd: event.costUsd,
-            requests: event.requests,
-            occurredAt: event.occurredAt,
-            metadata: event.metadata as Prisma.InputJsonObject,
-          },
-          // A duplicate replay (retry) is a no-op: first write wins, matching
-          // the existing /api/ingest/usage upsert convention.
-          update: {},
-        })
-      )
+    const persistResult = await persistExternalUsageEvents(
+      events.map((event) => ({
+        idempotencyKey: event.idempotencyKey,
+        sourceApp: event.sourceApp,
+        environment: event.environment,
+        provider: event.provider,
+        service: event.service,
+        label: event.label,
+        keyRef: event.keyRef,
+        billingMode: event.billingMode,
+        metricType: event.metricType,
+        quantity: event.quantity,
+        unit: event.unit,
+        costUsd: event.costUsd,
+        requests: event.requests,
+        occurredAt: event.occurredAt,
+        metadata: event.metadata as Prisma.InputJsonObject,
+      }))
     );
+    skippedPrunedDuplicates = persistResult.skippedPrunedDuplicates;
 
     // Best-effort: give the owner a Provider row to attach a budget to (see
     // ensure-anthropic-provider.ts for why this is lazy-on-first-ingest
@@ -160,7 +154,8 @@ export async function POST(request: NextRequest) {
   return NextResponse.json(
     {
       ok: true,
-      accepted: events.length,
+      accepted: events.length - skippedPrunedDuplicates,
+      ignoredPruned: skippedPrunedDuplicates || undefined,
       unknownMetrics: unknownMetrics.length > 0 ? unknownMetrics : undefined,
     },
     { status: 202 }

@@ -1,7 +1,7 @@
 import { timingSafeEqual } from "crypto";
 import { NextRequest, NextResponse } from "next/server";
 import type { Prisma } from "@prisma/client";
-import { prisma } from "@/lib/prisma";
+import { persistExternalUsageEvents } from "@/lib/external-usage-events";
 import { parseUsageTelemetryBatch } from "@/lib/usage-telemetry";
 import { createRateLimiter, getClientIp } from "@/lib/rate-limit";
 
@@ -60,39 +60,39 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  await prisma.$transaction(
-    events.map((event) => {
-      const fields = {
-        sourceApp: event.sourceApp,
-        environment: event.environment,
-        provider: event.provider,
-        service: event.service,
-        label: event.label,
-        keyRef: event.keyRef,
-        billingMode: event.billingMode,
-        metricType: event.metricType,
-        quantity: event.quantity,
-        unit: event.unit,
-        costUsd: event.costUsd,
-        requests: event.requests,
-        credits: event.credits,
-        limit: event.limit,
-        limitWindow: event.limitWindow,
-        tier: event.tier,
-        confidence: event.confidence,
-        windowStart: event.windowStart,
-        windowEnd: event.windowEnd,
-        occurredAt: event.occurredAt,
-        metadata: event.metadata as Prisma.InputJsonObject | undefined,
-      };
-      return prisma.externalUsageEvent.upsert({
-        where: { idempotencyKey: event.idempotencyKey },
-        create: { idempotencyKey: event.idempotencyKey, ...fields },
-        // A duplicate replay (retry) is a no-op: first write wins.
-        update: {},
-      });
-    })
+  const persistResult = await persistExternalUsageEvents(
+    events.map((event) => ({
+      idempotencyKey: event.idempotencyKey,
+      sourceApp: event.sourceApp,
+      environment: event.environment,
+      provider: event.provider,
+      service: event.service,
+      label: event.label,
+      keyRef: event.keyRef,
+      billingMode: event.billingMode,
+      metricType: event.metricType,
+      quantity: event.quantity,
+      unit: event.unit,
+      costUsd: event.costUsd,
+      requests: event.requests,
+      credits: event.credits,
+      limit: event.limit,
+      limitWindow: event.limitWindow,
+      tier: event.tier,
+      confidence: event.confidence,
+      windowStart: event.windowStart,
+      windowEnd: event.windowEnd,
+      occurredAt: event.occurredAt,
+      metadata: event.metadata as Prisma.InputJsonObject | undefined,
+    }))
   );
 
-  return NextResponse.json({ ok: true, accepted: events.length }, { status: 202 });
+  return NextResponse.json(
+    {
+      ok: true,
+      accepted: persistResult.persisted,
+      ignoredPruned: persistResult.skippedPrunedDuplicates,
+    },
+    { status: 202 }
+  );
 }

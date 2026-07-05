@@ -59,6 +59,16 @@
   token or internal integration token with `project:read`/`event:read` scope — never sent to the
   client, absent by default)
 - `SENTRY_ORG` (optional; Sentry org slug for the Health card, defaults to `jays-services`)
+- `ALERT_SLACK_WEBHOOK_URL` / `ALERT_WEBHOOK_URL` (optional; when set, provider
+  budget/balance/stale alerts are delivered outside the dashboard after each polling tick)
+- `ALERT_MIN_SEVERITY` (optional; `info`, `warning`, or `critical`; defaults to `warning`)
+- `ALERT_REMINDER_HOURS` (optional; defaults to `24`, used to dedupe repeated open alerts)
+- `USAGE_SNAPSHOT_RAW_RETENTION_DAYS` (optional; defaults to `45`, after which raw snapshots are
+  rolled up daily and pruned)
+- `EXTERNAL_USAGE_EVENT_RAW_RETENTION_DAYS` (optional; defaults to `90`; current UTC-month events
+  are always retained because `/api/budget-status` reads them directly)
+- `EXTERNAL_USAGE_EVENT_TOMBSTONE_RETENTION_DAYS` (optional; defaults to `180`, keeping old
+  idempotency keys from being reinserted after raw event pruning)
 
 ## SSL/TLS
 - Cloudflare handles SSL with "Full (strict)" mode

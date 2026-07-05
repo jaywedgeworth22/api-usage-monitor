@@ -51,3 +51,20 @@ services:
         sync: false
       - key: SENTRY_ORG
         sync: false
+      # Optional: outbound provider-alert delivery. Leave unset for dashboard-only alerts.
+      - key: ALERT_SLACK_WEBHOOK_URL
+        sync: false
+      - key: ALERT_WEBHOOK_URL
+        sync: false
+      - key: ALERT_MIN_SEVERITY
+        value: warning
+      - key: ALERT_REMINDER_HOURS
+        value: "24"
+      # Raw-row retention before daily rollup + pruning. External usage rows are
+      # never pruned from the current UTC month because budget math reads them.
+      - key: USAGE_SNAPSHOT_RAW_RETENTION_DAYS
+        value: "45"
+      - key: EXTERNAL_USAGE_EVENT_RAW_RETENTION_DAYS
+        value: "90"
+      - key: EXTERNAL_USAGE_EVENT_TOMBSTONE_RETENTION_DAYS
+        value: "180"

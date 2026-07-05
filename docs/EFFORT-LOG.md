@@ -32,6 +32,18 @@ Protocol: /Users/jay/apps/EFFORT-LOG-PROTOCOL.md (canonical). Live board:
   infra) — include this app in the standardized Codex bootstrap/audit path; no
   app-runtime changes in this repo.
 
+## In Progress
+- **Data retention/pruning for UsageSnapshot/ExternalUsageEvent (CODEX, M)** — implemented locally
+  2026-07-04 on branch `codex-data-retention-alert-delivery`; adds SQLite/Prisma daily rollups,
+  tombstones for pruned external idempotency keys, current-month budget protection, rollup-aware
+  history endpoints, and retention tests. Pending main-agent integration/landing.
+- **Alert delivery channels (CODEX, L)** — implemented locally 2026-07-04 on branch
+  `codex-data-retention-alert-delivery`; adds provider alert notification state, Slack/webhook
+  delivery channels, reminder dedupe, resolution tracking, env/docs, and integration coverage.
+  Verification: `npx prisma generate`, focused retention/alert/OTLP tests, full `npm test`
+  (8 files / 52 tests), `npm run lint`, and clean `npm run build`. Pending main-agent
+  integration/landing.
+
 ## Planned / Reserved
 - CI standard adoption (cross-app, Claude) — RESERVED: 5-line caller workflow consuming the Socratic.Trade reusable verify gate + Mac runner registration. Blocked by: claude/ci-actions-efficiency landing in the hub repo.
 
@@ -51,11 +63,6 @@ not locks — re-negotiate in #agent-sync._
 - **Close parked `claude/budget-status` + prune merged branches (CURSOR, S)** — the parked branch
   deletes password auth wholesale and re-implements shipped PR #6 work; close-not-merge, then
   prune the ~12 merged/stale branches.
-- **Data retention/pruning for UsageSnapshot/ExternalUsageEvent (CODEX, M)** — unbounded growth on
-  a 1GB Render disk with a 15-min poller + OTLP push; scheduled aggregate-then-prune.
-- **Alert delivery channels (CODEX, L)** — `provider-alerts.ts` computes budget/balance/stale
-  alerts but nothing delivers them (email via Resend, Pushover push, or Slack); dashboard-only
-  today. Likely the single highest-value missing feature.
 - **Litestream backup for the Render SQLite disk (AG, M)** — DEPLOY.md's own optional follow-up;
   copy the sibling trading app's `litestream.yml` pattern.
 - **Per-adapter resilience review (AG, L)** — timeouts, 429 backoff, partial-failure isolation in
@@ -73,3 +80,7 @@ not locks — re-negotiate in #agent-sync._
 - 2026-07-04 — CLAUDE: backlog exhaustiveness + assignment pass (owner-directed); seeded Planned
   from a full repo audit. Repo mirror + issues sync to be reconciled (stale mirror issues
   #10/#12/#15 describe already-merged work).
+- 2026-07-04 — CODEX: moved assigned retention/pruning + alert-delivery rows to In Progress on
+  `codex-data-retention-alert-delivery`.
+- 2026-07-04 — CODEX: implemented retention/pruning + alert-delivery lanes locally; full tests,
+  typecheck, and build pass locally, pending main-agent integration/landing.

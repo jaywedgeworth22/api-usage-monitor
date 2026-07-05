@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { fetchAllDueProviders } from "@/lib/usage-recorder";
+import { runUsageMaintenance } from "@/lib/usage-maintenance";
 
 // This endpoint is no longer called on a schedule (usage polling now runs
 // in-process, see src/instrumentation.ts / src/lib/usage-recorder.ts). It's
@@ -14,6 +15,7 @@ export async function GET(request: NextRequest) {
   }
 
   const result = await fetchAllDueProviders();
+  const maintenance = await runUsageMaintenance();
 
-  return NextResponse.json(result);
+  return NextResponse.json({ ...result, maintenance });
 }

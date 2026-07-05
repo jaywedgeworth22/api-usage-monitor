@@ -1,5 +1,7 @@
 import { prisma } from "@/lib/prisma";
+import { sumMonthToDateExternalCostByProvider } from "@/lib/external-usage-events";
 import { buildProviderAlertState, type ProviderAlert } from "@/lib/provider-alerts";
+import { getExternalEventRawCutoff } from "@/lib/data-retention";
 
 // Budget-status computation for the read endpoint (GET /api/budget-status).
 //
@@ -58,6 +60,7 @@ function monthLabel(now: Date): string {
 
 export async function computeBudgetStatus(now: Date = new Date()): Promise<BudgetStatusResponse> {
   const monthStart = monthStartUtc(now);
+  const rawCutoff = getExternalEventRawCutoff(now);
 
   const [providers, pushedByProvider] = await Promise.all([
     prisma.provider.findMany({
@@ -88,18 +91,11 @@ export async function computeBudgetStatus(now: Date = new Date()): Promise<Budge
         },
       },
     }),
-    prisma.externalUsageEvent.groupBy({
-      by: ["provider"],
-      where: { occurredAt: { gte: monthStart }, costUsd: { not: null } },
-      _sum: { costUsd: true },
-    }),
+    sumMonthToDateExternalCostByProvider(monthStart, rawCutoff),
   ]);
 
   // Case-insensitive provider name → month-to-date pushed cost.
-  const pushedMap = new Map<string, number>();
-  for (const row of pushedByProvider) {
-    pushedMap.set(row.provider.toLowerCase(), row._sum.costUsd ?? 0);
-  }
+  const pushedMap = pushedByProvider;
 
   const providerStatuses: ProviderBudgetStatus[] = providers.map((p) => {
     const plan = p.plan;

@@ -1,5 +1,6 @@
 import { prisma } from "@/lib/prisma";
 import { fetchProviderUsage } from "@/lib/adapters";
+import { runUsageMaintenance } from "@/lib/usage-maintenance";
 import type { Provider, UsageSnapshot } from "@prisma/client";
 
 export async function recordProviderUsage(
@@ -116,6 +117,7 @@ export function startUsagePollingScheduler(): void {
   const tick = async () => {
     try {
       await fetchAllDueProviders();
+      await runUsageMaintenance();
     } catch (error) {
       console.error("[usage-scheduler] tick failed", error);
     }

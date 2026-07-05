@@ -1,10 +1,10 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
-import { execSync } from "child_process";
 import fs from "fs";
 import os from "os";
 import path from "path";
 import { NextRequest } from "next/server";
 import protobuf from "protobufjs";
+import { setupPrismaSqliteTestDb } from "@/lib/__tests__/setup-test-db";
 
 // This test exercises the real POST /api/otlp/v1/metrics route handler
 // against a throwaway SQLite file (never the dev `data`/`dev.db`), following
@@ -23,15 +23,11 @@ beforeAll(async () => {
   process.env.DATABASE_URL = `file:${dbPath}`;
   process.env.USAGE_INGEST_TOKEN = "test-token-123";
 
-  execSync("npx prisma db push --skip-generate --accept-data-loss", {
-    cwd: process.cwd(),
-    env: { ...process.env, DATABASE_URL: `file:${dbPath}` },
-    stdio: "pipe",
-  });
+  setupPrismaSqliteTestDb(dbPath);
 
   ({ POST } = await import("../metrics/route"));
   ({ prisma } = await import("@/lib/prisma"));
-});
+}, 60_000);
 
 afterAll(async () => {
   await prisma?.$disconnect();

@@ -8,37 +8,39 @@ datasource db {
 }
 
 model Provider {
-  id                 String           @id @default(uuid())
+  id                 String                      @id @default(uuid())
   name               String
   displayName        String
-  type               String           @default("builtin")
+  type               String                      @default("builtin")
   apiKey             String?
   config             Json?
-  isActive           Boolean          @default(true)
-  credits            Float            @default(0)
-  refreshIntervalMin Int              @default(60)
+  isActive           Boolean                     @default(true)
+  credits            Float                       @default(0)
+  refreshIntervalMin Int                         @default(60)
   groupId            String?
   label              String?
-  createdAt          DateTime         @default(now())
+  createdAt          DateTime                    @default(now())
   plan               ProviderPlan?
   snapshots          UsageSnapshot[]
+  snapshotRollups    UsageSnapshotDailyRollup[]
+  alertNotifications ProviderAlertNotification[]
 }
 
 model ProviderPlan {
-  id                   String   @id @default(uuid())
-  providerId           String   @unique
-  provider             Provider @relation(fields: [providerId], references: [id], onDelete: Cascade)
-  billingMode          String   @default("manual")
-  fixedMonthlyCostUsd  Float?
-  monthlyBudgetUsd     Float?
-  monthlyRequestLimit  Int?
-  lowBalanceUsd        Float?
-  lowCredits           Float?
-  renewalDate          DateTime?
-  mustKeepFunded       Boolean  @default(false)
-  notes                String?
-  createdAt            DateTime @default(now())
-  updatedAt            DateTime @updatedAt
+  id                  String    @id @default(uuid())
+  providerId          String    @unique
+  provider            Provider  @relation(fields: [providerId], references: [id], onDelete: Cascade)
+  billingMode         String    @default("manual")
+  fixedMonthlyCostUsd Float?
+  monthlyBudgetUsd    Float?
+  monthlyRequestLimit Int?
+  lowBalanceUsd       Float?
+  lowCredits          Float?
+  renewalDate         DateTime?
+  mustKeepFunded      Boolean   @default(false)
+  notes               String?
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
 }
 
 model UsageSnapshot {
@@ -54,8 +56,31 @@ model UsageSnapshot {
   createdAt     DateTime @default(now())
 }
 
+model UsageSnapshotDailyRollup {
+  id                  String   @id @default(uuid())
+  providerId          String
+  provider            Provider @relation(fields: [providerId], references: [id], onDelete: Cascade)
+  day                 DateTime
+  sampleCount         Int      @default(0)
+  firstFetchedAt      DateTime
+  lastFetchedAt       DateTime
+  latestBalance       Float?
+  latestTotalCost     Float?
+  latestTotalRequests Int?
+  latestCredits       Float?
+  minBalance          Float?
+  maxBalance          Float?
+  maxTotalCost        Float?
+  maxTotalRequests    Int?
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+
+  @@unique([providerId, day])
+  @@index([day])
+}
+
 model ExternalUsageEvent {
-  id             String   @id @default(uuid())
+  id             String    @id @default(uuid())
   // Prisma's client-side @default(uuid()) generates the value in the app process
   // before the INSERT is sent, so it works the same way on SQLite as it does on
   // any other datasource - no database-side function (e.g. Postgres's
@@ -63,15 +88,15 @@ model ExternalUsageEvent {
   // safety net that's essentially never exercised: the app always supplies an
   // explicit, content-derived idempotencyKey on insert (see
   // usage-telemetry.ts's deriveIdempotencyKey).
-  idempotencyKey String   @unique @default(uuid())
+  idempotencyKey String    @unique @default(uuid())
   sourceApp      String
   environment    String?
   provider       String
   service        String?
   label          String?
   keyRef         String?
-  billingMode    String   @default("estimated")
-  metricType     String   @default("usage")
+  billingMode    String    @default("estimated")
+  metricType     String    @default("usage")
   quantity       Float?
   unit           String?
   costUsd        Float?
@@ -80,14 +105,76 @@ model ExternalUsageEvent {
   limit          Float?
   limitWindow    String?
   tier           String?
-  confidence     String   @default("estimated")
+  confidence     String    @default("estimated")
   windowStart    DateTime?
   windowEnd      DateTime?
   occurredAt     DateTime
   metadata       Json?
-  createdAt      DateTime @default(now())
+  createdAt      DateTime  @default(now())
 
   @@index([sourceApp, occurredAt])
   @@index([provider, occurredAt])
   @@index([keyRef, occurredAt])
+}
+
+model ExternalUsageEventDailyRollup {
+  id               String   @id @default(uuid())
+  day              DateTime
+  groupKey         String
+  sourceApp        String
+  environment      String?
+  provider         String
+  service          String?
+  label            String?
+  keyRef           String?
+  billingMode      String
+  metricType       String
+  unit             String?
+  limitWindow      String?
+  tier             String?
+  confidence       String
+  eventCount       Int      @default(0)
+  totalCostUsd     Float    @default(0)
+  totalRequests    Int      @default(0)
+  totalQuantity    Float    @default(0)
+  totalCredits     Float    @default(0)
+  maxLimit         Float?
+  latestOccurredAt DateTime
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  @@unique([day, groupKey])
+  @@index([sourceApp, day])
+  @@index([provider, day])
+}
+
+model ExternalUsageEventTombstone {
+  idempotencyKey String   @id
+  occurredAt     DateTime
+  prunedAt       DateTime @default(now())
+
+  @@index([occurredAt])
+  @@index([prunedAt])
+}
+
+model ProviderAlertNotification {
+  id                  String    @id @default(uuid())
+  providerId          String
+  provider            Provider  @relation(fields: [providerId], references: [id], onDelete: Cascade)
+  stateKey            String    @unique
+  alertCode           String
+  severity            String
+  providerName        String
+  providerDisplayName String
+  message             String
+  firstDetectedAt     DateTime
+  lastDetectedAt      DateTime
+  lastSentAt          DateTime?
+  sendCount           Int       @default(0)
+  resolvedAt          DateTime?
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
+
+  @@index([providerId, resolvedAt])
+  @@index([lastSentAt])
 }
