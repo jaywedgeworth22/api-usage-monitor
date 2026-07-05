@@ -27,21 +27,49 @@ Protocol: /Users/jay/apps/EFFORT-LOG-PROTOCOL.md (canonical). Live board:
   `OTEL_EXPORTER_OTLP_PROTOCOL=http/json` / `OTEL_EXPORTER_OTLP_ENDPOINT=https://usage.jays.services/api/otlp`
   / `OTEL_EXPORTER_OTLP_HEADERS=Authorization=Bearer <USAGE_INGEST_TOKEN>` in
   `~/.claude/settings.json` (not done by the agent, per instructions) before any real data flows.**
-
-## In Progress
 - Branch claude/budget-status — parked local branch found at bootstrap (owner/state unknown; whoever owns it: claim or close).
 - Codex global coordination + fleet monitoring setup (Codex, shared `/Users/jay/apps`
   infra) — include this app in the standardized Codex bootstrap/audit path; no
   app-runtime changes in this repo.
-- GitHub Issues mirror of this board (claude/effort-issues-mirror, CLAUDE) — additive
-  `scripts/sync-effort-issues.py` + `.github/workflows/effort-issues-sync.yml`, ported verbatim from
-  Socratic.Trade (canonical pattern in `/Users/jay/apps/EFFORT-LOG-PROTOCOL.md`). Read-only mirror:
-  this board stays the source of truth, only the workflow writes issues.
 
 ## Planned / Reserved
 - CI standard adoption (cross-app, Claude) — RESERVED: 5-line caller workflow consuming the Socratic.Trade reusable verify gate + Mac runner registration. Blocked by: claude/ci-actions-efficiency landing in the hub repo.
+
+_2026-07-04 backlog exhaustiveness pass (CLAUDE, owner-directed). Tags: CURSOR = Cursor background
+agents (DeepSeek v4 Pro), CODEX = Codex, AG = Antigravity/Gemini. Assignments are reservations,
+not locks — re-negotiate in #agent-sync._
+
+- **Run the test suite in CI (CURSOR, S)** — `ci.yml` never runs `npm test`; 46 vitest tests
+  currently gate nothing.
+- **Real ESLint setup (CURSOR, M)** — the `lint` script is just `tsc --noEmit` (duplicating the
+  Typecheck step); add `eslint-config-next` + fix violations.
+- **Auth consolidation + env-example completeness (CURSOR, S)** — `/api/ingest/usage` and
+  `/api/budget-status` hand-roll bearer auth instead of the shared `ingest-auth.ts`; add the
+  missing `USAGE_READ_TOKEN` to `.env.example`; document the in-process rate-limiter's
+  single-instance assumption.
+- **Root README.md (CURSOR, S)** — repo has only AGENTS.md/DEPLOY.md; nothing human-facing.
+- **Close parked `claude/budget-status` + prune merged branches (CURSOR, S)** — the parked branch
+  deletes password auth wholesale and re-implements shipped PR #6 work; close-not-merge, then
+  prune the ~12 merged/stale branches.
+- **Data retention/pruning for UsageSnapshot/ExternalUsageEvent (CODEX, M)** — unbounded growth on
+  a 1GB Render disk with a 15-min poller + OTLP push; scheduled aggregate-then-prune.
+- **Alert delivery channels (CODEX, L)** — `provider-alerts.ts` computes budget/balance/stale
+  alerts but nothing delivers them (email via Resend, Pushover push, or Slack); dashboard-only
+  today. Likely the single highest-value missing feature.
+- **Litestream backup for the Render SQLite disk (AG, M)** — DEPLOY.md's own optional follow-up;
+  copy the sibling trading app's `litestream.yml` pattern.
+- **Per-adapter resilience review (AG, L)** — timeouts, 429 backoff, partial-failure isolation in
+  `fetchAllDueProviders` across ~30 adapters.
+- **Implement OTLP logs ingestion (unassigned, L, deliberately deferred)** — `/api/otlp/v1/logs`
+  is accept-and-drop by design today.
+- **Owner action: activate Claude Code OTLP telemetry env vars (OWNER, S)** — set the documented
+  `OTEL_*` + `CLAUDE_CODE_ENABLE_TELEMETRY` vars in `~/.claude/settings.json` so real data flows
+  into the already-built ingest.
 
 ## Changelog of this log
 - 2026-07-04 — bootstrapped by CLAUDE (effort-log standardization).
 - 2026-07-04 — CLAUDE: OTLP ingest + Sentry health card implementation complete, PR pending.
 - 2026-07-04 — CLAUDE: PR #13 merged (OTLP ingest + Sentry health card); moved to Completed.
+- 2026-07-04 — CLAUDE: backlog exhaustiveness + assignment pass (owner-directed); seeded Planned
+  from a full repo audit. Repo mirror + issues sync to be reconciled (stale mirror issues
+  #10/#12/#15 describe already-merged work).
