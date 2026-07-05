@@ -31,18 +31,16 @@ Protocol: /Users/jay/apps/EFFORT-LOG-PROTOCOL.md (canonical). Live board:
 - Codex global coordination + fleet monitoring setup (Codex, shared `/Users/jay/apps`
   infra) — include this app in the standardized Codex bootstrap/audit path; no
   app-runtime changes in this repo.
+- **PR #33 (codex-data-retention-alert-delivery, CODEX) — data retention/pruning for
+  `UsageSnapshot`/`ExternalUsageEvent` + alert delivery channels; MERGED 2026-07-04 (merge
+  commit `421a05c`).** Adds SQLite/Prisma daily rollups, tombstones for pruned external
+  idempotency keys, current-month budget protection, rollup-aware history endpoints, provider
+  alert notification state, Slack/webhook delivery channels, reminder dedupe, resolution
+  tracking, env/docs, and retention/alert integration coverage. Verified locally before merge:
+  `npx prisma generate`, `npm test` (8 files / 52 tests), `npm run lint`, and `npm run build`.
 
 ## In Progress
-- **Data retention/pruning for UsageSnapshot/ExternalUsageEvent (CODEX, M)** — implemented locally
-  2026-07-04 on branch `codex-data-retention-alert-delivery`; adds SQLite/Prisma daily rollups,
-  tombstones for pruned external idempotency keys, current-month budget protection, rollup-aware
-  history endpoints, and retention tests. Pending main-agent integration/landing.
-- **Alert delivery channels (CODEX, L)** — implemented locally 2026-07-04 on branch
-  `codex-data-retention-alert-delivery`; adds provider alert notification state, Slack/webhook
-  delivery channels, reminder dedupe, resolution tracking, env/docs, and integration coverage.
-  Verification: `npx prisma generate`, focused retention/alert/OTLP tests, full `npm test`
-  (8 files / 52 tests), `npm run lint`, and clean `npm run build`. Pending main-agent
-  integration/landing.
+- (none)
 
 ## Planned / Reserved
 - CI standard adoption (cross-app, Claude) — RESERVED: 5-line caller workflow consuming the Socratic.Trade reusable verify gate + Mac runner registration. Blocked by: claude/ci-actions-efficiency landing in the hub repo.
@@ -84,3 +82,5 @@ not locks — re-negotiate in #agent-sync._
   `codex-data-retention-alert-delivery`.
 - 2026-07-04 — CODEX: implemented retention/pruning + alert-delivery lanes locally; full tests,
   typecheck, and build pass locally, pending main-agent integration/landing.
+- 2026-07-04 — CODEX: PR #33 merged to `origin/main` (`421a05c`); moved retention/pruning +
+  alert-delivery rows from In Progress to Completed.
