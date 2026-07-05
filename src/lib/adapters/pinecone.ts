@@ -1,8 +1,8 @@
-import type { UsageResult } from "./helpers";
+import { resilientFetch, type UsageResult } from "./helpers";
 
 export async function fetchUsage(apiKey: string): Promise<UsageResult> {
   // Fetch list of indexes, then get stats for each
-  const indexesRes = await fetch("https://api.pinecone.io/indexes", {
+  const indexesRes = await resilientFetch("https://api.pinecone.io/indexes", {
     headers: {
       "Api-Key": apiKey,
       "Content-Type": "application/json",
@@ -29,7 +29,7 @@ export async function fetchUsage(apiKey: string): Promise<UsageResult> {
     try {
       const host = idx.host;
       if (!host) continue;
-      const statsRes = await fetch(`https://${host}/describe_index_stats`, {
+      const statsRes = await resilientFetch(`https://${host}/describe_index_stats`, {
         headers: {
           "Api-Key": apiKey,
           "Content-Type": "application/json",

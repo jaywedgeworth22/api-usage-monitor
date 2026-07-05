@@ -1,4 +1,4 @@
-import type { UsageResult } from "./openai";
+import { resilientFetch, type UsageResult } from "./helpers";
 
 export async function fetchUsage(apiKey: string): Promise<UsageResult> {
   const rawData: Record<string, unknown> = {};
@@ -9,7 +9,7 @@ export async function fetchUsage(apiKey: string): Promise<UsageResult> {
   // As a workaround, we probe the rate-limit headers from a lightweight call.
 
   try {
-    const probeRes = await fetch(
+    const probeRes = await resilientFetch(
       `https://generativelanguage.googleapis.com/v1beta/models?key=${apiKey}`,
       { headers: { "Content-Type": "application/json" } }
     );

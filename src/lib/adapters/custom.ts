@@ -1,4 +1,4 @@
-import type { UsageResult } from "./helpers";
+import { resilientFetch, type UsageResult } from "./helpers";
 
 function resolveJsonPath(obj: unknown, path: string): unknown {
   // Simple JSONPath-like resolution: $.balance -> obj.balance
@@ -56,7 +56,7 @@ export async function fetchUsage(
     }
   }
 
-  const res = await fetch(endpoint, { headers });
+  const res = await resilientFetch(endpoint, { headers });
 
   if (!res.ok) {
     return {

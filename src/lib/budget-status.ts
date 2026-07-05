@@ -1,5 +1,5 @@
 import { prisma } from "@/lib/prisma";
-import { sumMonthToDateExternalCostByProvider } from "@/lib/external-usage-events";
+import { sumMonthToDateExternalCostByProvider, sumMonthToDateExternalCostBySourceApp } from "@/lib/external-usage-events";
 import { buildProviderAlertState, type ProviderAlert } from "@/lib/provider-alerts";
 import { getExternalEventRawCutoff } from "@/lib/data-retention";
 
@@ -178,6 +178,119 @@ export async function computeBudgetStatus(now: Date = new Date()): Promise<Budge
       percentUsed: totalBudgetUsd > 0 ? totalSpentUsd / totalBudgetUsd : null,
       overBudget: providerStatuses.some((p) => p.status === "exceeded"),
       warning: providerStatuses.some((p) => p.status === "warning"),
+    },
+  };
+}
+
+export interface ProjectBudgetStatus {
+  id: string;
+  name: string;
+  description: string | null;
+  monthlyBudgetUsd: number | null;
+  spentUsd: number;
+  remainingUsd: number | null;
+  percentUsed: number | null;
+  status: BudgetStatusLevel;
+}
+
+export interface ProjectBudgetStatusResponse {
+  ok: true;
+  generatedAt: string;
+  month: string;
+  providers: ProviderBudgetStatus[];
+  projects: ProjectBudgetStatus[];
+  summary: {
+    totalBudgetUsd: number;
+    totalSpentUsd: number;
+    remainingUsd: number;
+    percentUsed: number | null;
+    overBudget: boolean;
+    warning: boolean;
+  };
+}
+
+export async function computeProjectBudgetStatus(now: Date = new Date()): Promise<ProjectBudgetStatusResponse> {
+  const [providerStatus, projects, pushedBySourceApp] = await Promise.all([
+    computeBudgetStatus(now),
+    prisma.project.findMany({
+      include: {
+        allocations: true,
+      },
+      orderBy: { name: "asc" }
+    }),
+    sumMonthToDateExternalCostBySourceApp(monthStartUtc(now), getExternalEventRawCutoff(now))
+  ]);
+
+  const pushedMap = pushedBySourceApp;
+
+  const projectStatuses: ProjectBudgetStatus[] = projects.map((proj) => {
+    let spentUsd = 0;
+    
+    // 1. Direct pushed telemetry matching this project's name
+    const directPushedCost = pushedMap.get(proj.name.toLowerCase()) ?? 0;
+    spentUsd += directPushedCost;
+
+    // 2. Fractional allocation of provider fixed costs + unattributed usage costs
+    for (const alloc of proj.allocations) {
+      const provider = providerStatus.providers.find(p => p.id === alloc.providerId);
+      if (provider) {
+        // Find the amount of provider's spentUsd that is NOT already accounted for by its own pushed telemetry
+        // (to prevent double counting if the telemetry was also tagged with a sourceApp)
+        const unattributedCost = Math.max(0, provider.spentUsd - provider.pushedMonthToDateUsd);
+        
+        // Percentage is stored as 0-100
+        const ratio = Math.max(0, Math.min(100, alloc.percentage)) / 100;
+        spentUsd += unattributedCost * ratio;
+      }
+    }
+
+    let status: BudgetStatusLevel;
+    let remainingUsd: number | null;
+    let percentUsed: number | null;
+    if (proj.monthlyBudgetUsd == null || proj.monthlyBudgetUsd <= 0) {
+      status = "unconfigured";
+      remainingUsd = null;
+      percentUsed = null;
+    } else {
+      remainingUsd = proj.monthlyBudgetUsd - spentUsd;
+      percentUsed = spentUsd / proj.monthlyBudgetUsd;
+      status =
+        spentUsd >= proj.monthlyBudgetUsd
+          ? "exceeded"
+          : spentUsd >= proj.monthlyBudgetUsd * WARNING_RATIO
+            ? "warning"
+            : "ok";
+    }
+
+    return {
+      id: proj.id,
+      name: proj.name,
+      description: proj.description,
+      monthlyBudgetUsd: proj.monthlyBudgetUsd,
+      spentUsd,
+      remainingUsd,
+      percentUsed,
+      status,
+    };
+  });
+
+  const budgeted = projectStatuses.filter((p) => p.monthlyBudgetUsd != null && p.monthlyBudgetUsd > 0);
+  const totalBudgetUsd = budgeted.reduce((s, p) => s + (p.monthlyBudgetUsd ?? 0), 0);
+  const totalSpentUsd = budgeted.reduce((s, p) => s + p.spentUsd, 0);
+
+  return {
+    ok: true,
+    generatedAt: now.toISOString(),
+    month: monthLabel(now),
+    providers: providerStatus.providers,
+    projects: projectStatuses,
+    summary: {
+      totalBudgetUsd,
+      totalSpentUsd,
+      remainingUsd: totalBudgetUsd - totalSpentUsd,
+      percentUsed: totalBudgetUsd > 0 ? totalSpentUsd / totalBudgetUsd : null,
+      overBudget: projectStatuses.some((p) => p.status === "exceeded"),
+      warning: projectStatuses.some((p) => p.status === "warning"),
     },
   };
 }

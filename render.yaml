@@ -30,8 +30,8 @@ services:
     #     table recreation) and prints manual-migration instructions
     # This replaces the previous `prisma db push --accept-data-loss` which
     # could silently drop and recreate tables on every deploy.
-    buildCommand: npm install && npx prisma generate && npm run build
-    startCommand: node scripts/migrate-safe.mjs && npm start
+    buildCommand: npm install && npx prisma generate && npm run build && bash scripts/install-litestream.sh
+    startCommand: bash scripts/start.sh
     envVars:
       - key: DATABASE_URL
         value: file:/data/prod.db
@@ -43,6 +43,17 @@ services:
         generateValue: true
       - key: DASHBOARD_PASSWORD
         generateValue: true
+      # Litestream S3 replica environment variables (set these manually in Render env)
+      - key: LITESTREAM_S3_BUCKET
+        sync: false
+      - key: LITESTREAM_S3_ACCESS_KEY_ID
+        sync: false
+      - key: LITESTREAM_S3_SECRET_ACCESS_KEY
+        sync: false
+      - key: LITESTREAM_S3_ENDPOINT
+        sync: false
+      - key: LITESTREAM_S3_REGION
+        value: auto
       # Optional: enables the read-only Sentry Health dashboard card
       # (GET /api/sentry-health). `sync: false` means Render won't generate
       # or sync a value - set these manually in the dashboard's Environment

@@ -1,0 +1,15 @@
+dbs:
+  - path: /data/prod.db
+    # PITR snapshot policy (Litestream 0.5.x): snapshot interval + retention are DB-level
+    # `snapshot:` settings, NOT per-replica keys. Keep ~30 days of LTX snapshot history.
+    snapshot:
+      interval: 24h
+      retention: 720h       # 30 days of snapshot history
+    replicas:
+      - type: s3
+        bucket: ${LITESTREAM_S3_BUCKET}
+        path: api-usage-monitor/prod.db
+        region: ${LITESTREAM_S3_REGION:-auto}
+        endpoint: ${LITESTREAM_S3_ENDPOINT}
+        access-key-id: ${LITESTREAM_S3_ACCESS_KEY_ID}
+        secret-access-key: ${LITESTREAM_S3_SECRET_ACCESS_KEY}

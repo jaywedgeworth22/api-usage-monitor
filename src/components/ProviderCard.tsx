@@ -85,7 +85,6 @@ export default function ProviderCard({
     }).format(amount);
 
   return (
-  return (
     <div
       className="relative block bg-white rounded-xl border border-gray-200 p-6 transition-all duration-200 hover:shadow-md hover:border-gray-300 hover:-translate-y-0.5"
     >

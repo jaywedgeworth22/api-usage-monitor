@@ -1,4 +1,4 @@
-import type { UsageResult } from "./openai";
+import { resilientFetch, type UsageResult } from "./helpers";
 
 export async function fetchUsage(
   apiKey: string,
@@ -15,7 +15,7 @@ export async function fetchUsage(
   const orgId = config?.orgId as string | undefined;
   if (orgId) {
     try {
-      const usageRes = await fetch(
+      const usageRes = await resilientFetch(
         `https://api.anthropic.com/v1/organizations/${orgId}/usage`,
         {
           headers: {
@@ -40,7 +40,7 @@ export async function fetchUsage(
 
   // 2. Probe rate-limit headers from a lightweight Messages API call
   try {
-    const probeRes = await fetch("https://api.anthropic.com/v1/messages", {
+    const probeRes = await resilientFetch("https://api.anthropic.com/v1/messages", {
       method: "POST",
       headers: {
         "x-api-key": apiKey,

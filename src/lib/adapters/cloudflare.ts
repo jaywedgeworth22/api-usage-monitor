@@ -1,4 +1,4 @@
-import type { UsageResult } from "./helpers";
+import { resilientFetch, type UsageResult } from "./helpers";
 
 function makeHeaders(
   apiKey: string,
@@ -46,7 +46,7 @@ export async function fetchUsage(
   });
 
   try {
-    const analyticsRes = await fetch(
+    const analyticsRes = await resilientFetch(
       `${baseUrl}/analytics/dashboard?${analyticsParams}`,
       { headers }
     );
@@ -68,7 +68,7 @@ export async function fetchUsage(
 
   // 2. Workers analytics
   try {
-    const workersRes = await fetch(
+    const workersRes = await resilientFetch(
       `${baseUrl}/workers/analytics/dashboard?${analyticsParams}`,
       { headers }
     );
@@ -90,7 +90,7 @@ export async function fetchUsage(
   const databaseId = config?.databaseId as string | undefined;
   if (databaseId) {
     try {
-      const d1Res = await fetch(`${baseUrl}/d1/database/${databaseId}`, {
+      const d1Res = await resilientFetch(`${baseUrl}/d1/database/${databaseId}`, {
         headers,
       });
       if (d1Res.ok) {
@@ -105,7 +105,7 @@ export async function fetchUsage(
   const r2BucketName = config?.r2BucketName as string | undefined;
   if (r2BucketName) {
     try {
-      const r2Res = await fetch(
+      const r2Res = await resilientFetch(
         `${baseUrl}/r2/buckets/${r2BucketName}`,
         { headers }
       );
@@ -121,7 +121,7 @@ export async function fetchUsage(
   const kvNamespaceId = config?.kvNamespaceId as string | undefined;
   if (kvNamespaceId) {
     try {
-      const kvRes = await fetch(
+      const kvRes = await resilientFetch(
         `${baseUrl}/storage/kv/namespaces/${kvNamespaceId}`,
         { headers }
       );
@@ -137,7 +137,7 @@ export async function fetchUsage(
   const queueId = config?.queueId as string | undefined;
   if (queueId) {
     try {
-      const queueRes = await fetch(`${baseUrl}/queues/${queueId}`, {
+      const queueRes = await resilientFetch(`${baseUrl}/queues/${queueId}`, {
         headers,
       });
       if (queueRes.ok) {

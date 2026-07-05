@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { computeBudgetStatus } from "@/lib/budget-status";
+import { computeProjectBudgetStatus } from "@/lib/budget-status";
 import { tokenFromRequest, safeEqual } from "@/lib/ingest-auth";
 
 export const runtime = "nodejs";
@@ -22,6 +22,6 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  const status = await computeBudgetStatus();
+  const status = await computeProjectBudgetStatus();
   return NextResponse.json(status, { headers: { "cache-control": "no-store" } });
 }

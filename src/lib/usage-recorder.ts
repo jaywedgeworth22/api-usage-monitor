@@ -1,6 +1,7 @@
 import { prisma } from "@/lib/prisma";
 import { fetchProviderUsage } from "@/lib/adapters";
 import { runUsageMaintenance } from "@/lib/usage-maintenance";
+import { ensureAgentSyncProviderSeeded } from "@/lib/ensure-agent-sync-provider";
 import type { Provider, UsageSnapshot } from "@prisma/client";
 
 export async function recordProviderUsage(
@@ -49,6 +50,7 @@ export async function fetchAllDueProviders(): Promise<{
   }
 
   const run = (async () => {
+    await ensureAgentSyncProviderSeeded();
     const providers = await prisma.provider.findMany({
       where: { isActive: true },
       include: {
@@ -66,26 +68,46 @@ export async function fetchAllDueProviders(): Promise<{
     const errors: Array<{ providerId: string; name: string; error: string }> = [];
     const now = Date.now();
 
-    for (const { snapshots, ...provider } of providers) {
+    const dueProviders = providers.filter(({ snapshots, ...provider }) => {
+      if (provider.category && provider.category !== "api") {
+        return false;
+      }
       const latestFetchedAt = snapshots[0]?.fetchedAt.getTime();
       const intervalMs = provider.refreshIntervalMin * 60 * 1000;
       if (latestFetchedAt && now - latestFetchedAt < intervalMs) {
         skipped++;
-        continue;
+        return false;
       }
+      return true;
+    });
 
-      try {
-        await recordProviderUsage(provider);
-        successes++;
-      } catch (error) {
-        failures++;
-        errors.push({
-          providerId: provider.id,
-          name: provider.name,
-          error: error instanceof Error ? error.message : "Failed to fetch",
-        });
+    // Process due providers concurrently with a limit of 5 concurrent requests
+    const concurrencyLimit = 5;
+    let index = 0;
+    const promises: Promise<void>[] = [];
+
+    async function worker() {
+      while (index < dueProviders.length) {
+        const { snapshots, ...provider } = dueProviders[index++];
+        try {
+          await recordProviderUsage(provider);
+          successes++;
+        } catch (error) {
+          failures++;
+          errors.push({
+            providerId: provider.id,
+            name: provider.name,
+            error: error instanceof Error ? error.message : "Failed to fetch",
+          });
+        }
       }
     }
+
+    for (let i = 0; i < Math.min(concurrencyLimit, dueProviders.length); i++) {
+      promises.push(worker());
+    }
+
+    await Promise.all(promises);
 
     return {
       total: providers.length,
