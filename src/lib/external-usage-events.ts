@@ -274,3 +274,39 @@ export async function sumMonthToDateExternalCostByProvider(
   }
   return totals;
 }
+
+export async function sumMonthToDateExternalCostBySourceApp(
+  monthStart: Date,
+  rawCutoff: Date
+): Promise<Map<string, number>> {
+  const rawSince = monthStart > rawCutoff ? monthStart : rawCutoff;
+
+  const [rawGroups, rollups] = await Promise.all([
+    prisma.externalUsageEvent.groupBy({
+      by: ["sourceApp"],
+      where: { occurredAt: { gte: rawSince }, costUsd: { not: null } },
+      _sum: { costUsd: true },
+    }),
+    monthStart < rawCutoff
+      ? prisma.externalUsageEventDailyRollup.findMany({
+          where: {
+            day: { gte: monthStart, lt: rawCutoff },
+          },
+          select: {
+            sourceApp: true,
+            totalCostUsd: true,
+          },
+        })
+      : Promise.resolve([]),
+  ]);
+
+  const totals = new Map<string, number>();
+  for (const row of rawGroups) {
+    totals.set(row.sourceApp.toLowerCase(), row._sum.costUsd ?? 0);
+  }
+  for (const rollup of rollups) {
+    const key = rollup.sourceApp.toLowerCase();
+    totals.set(key, (totals.get(key) ?? 0) + rollup.totalCostUsd);
+  }
+  return totals;
+}

@@ -14,8 +14,29 @@ CREATE TABLE "Provider" (
   "credits" REAL NOT NULL DEFAULT 0,
   "refreshIntervalMin" INTEGER NOT NULL DEFAULT 60,
   "groupId" TEXT,
+  "category" TEXT NOT NULL DEFAULT 'api',
   "label" TEXT,
   "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE "Project" (
+  "id" TEXT NOT NULL PRIMARY KEY,
+  "name" TEXT NOT NULL,
+  "description" TEXT,
+  "monthlyBudgetUsd" REAL,
+  "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  "updatedAt" DATETIME NOT NULL
+);
+
+CREATE TABLE "ProviderProjectAllocation" (
+  "id" TEXT NOT NULL PRIMARY KEY,
+  "providerId" TEXT NOT NULL,
+  "projectId" TEXT NOT NULL,
+  "percentage" REAL NOT NULL DEFAULT 100,
+  "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  "updatedAt" DATETIME NOT NULL,
+  CONSTRAINT "ProviderProjectAllocation_providerId_fkey" FOREIGN KEY ("providerId") REFERENCES "Provider" ("id") ON DELETE CASCADE ON UPDATE CASCADE,
+  CONSTRAINT "ProviderProjectAllocation_projectId_fkey" FOREIGN KEY ("projectId") REFERENCES "Project" ("id") ON DELETE CASCADE ON UPDATE CASCADE
 );
 
 CREATE TABLE "ProviderPlan" (
@@ -148,6 +169,8 @@ CREATE TABLE "ProviderAlertNotification" (
 );
 
 CREATE UNIQUE INDEX "ProviderPlan_providerId_key" ON "ProviderPlan"("providerId");
+CREATE UNIQUE INDEX "Project_name_key" ON "Project"("name");
+CREATE UNIQUE INDEX "ProviderProjectAllocation_providerId_projectId_key" ON "ProviderProjectAllocation"("providerId", "projectId");
 CREATE INDEX "UsageSnapshotDailyRollup_day_idx" ON "UsageSnapshotDailyRollup"("day");
 CREATE UNIQUE INDEX "UsageSnapshotDailyRollup_providerId_day_key" ON "UsageSnapshotDailyRollup"("providerId", "day");
 CREATE UNIQUE INDEX "ExternalUsageEvent_idempotencyKey_key" ON "ExternalUsageEvent"("idempotencyKey");

@@ -12,6 +12,7 @@ model Provider {
   name               String
   displayName        String
   type               String                      @default("builtin")
+  category           String?
   apiKey             String?
   config             Json?
   isActive           Boolean                     @default(true)
@@ -24,6 +25,7 @@ model Provider {
   snapshots          UsageSnapshot[]
   snapshotRollups    UsageSnapshotDailyRollup[]
   alertNotifications ProviderAlertNotification[]
+  allocations        ProviderProjectAllocation[]
 }
 
 model ProviderPlan {
@@ -177,4 +179,29 @@ model ProviderAlertNotification {
 
   @@index([providerId, resolvedAt])
   @@index([lastSentAt])
+}
+
+model Project {
+  id               String   @id @default(uuid())
+  name             String   @unique
+  description      String?
+  monthlyBudgetUsd Float?
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  allocations ProviderProjectAllocation[]
+}
+
+model ProviderProjectAllocation {
+  id         String   @id @default(uuid())
+  providerId String
+  projectId  String
+  percentage Float    @default(100) // Percentage of cost allocated to this project (0-100)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  provider Provider @relation(fields: [providerId], references: [id], onDelete: Cascade)
+  project  Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@unique([providerId, projectId])
 }
