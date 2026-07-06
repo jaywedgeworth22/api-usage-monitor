@@ -3,6 +3,16 @@ import { fetchProviderUsage } from "@/lib/adapters";
 import { runUsageMaintenance } from "@/lib/usage-maintenance";
 import type { Provider, UsageSnapshot } from "@prisma/client";
 
+const DEFAULT_PROVIDER_TIMEOUT_MS = 90_000;
+
+function resolveProviderTimeoutMs(): number {
+  const raw = process.env.ADAPTER_PROVIDER_TIMEOUT_MS;
+  if (raw == null || raw.trim() === "") return DEFAULT_PROVIDER_TIMEOUT_MS;
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed) || parsed <= 0) return DEFAULT_PROVIDER_TIMEOUT_MS;
+  return parsed;
+}
+
 export async function recordProviderUsage(
   provider: Provider
 ): Promise<UsageSnapshot> {
@@ -65,6 +75,7 @@ export async function fetchAllDueProviders(): Promise<{
     let skipped = 0;
     const errors: Array<{ providerId: string; name: string; error: string }> = [];
     const now = Date.now();
+    const providerTimeoutMs = resolveProviderTimeoutMs();
 
     for (const { snapshots, ...provider } of providers) {
       const latestFetchedAt = snapshots[0]?.fetchedAt.getTime();
@@ -75,7 +86,41 @@ export async function fetchAllDueProviders(): Promise<{
       }
 
       try {
-        await recordProviderUsage(provider);
+        // Outer per-provider time budget: a single pathological adapter
+        // (hung DNS, a fetchJson call whose own timeout got bypassed via a
+        // caller-supplied signal, etc.) must not stall the rest of the
+        // sequential loop. If the budget is exhausted we record it as a
+        // failure and move on - the underlying recordProviderUsage promise
+        // is intentionally left to run to completion in the background
+        // (or never resolve); Node doesn't offer a safe way to cancel
+        // arbitrary in-flight work here, and leaking one promise per
+        // pathological tick is an acceptable tradeoff versus stalling the
+        // whole 15-minute poll loop.
+        let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+        try {
+          await Promise.race([
+            recordProviderUsage(provider),
+            new Promise<never>((_, reject) => {
+              timeoutHandle = setTimeout(
+                () =>
+                  reject(
+                    new Error(
+                      `Provider ${provider.name} timed out after ${providerTimeoutMs}ms`
+                    )
+                  ),
+                providerTimeoutMs
+              );
+              // Don't let a still-pending timeout keep the event loop (and the
+              // Node process) alive on its own in one-shot/test contexts.
+              timeoutHandle.unref?.();
+            }),
+          ]);
+        } finally {
+          // Always clear the timer - whether the provider succeeded, threw, or
+          // the timeout won the race - so a winning provider doesn't leave a
+          // stray timer lingering for up to the full budget every poll pass.
+          if (timeoutHandle) clearTimeout(timeoutHandle);
+        }
         successes++;
       } catch (error) {
         failures++;
