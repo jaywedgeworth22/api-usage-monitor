@@ -213,3 +213,7 @@ not locks — re-negotiate in #agent-sync._
   fix (MONET), OTLP data-landing verification (CLAUDE), alert-channel config+test-fire
   (OWNER/CODEX), /api/health commit-SHA stamp (CODEX), long-horizon rollup usage view (CURSOR),
   agent-sync relay monitoring (AG).
+
+### 2026-07-06
+- **Update Settings Page and Dashboard Page to support Projects UI (AG, S)**
+  — Added a "Projects" section in Settings (tabbed UI) and Dashboard. Created `/api/projects` endpoints with CRUD operations and integrated `computeProjectBudgetStatus` to display project-level budget vs spend.
