@@ -4,7 +4,7 @@ const MAX_EVENTS = 100;
 const MAX_METADATA_KEYS = 50;
 const MAX_METADATA_STRING_LENGTH = 500;
 
-const metricTypes = new Set(["usage", "cost", "quota", "tier", "health", "balance", "limit"]);
+const metricTypes = new Set(["usage", "cost", "quota", "tier", "health", "balance", "limit", "quota_sync", "credit_balance"]);
 const units = new Set([
   "request",
   "call",
