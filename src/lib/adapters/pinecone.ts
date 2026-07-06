@@ -1,8 +1,13 @@
-import type { UsageResult } from "./helpers";
+import { fetchJson, type UsageResult } from "./helpers";
+
+interface PineconeIndex {
+  name: string;
+  host?: string;
+}
 
 export async function fetchUsage(apiKey: string): Promise<UsageResult> {
   // Fetch list of indexes, then get stats for each
-  const indexesRes = await fetch("https://api.pinecone.io/indexes", {
+  const indexesRes = await fetchJson("https://api.pinecone.io/indexes", {
     headers: {
       "Api-Key": apiKey,
       "Content-Type": "application/json",
@@ -19,7 +24,9 @@ export async function fetchUsage(apiKey: string): Promise<UsageResult> {
     };
   }
 
-  const { indexes = [] } = await indexesRes.json();
+  const { indexes = [] } = (indexesRes.data ?? {}) as {
+    indexes?: PineconeIndex[];
+  };
   const rawData: Record<string, unknown> = { indexes };
 
   let totalVectorCount = 0;
@@ -29,7 +36,7 @@ export async function fetchUsage(apiKey: string): Promise<UsageResult> {
     try {
       const host = idx.host;
       if (!host) continue;
-      const statsRes = await fetch(`https://${host}/describe_index_stats`, {
+      const statsRes = await fetchJson(`https://${host}/describe_index_stats`, {
         headers: {
           "Api-Key": apiKey,
           "Content-Type": "application/json",
@@ -39,7 +46,7 @@ export async function fetchUsage(apiKey: string): Promise<UsageResult> {
       });
 
       if (statsRes.ok) {
-        const indexStats = await statsRes.json();
+        const indexStats = statsRes.data as { totalVectorCount?: number };
         stats.push({ name: idx.name, stats: indexStats });
         if (typeof indexStats.totalVectorCount === "number") {
           totalVectorCount += indexStats.totalVectorCount;

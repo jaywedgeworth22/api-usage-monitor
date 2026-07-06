@@ -86,6 +86,12 @@ Render per `render.yaml`), plus optional `USAGE_READ_TOKEN` (separate read-only 
 `/api/budget-status`; reuses `USAGE_INGEST_TOKEN` when unset), and optional
 `SENTRY_READ_TOKEN`/`SENTRY_ORG` (Sentry Health card — see above).
 
+Optional adapter-resilience tuning (both default sanely; see `.env.example`):
+`ADAPTER_HTTP_TIMEOUT_MS` (per-request timeout for `fetchJson` in
+`src/lib/adapters/helpers.ts`, default 30s) and `ADAPTER_PROVIDER_TIMEOUT_MS` (outer per-provider
+budget in `fetchAllDueProviders`, `src/lib/usage-recorder.ts`, default 90s) — together these bound
+how long one hung upstream provider can stall the sequential 15-minute poll loop.
+
 ## Verify
 
 ```bash
