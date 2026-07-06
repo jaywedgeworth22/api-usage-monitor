@@ -16,7 +16,7 @@ const runUsageMaintenance = vi.fn();
 
 vi.mock("@/lib/prisma", () => ({
   prisma: {
-    provider: { findMany: () => findMany() },
+    provider: { findMany: () => findMany(), create: vi.fn() },
     usageSnapshot: { create: (args: unknown) => create(args) },
   },
 }));

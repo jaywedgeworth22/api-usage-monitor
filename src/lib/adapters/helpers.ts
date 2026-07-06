@@ -120,7 +120,7 @@ export async function fetchJson(
   const isRetryable = method === "GET";
 
   let attempt = 0;
-  // eslint-disable-next-line no-constant-condition
+   
   while (true) {
     let res: Response;
     try {
