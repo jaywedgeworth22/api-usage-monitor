@@ -15,3 +15,6 @@ tsconfig.tsbuildinfo
 
 # Cursor IDE metadata (not source)
 .cursor/
+
+# Downloaded by scripts/fetch-litestream.sh at build time - never committed.
+/bin/

@@ -143,9 +143,17 @@ SOURCE_DATABASE_URL="..." node scripts/migrate-postgres-to-sqlite.mjs
 ### Optional follow-up: back up the SQLite file
 
 Render disks aren't automatically backed up the way Render's managed
-Postgres is. As an optional follow-up (not implemented here), consider
-setting up [Litestream](https://litestream.io/) to continuously replicate
-`/data/prod.db` to S3-compatible storage for backup/durability. The
-"Agentic Trading" app already uses this exact pattern - see that repo's
-`litestream.yml` (and `docs/litestream.md`, `scripts/litestream-restore.sh`)
-as prior art to copy from.
+Postgres is. [Litestream](https://litestream.io/) is set up in this repo to
+continuously replicate `/data/prod.db` to S3-compatible storage (Cloudflare
+R2) for backup/durability - but it's **opt-in and disabled by default**.
+With the five `LITESTREAM_S3_*` env vars unset, `render.yaml`'s
+`startCommand` behaves exactly as it did before (no litestream process).
+
+To enable it: create an R2 bucket + token and set the five `LITESTREAM_S3_*`
+vars in the Render dashboard's Environment tab (they already exist in
+`render.yaml` with `sync: false` so Render won't prompt for or generate
+them). Full setup, verification, and disaster-recovery restore steps
+(including a restore-drill runbook) live in `docs/litestream.md`. Relevant
+files: `scripts/fetch-litestream.sh` (build-time binary download),
+`litestream.yml` (replica config), `scripts/start-with-litestream.sh` (the
+new `startCommand`), `scripts/litestream-restore.sh` (manual restore).

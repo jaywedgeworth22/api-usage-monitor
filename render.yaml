@@ -30,8 +30,18 @@ services:
     #     table recreation) and prints manual-migration instructions
     # This replaces the previous `prisma db push --accept-data-loss` which
     # could silently drop and recreate tables on every deploy.
-    buildCommand: npm install && npx prisma generate && npm run build
-    startCommand: node scripts/migrate-safe.mjs && npm start
+    #
+    # fetch-litestream.sh downloads a pinned Litestream binary into ./bin at
+    # build time (idempotent; cheap no-op if the disk-backed build cache
+    # already has the right version). start-with-litestream.sh decides at
+    # runtime whether to actually replicate, based on the LITESTREAM_S3_*
+    # envVars below: unset (the default) -> behavior is unchanged from the
+    # plain "node scripts/migrate-safe.mjs && npm start" this replaces; all
+    # five set -> continuously replicate /data/prod.db to the configured
+    # S3-compatible bucket (Cloudflare R2) via litestream.yml, restoring from
+    # the replica first if the disk has no DB yet. See docs/litestream.md.
+    buildCommand: npm install && npx prisma generate && npm run build && bash scripts/fetch-litestream.sh
+    startCommand: bash scripts/start-with-litestream.sh
     envVars:
       - key: DATABASE_URL
         value: file:/data/prod.db
@@ -74,3 +84,21 @@ services:
         value: "90"
       - key: EXTERNAL_USAGE_EVENT_TOMBSTONE_RETENTION_DAYS
         value: "180"
+      # Optional: continuous Litestream replication of /data/prod.db to an
+      # S3-compatible bucket (Cloudflare R2), for backup/durability beyond
+      # the Render disk itself. All five must be set together to enable it;
+      # `sync: false` means Render won't generate or sync values - set these
+      # manually in the dashboard's Environment tab if/when wanted. Leave
+      # unset (the default) and start-with-litestream.sh runs the server
+      # exactly as it does today, with no replication and no litestream
+      # process. See docs/litestream.md for setup + restore runbook.
+      - key: LITESTREAM_S3_BUCKET
+        sync: false
+      - key: LITESTREAM_S3_REGION
+        sync: false
+      - key: LITESTREAM_S3_ENDPOINT
+        sync: false
+      - key: LITESTREAM_S3_ACCESS_KEY_ID
+        sync: false
+      - key: LITESTREAM_S3_SECRET_ACCESS_KEY
+        sync: false
