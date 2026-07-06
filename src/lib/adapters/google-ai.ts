@@ -1,3 +1,4 @@
+import { fetchJson } from "./helpers";
 import type { UsageResult } from "./openai";
 
 export async function fetchUsage(apiKey: string): Promise<UsageResult> {
@@ -9,13 +10,13 @@ export async function fetchUsage(apiKey: string): Promise<UsageResult> {
   // As a workaround, we probe the rate-limit headers from a lightweight call.
 
   try {
-    const probeRes = await fetch(
+    const probeRes = await fetchJson(
       `https://generativelanguage.googleapis.com/v1beta/models?key=${apiKey}`,
       { headers: { "Content-Type": "application/json" } }
     );
 
     if (probeRes.ok) {
-      const data = await probeRes.json();
+      const data = probeRes.data as { models?: unknown[] };
       rawData.availableModels = Array.isArray(data.models)
         ? data.models.length
         : null;

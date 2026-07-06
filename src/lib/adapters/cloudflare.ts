@@ -1,4 +1,13 @@
-import type { UsageResult } from "./helpers";
+import { fetchJson, type UsageResult } from "./helpers";
+
+interface AnalyticsDashboardResponse {
+  result?: {
+    totals?: {
+      requests?: number;
+      bandwidth?: number;
+    };
+  };
+}
 
 function makeHeaders(
   apiKey: string,
@@ -46,12 +55,12 @@ export async function fetchUsage(
   });
 
   try {
-    const analyticsRes = await fetch(
+    const analyticsRes = await fetchJson(
       `${baseUrl}/analytics/dashboard?${analyticsParams}`,
       { headers }
     );
     if (analyticsRes.ok) {
-      const analytics = await analyticsRes.json();
+      const analytics = analyticsRes.data as AnalyticsDashboardResponse;
       rawData.analytics = analytics;
       if (analytics.result?.totals?.requests != null) {
         totalRequests = analytics.result.totals.requests;
@@ -68,12 +77,12 @@ export async function fetchUsage(
 
   // 2. Workers analytics
   try {
-    const workersRes = await fetch(
+    const workersRes = await fetchJson(
       `${baseUrl}/workers/analytics/dashboard?${analyticsParams}`,
       { headers }
     );
     if (workersRes.ok) {
-      const workersData = await workersRes.json();
+      const workersData = workersRes.data as AnalyticsDashboardResponse;
       rawData.workers = workersData;
       if (workersData.result?.totals?.requests != null) {
         totalRequests =
@@ -90,11 +99,11 @@ export async function fetchUsage(
   const databaseId = config?.databaseId as string | undefined;
   if (databaseId) {
     try {
-      const d1Res = await fetch(`${baseUrl}/d1/database/${databaseId}`, {
+      const d1Res = await fetchJson(`${baseUrl}/d1/database/${databaseId}`, {
         headers,
       });
       if (d1Res.ok) {
-        rawData.d1 = await d1Res.json();
+        rawData.d1 = d1Res.data;
       }
     } catch {
       // best effort
@@ -105,12 +114,12 @@ export async function fetchUsage(
   const r2BucketName = config?.r2BucketName as string | undefined;
   if (r2BucketName) {
     try {
-      const r2Res = await fetch(
+      const r2Res = await fetchJson(
         `${baseUrl}/r2/buckets/${r2BucketName}`,
         { headers }
       );
       if (r2Res.ok) {
-        rawData.r2 = await r2Res.json();
+        rawData.r2 = r2Res.data;
       }
     } catch {
       // best effort
@@ -121,12 +130,12 @@ export async function fetchUsage(
   const kvNamespaceId = config?.kvNamespaceId as string | undefined;
   if (kvNamespaceId) {
     try {
-      const kvRes = await fetch(
+      const kvRes = await fetchJson(
         `${baseUrl}/storage/kv/namespaces/${kvNamespaceId}`,
         { headers }
       );
       if (kvRes.ok) {
-        rawData.kv = await kvRes.json();
+        rawData.kv = kvRes.data;
       }
     } catch {
       // best effort
@@ -137,11 +146,11 @@ export async function fetchUsage(
   const queueId = config?.queueId as string | undefined;
   if (queueId) {
     try {
-      const queueRes = await fetch(`${baseUrl}/queues/${queueId}`, {
+      const queueRes = await fetchJson(`${baseUrl}/queues/${queueId}`, {
         headers,
       });
       if (queueRes.ok) {
-        rawData.queue = await queueRes.json();
+        rawData.queue = queueRes.data;
       }
     } catch {
       // best effort

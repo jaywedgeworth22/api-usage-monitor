@@ -1,3 +1,4 @@
+import { fetchJson } from "./helpers";
 import type { UsageResult } from "./openai";
 
 export async function fetchUsage(
@@ -15,7 +16,7 @@ export async function fetchUsage(
   const orgId = config?.orgId as string | undefined;
   if (orgId) {
     try {
-      const usageRes = await fetch(
+      const usageRes = await fetchJson(
         `https://api.anthropic.com/v1/organizations/${orgId}/usage`,
         {
           headers: {
@@ -26,7 +27,7 @@ export async function fetchUsage(
         }
       );
       if (usageRes.ok) {
-        const data = await usageRes.json();
+        const data = usageRes.data as Record<string, unknown>;
         rawData.usage = data;
         if (typeof data.total_cost === "number") totalCost = data.total_cost;
         if (typeof data.total_requests === "number") totalRequests = data.total_requests;
@@ -40,19 +41,22 @@ export async function fetchUsage(
 
   // 2. Probe rate-limit headers from a lightweight Messages API call
   try {
-    const probeRes = await fetch("https://api.anthropic.com/v1/messages", {
-      method: "POST",
-      headers: {
-        "x-api-key": apiKey,
-        "anthropic-version": "2023-06-01",
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        model: "claude-haiku-3-5",
-        max_tokens: 1,
-        messages: [{ role: "user", content: "hi" }],
-      }),
-    });
+    const probeRes = await fetchJson(
+      "https://api.anthropic.com/v1/messages",
+      {
+        method: "POST",
+        headers: {
+          "x-api-key": apiKey,
+          "anthropic-version": "2023-06-01",
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          model: "claude-haiku-3-5",
+          max_tokens: 1,
+          messages: [{ role: "user", content: "hi" }],
+        }),
+      }
+    );
     // We deliberately throw away the response; we just want the headers
     const remaining = probeRes.headers.get("anthropic-ratelimit-requests-remaining");
     const limit = probeRes.headers.get("anthropic-ratelimit-requests-limit");

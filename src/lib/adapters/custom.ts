@@ -1,4 +1,4 @@
-import type { UsageResult } from "./helpers";
+import { fetchJson, type UsageResult } from "./helpers";
 
 function resolveJsonPath(obj: unknown, path: string): unknown {
   // Simple JSONPath-like resolution: $.balance -> obj.balance
@@ -56,7 +56,7 @@ export async function fetchUsage(
     }
   }
 
-  const res = await fetch(endpoint, { headers });
+  const res = await fetchJson(endpoint, { headers });
 
   if (!res.ok) {
     return {
@@ -68,7 +68,7 @@ export async function fetchUsage(
     };
   }
 
-  const data = await res.json();
+  const data = res.data;
 
   const balance = resolveJsonPath(data, balancePath);
   const totalCost = resolveJsonPath(data, costPath);
