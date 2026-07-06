@@ -44,6 +44,7 @@ async function loadAdapters() {
     import("./stripe"),
     import("./robinhood"),
     import("./alpaca"),
+    import("./agent-sync-relay"),
   ]);
 
   const [
@@ -56,6 +57,7 @@ async function loadAdapters() {
     apify,
     stripe,
     robinhood, alpaca,
+    agentSyncRelay,
   ] = modules;
 
   // LLM/AI
@@ -111,6 +113,10 @@ async function loadAdapters() {
 
   // Custom
   adapters["custom"] = custom.fetchUsage;
+
+  // Agent Sync Relay (monitoring)
+  adapters["agent-sync-relay"] = agentSyncRelay.fetchUsage;
+  adapters["agent_sync_relay"] = agentSyncRelay.fetchUsage;
 }
 
 export async function fetchProviderUsage(

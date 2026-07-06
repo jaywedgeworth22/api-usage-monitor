@@ -1,6 +1,7 @@
 import { prisma } from "@/lib/prisma";
 import { fetchProviderUsage } from "@/lib/adapters";
 import { runUsageMaintenance } from "@/lib/usage-maintenance";
+import { ensureAgentSyncProviderSeeded } from "@/lib/ensure-agent-sync-provider";
 import type { Provider, UsageSnapshot } from "@prisma/client";
 
 export async function recordProviderUsage(
@@ -49,6 +50,7 @@ export async function fetchAllDueProviders(): Promise<{
   }
 
   const run = (async () => {
+    await ensureAgentSyncProviderSeeded();
     const providers = await prisma.provider.findMany({
       where: { isActive: true },
       include: {
