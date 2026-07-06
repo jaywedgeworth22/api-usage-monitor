@@ -1,14 +1,27 @@
 # Litestream 0.5.x config. Schema notes (verified against the v0.5.13 binary /
-# cmd/litestream/main.go structs):
+# cmd/litestream/main.go structs + a real `litestream databases` parse):
 #   - 0.5.x takes a SINGLE `replica:` per db (the 0.4.x `replicas:` array is
-#     deprecated and, worse, retention/snapshot keys placed under a replica are
-#     silently ignored by yaml.v2 - so they must live on the db, not the replica).
-#   - Snapshot cadence/retention is a `snapshot:` block on the db (DBConfig.Snapshot),
-#     NOT a replica field. This is what actually bounds the point-in-time window.
+#     deprecated, and retention/snapshot keys placed under a replica are silently
+#     ignored by yaml.v2 - a ReplicaConfig has no such fields).
+#   - Snapshot cadence/retention is a top-level `snapshot:` block (Config.Snapshot,
+#     the global default that applyValues/validate reads). This is what actually
+#     bounds the point-in-time restore window; without it litestream falls back to
+#     its 24h default retention. (A per-db `snapshot:` also works and is promoted to
+#     the global via applyDBSnapshotConfig, but the top-level form is the documented
+#     canonical location, so we use it here to be unambiguous.)
 #   - Env vars are expanded with Go's os.Getenv (NOT bash), so `${VAR:-default}`
 #     does not work - use a bare `${VAR}`. An empty region is fine here: with an
 #     S3 endpoint set (R2 always sets one) Litestream falls back to us-east-1 and
 #     R2 accepts any region for SigV4.
+
+# Point-in-time retention: keep 30 days of snapshot history, a fresh snapshot
+# every 24h. Litestream 0.5.x stores LTX files and GCs snapshots older than
+# `retention`; the finer-grained LTX/WAL window is governed by the default
+# l0-retention, which is sufficient here.
+snapshot:
+  interval: 24h
+  retention: 720h
+
 dbs:
   - path: /data/prod.db
     replica:
@@ -19,10 +32,3 @@ dbs:
       endpoint: ${LITESTREAM_S3_ENDPOINT}
       access-key-id: ${LITESTREAM_S3_ACCESS_KEY_ID}
       secret-access-key: ${LITESTREAM_S3_SECRET_ACCESS_KEY}
-    # Point-in-time retention: keep 30 days of snapshot history (a fresh snapshot
-    # every 24h). Litestream 0.5.x stores LTX files and GCs snapshots older than
-    # `retention`; the finer-grained LTX/WAL window is governed by the default
-    # l0-retention, which is sufficient here.
-    snapshot:
-      interval: 24h
-      retention: 720h
