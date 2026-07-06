@@ -8,6 +8,7 @@ export interface ProviderInput {
   groupId?: string;
   label?: string;
   plan?: ProviderPlanInput;
+  allocations?: { projectId: string; percentage: number }[];
 }
 
 export interface ProviderUpdateInput {
@@ -19,6 +20,7 @@ export interface ProviderUpdateInput {
   groupId?: string | null;
   label?: string | null;
   plan?: ProviderPlanInput;
+  allocations?: { projectId: string; percentage: number }[];
 }
 
 export interface ProviderPlanInput {
@@ -170,6 +172,33 @@ function parseProviderPlanInput(value: unknown): ProviderPlanInput | undefined {
   return plan;
 }
 
+function parseAllocationsInput(value: unknown): { projectId: string; percentage: number }[] | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (!Array.isArray(value)) throw new Error("allocations must be an array");
+
+  let totalPercentage = 0;
+  const allocations = value.map((a, index) => {
+    if (!a || typeof a !== "object") throw new Error(`allocations[${index}] must be an object`);
+    
+    const projectId = cleanOptionalString((a as any).projectId);
+    if (!projectId) throw new Error(`allocations[${index}].projectId must be a non-empty string`);
+    
+    const percentage = typeof (a as any).percentage === "number" ? (a as any).percentage : Number((a as any).percentage);
+    if (!Number.isFinite(percentage) || percentage < 0 || percentage > 100) {
+      throw new Error(`allocations[${index}].percentage must be a number between 0 and 100`);
+    }
+
+    totalPercentage += percentage;
+    return { projectId, percentage };
+  });
+
+  if (allocations.length > 0 && totalPercentage > 100) {
+    throw new Error("sum of allocation percentages cannot exceed 100");
+  }
+
+  return allocations;
+}
+
 export async function readJsonBody(request: Request): Promise<Record<string, unknown>> {
   try {
     const body = await request.json();
@@ -208,6 +237,7 @@ export function parseProviderCreateInput(body: Record<string, unknown>): Provide
     groupId: cleanOptionalString(body.groupId),
     label: cleanOptionalString(body.label),
     plan: parseProviderPlanInput(body.plan),
+    allocations: parseAllocationsInput(body.allocations),
   };
 }
 
@@ -257,6 +287,10 @@ export function parseProviderUpdateInput(
 
   if (body.plan !== undefined) {
     update.plan = parseProviderPlanInput(body.plan);
+  }
+
+  if (body.allocations !== undefined) {
+    update.allocations = parseAllocationsInput(body.allocations);
   }
 
   return update;

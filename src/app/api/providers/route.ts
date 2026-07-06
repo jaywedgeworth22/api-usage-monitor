@@ -34,6 +34,12 @@ export async function GET() {
       config: true,
       apiKey: true,
       createdAt: true,
+      allocations: {
+        select: {
+          projectId: true,
+          percentage: true,
+        },
+      },
       plan: {
         select: {
           id: true,
@@ -133,6 +139,14 @@ export async function POST(request: NextRequest) {
       plan: input.plan
         ? { create: toPrismaProviderPlanData(input.plan) }
         : undefined,
+      allocations: input.allocations
+        ? {
+            create: input.allocations.map((a) => ({
+              projectId: a.projectId,
+              percentage: a.percentage,
+            })),
+          }
+        : undefined,
     },
     select: {
       id: true,
@@ -143,6 +157,12 @@ export async function POST(request: NextRequest) {
       refreshIntervalMin: true,
       groupId: true,
       label: true,
+      allocations: {
+        select: {
+          projectId: true,
+          percentage: true,
+        },
+      },
       plan: true,
       createdAt: true,
     },

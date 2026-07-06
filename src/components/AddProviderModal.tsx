@@ -26,6 +26,7 @@ interface Provider {
   label?: string | null;
   keyPreview?: string | null;
   plan?: ProviderPlan | null;
+  allocations?: { projectId: string; percentage: number }[];
 }
 
 interface AddProviderModalProps {
@@ -111,7 +112,7 @@ const CATEGORIES = [
   "Brokerage",
 ];
 
-type Tab = "builtin" | "custom";
+type Tab = "builtin" | "custom" | "generic";
 
 function planNumber(value: number | null | undefined): string {
   return value == null ? "" : String(value);
@@ -129,9 +130,26 @@ export default function AddProviderModal({
   editProvider,
   existingProviders = [],
 }: AddProviderModalProps) {
-  const [tab, setTab] = useState<Tab>(editProvider?.type === "custom" ? "custom" : "builtin");
+  const [tab, setTab] = useState<Tab>(
+    editProvider?.type === "custom" ? "custom" : editProvider?.type === "generic" ? "generic" : "builtin"
+  );
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
+
+  const [projects, setProjects] = useState<{ id: string; name: string }[]>([]);
+  const [allocations, setAllocations] = useState<{ projectId: string; percentage: number }[]>(
+    editProvider?.allocations || []
+  );
+
+  useEffect(() => {
+    fetch("/api/projects")
+      .then((res) => {
+        if (!res.ok) throw new Error("Failed to fetch projects");
+        return res.json();
+      })
+      .then((data) => setProjects(data))
+      .catch((err) => console.error("Error fetching projects:", err));
+  }, []);
 
   const [selectedBuiltin, setSelectedBuiltin] = useState(editProvider?.name || "");
   const [apiKey, setApiKey] = useState(editProvider?.apiKey || "");
@@ -207,7 +225,7 @@ export default function AddProviderModal({
     if (!open) return;
 
     const config = (editProvider?.config as Record<string, string>) || {};
-    const nextTab: Tab = editProvider?.type === "custom" ? "custom" : "builtin";
+    const nextTab: Tab = editProvider?.type === "custom" ? "custom" : editProvider?.type === "generic" ? "generic" : "builtin";
     // eslint-disable-next-line react-hooks/set-state-in-effect -- reset form state when modal opens
     setTab(nextTab);
     setError("");
@@ -234,6 +252,7 @@ export default function AddProviderModal({
     setRenewalDate(dateInputValue(editProvider?.plan?.renewalDate));
     setMustKeepFunded(editProvider?.plan?.mustKeepFunded ?? false);
     setPlanNotes(editProvider?.plan?.notes ?? "");
+    setAllocations(editProvider?.allocations || []);
   }, [editProvider, open]);
 
   if (!open) return null;
@@ -301,8 +320,9 @@ export default function AddProviderModal({
           config: Object.keys(config).length > 0 ? config : undefined,
           label: label || undefined,
           plan,
+          allocations: allocations.length > 0 ? allocations : undefined,
         });
-      } else {
+      } else if (tab === "custom") {
         if (!customName || !customDisplayName || !customEndpoint) {
           setError("Name, display name, and endpoint are required");
           setSaving(false);
@@ -330,6 +350,22 @@ export default function AddProviderModal({
           config,
           label: label || undefined,
           plan,
+          allocations: allocations.length > 0 ? allocations : undefined,
+        });
+      } else if (tab === "generic") {
+        if (!customName || !customDisplayName) {
+          setError("Name and display name are required");
+          setSaving(false);
+          return;
+        }
+
+        await onSave({
+          id: editProvider?.id,
+          name: customName.toLowerCase().replace(/\s+/g, "-"),
+          displayName: customDisplayName,
+          type: "generic",
+          plan,
+          allocations: allocations.length > 0 ? allocations : undefined,
         });
       }
       onClose();
@@ -526,6 +562,65 @@ export default function AddProviderModal({
     ) : null;
   };
 
+  const renderAllocations = () => {
+    if (projects.length === 0) return null;
+    return (
+      <fieldset className="border border-gray-200 rounded-lg p-3 space-y-3">
+        <legend className="text-sm font-medium text-gray-700 px-1">
+          Project Allocations
+        </legend>
+        <div className="space-y-2">
+          {allocations.map((alloc, idx) => (
+            <div key={idx} className="flex items-center gap-2">
+              <select
+                value={alloc.projectId}
+                onChange={(e) => {
+                  const newAlloc = [...allocations];
+                  newAlloc[idx].projectId = e.target.value;
+                  setAllocations(newAlloc);
+                }}
+                className="flex-1 px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+              >
+                <option value="">Select project...</option>
+                {projects.map((p) => (
+                  <option key={p.id} value={p.id}>{p.name}</option>
+                ))}
+              </select>
+              <input
+                type="number"
+                min="0"
+                max="100"
+                value={alloc.percentage}
+                onChange={(e) => {
+                  const newAlloc = [...allocations];
+                  newAlloc[idx].percentage = Number(e.target.value);
+                  setAllocations(newAlloc);
+                }}
+                placeholder="%"
+                className="w-20 px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+              />
+              <span className="text-gray-500 text-sm">%</span>
+              <button
+                type="button"
+                onClick={() => setAllocations(allocations.filter((_, i) => i !== idx))}
+                className="text-red-500 hover:text-red-700 font-bold px-2 text-lg leading-none"
+              >
+                &times;
+              </button>
+            </div>
+          ))}
+          <button
+            type="button"
+            onClick={() => setAllocations([...allocations, { projectId: projects[0]?.id || "", percentage: 0 }])}
+            className="text-sm text-blue-600 hover:text-blue-800 font-medium mt-1"
+          >
+            + Add Project
+          </button>
+        </div>
+      </fieldset>
+    );
+  };
+
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center">
       <div
@@ -566,6 +661,16 @@ export default function AddProviderModal({
               }`}
             >
               Custom
+            </button>
+            <button
+              onClick={() => setTab("generic")}
+              className={`flex-1 pb-3 text-sm font-medium border-b-2 transition-colors ${
+                tab === "generic"
+                  ? "border-blue-500 text-blue-600"
+                  : "border-transparent text-gray-500 hover:text-gray-700"
+              }`}
+            >
+              Generic
             </button>
           </div>
 
@@ -668,9 +773,10 @@ export default function AddProviderModal({
 
               {renderExtraFields()}
 
+              {renderAllocations()}
               {renderBillingFields()}
             </div>
-          ) : (
+          ) : tab === "custom" ? (
             <div className="space-y-4">
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <div>
@@ -833,6 +939,39 @@ export default function AddProviderModal({
                 )}
               </fieldset>
 
+              {renderAllocations()}
+              {renderBillingFields()}
+            </div>
+          ) : (
+            <div className="space-y-4">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">
+                    Name (slug)
+                  </label>
+                  <input
+                    type="text"
+                    value={customName}
+                    onChange={(e) => setCustomName(e.target.value)}
+                    placeholder="my-service"
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">
+                    Display Name
+                  </label>
+                  <input
+                    type="text"
+                    value={customDisplayName}
+                    onChange={(e) => setCustomDisplayName(e.target.value)}
+                    placeholder="My Service"
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                  />
+                </div>
+              </div>
+
+              {renderAllocations()}
               {renderBillingFields()}
             </div>
           )}

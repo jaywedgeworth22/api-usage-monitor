@@ -24,6 +24,12 @@ export async function GET(
       refreshIntervalMin: true,
       groupId: true,
       label: true,
+      allocations: {
+        select: {
+          projectId: true,
+          percentage: true,
+        },
+      },
       plan: true,
       snapshots: {
         orderBy: { fetchedAt: "desc" },
@@ -109,6 +115,15 @@ export async function PUT(
       },
     };
   }
+  if (input.allocations !== undefined) {
+    updateData.allocations = {
+      deleteMany: {},
+      create: input.allocations.map((a) => ({
+        projectId: a.projectId,
+        percentage: a.percentage,
+      })),
+    };
+  }
 
   const provider = await prisma.provider.update({
     where: { id },
@@ -122,6 +137,12 @@ export async function PUT(
       refreshIntervalMin: true,
       groupId: true,
       label: true,
+      allocations: {
+        select: {
+          projectId: true,
+          percentage: true,
+        },
+      },
       plan: true,
       createdAt: true,
     },
