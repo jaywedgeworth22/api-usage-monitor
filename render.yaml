@@ -41,6 +41,12 @@ services:
         generateValue: true
       - key: USAGE_INGEST_TOKEN
         generateValue: true
+      # GET /api/budget-status authenticates with USAGE_READ_TOKEN, falling back
+      # to USAGE_INGEST_TOKEN when unset (see src/app/api/budget-status/route.ts).
+      # We intentionally do NOT provision a distinct USAGE_READ_TOKEN here: prod
+      # read access reuses the ingest token, so sibling apps polling spend use the
+      # value they already hold. To hand out read-only access without ingest
+      # rights, add a distinct USAGE_READ_TOKEN in the Render dashboard.
       - key: DASHBOARD_PASSWORD
         generateValue: true
       # Optional: enables the read-only Sentry Health dashboard card
