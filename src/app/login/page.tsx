@@ -57,10 +57,11 @@ function LoginForm() {
         <h1 className="text-xl font-bold text-gray-900">Log in</h1>
         <form onSubmit={handleSubmit} className="space-y-4">
           <div>
-            <label className="block text-xs text-gray-500 mb-1">
+            <label htmlFor="password" className="block text-xs text-gray-500 mb-1">
               Password
             </label>
             <input
+              id="password"
               type="password"
               autoFocus
               value={password}

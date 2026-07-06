@@ -194,8 +194,19 @@ export default function SettingsPage() {
 
   if (loading) {
     return (
-      <div className="flex items-center justify-center h-64">
-        <div className="animate-spin h-8 w-8 border-4 border-blue-500 border-t-transparent rounded-full" />
+      <div className="space-y-6 animate-pulse">
+        <div className="flex items-center justify-between">
+          <div className="h-8 w-32 bg-gray-200 rounded"></div>
+          <div className="h-10 w-32 bg-gray-200 rounded-lg"></div>
+        </div>
+        <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
+          <div className="h-12 bg-gray-50 border-b border-gray-100"></div>
+          <div className="divide-y divide-gray-50">
+            {[...Array(5)].map((_, i) => (
+              <div key={i} className="h-20 bg-white"></div>
+            ))}
+          </div>
+        </div>
       </div>
     );
   }
@@ -233,25 +244,25 @@ export default function SettingsPage() {
         </div>
       ) : (
         <div className="bg-white rounded-xl border border-gray-200 overflow-x-auto">
-          <table className="w-full min-w-[1100px] text-sm">
+          <table className="w-full text-sm">
             <thead>
               <tr className="border-b border-gray-100 bg-gray-50">
                 <th className="text-left px-6 py-3 font-medium text-gray-500">
                   Name
                 </th>
-                <th className="text-left px-6 py-3 font-medium text-gray-500">
+                <th className="text-left px-6 py-3 font-medium text-gray-500 hidden md:table-cell">
                   Label
                 </th>
-                <th className="text-left px-6 py-3 font-medium text-gray-500">
+                <th className="text-left px-6 py-3 font-medium text-gray-500 hidden sm:table-cell">
                   Type
                 </th>
-                <th className="text-left px-6 py-3 font-medium text-gray-500">
+                <th className="text-left px-6 py-3 font-medium text-gray-500 hidden sm:table-cell">
                   Status
                 </th>
                 <th className="text-left px-6 py-3 font-medium text-gray-500">
                   Spend / Budget
                 </th>
-                <th className="text-left px-6 py-3 font-medium text-gray-500">
+                <th className="text-left px-6 py-3 font-medium text-gray-500 hidden lg:table-cell">
                   Renewal
                 </th>
                 <th className="text-left px-6 py-3 font-medium text-gray-500">
@@ -262,7 +273,7 @@ export default function SettingsPage() {
                     Credits
                   </th>
                 )}
-                <th className="text-left px-6 py-3 font-medium text-gray-500">
+                <th className="text-left px-6 py-3 font-medium text-gray-500 hidden xl:table-cell">
                   Last Fetched
                 </th>
                 <th className="text-right px-6 py-3 font-medium text-gray-500">
@@ -295,17 +306,17 @@ export default function SettingsPage() {
                       )}
                     </div>
                   </td>
-                  <td className="px-6 py-4">
+                  <td className="px-6 py-4 hidden md:table-cell">
                     <span className="text-xs text-gray-400">
                       {provider.label || "--"}
                     </span>
                   </td>
-                  <td className="px-6 py-4">
+                  <td className="px-6 py-4 hidden sm:table-cell">
                     <span className="inline-flex px-2 py-0.5 text-xs font-medium uppercase rounded bg-gray-100 text-gray-500">
                       {provider.type}
                     </span>
                   </td>
-                  <td className="px-6 py-4">
+                  <td className="px-6 py-4 hidden sm:table-cell">
                     <button
                       onClick={() => handleToggleActive(provider)}
                       disabled={actionLoading === provider.id}
@@ -336,7 +347,7 @@ export default function SettingsPage() {
                       </span>
                     </div>
                   </td>
-                  <td className="px-6 py-4 text-xs text-gray-500">
+                  <td className="px-6 py-4 text-xs text-gray-500 hidden lg:table-cell">
                     {formatDateOnly(provider.plan?.renewalDate)}
                   </td>
                   <td className="px-6 py-4">
@@ -370,7 +381,7 @@ export default function SettingsPage() {
                         : "--"}
                     </td>
                   )}
-                  <td className="px-6 py-4 text-gray-500 text-xs">
+                  <td className="px-6 py-4 text-gray-500 text-xs hidden xl:table-cell">
                     {formatDate(provider.latestSnapshot?.fetchedAt ?? null)}
                   </td>
                   <td className="px-6 py-4">

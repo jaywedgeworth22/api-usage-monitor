@@ -85,21 +85,22 @@ export default function ProviderCard({
     }).format(amount);
 
   return (
-    <Link
-      href={`/providers/${id}`}
-      className="block bg-white rounded-xl border border-gray-200 p-6 transition-all duration-200 hover:shadow-md hover:border-gray-300 hover:-translate-y-0.5"
+    <div
+      className="relative block bg-white rounded-xl border border-gray-200 p-6 transition-all duration-200 hover:shadow-md hover:border-gray-300 hover:-translate-y-0.5"
     >
       <div className="flex items-center gap-3 mb-4">
         <div className={`w-3 h-3 rounded-full ${dotColor} flex-shrink-0`} />
         <div className="min-w-0 flex-1">
           <h3 className="text-lg font-semibold text-gray-900 truncate">
-            {displayName}
+            <Link href={`/providers/${id}`} className="after:absolute after:inset-0">
+              {displayName}
+            </Link>
           </h3>
           {label && (
             <p className="text-xs text-gray-400 truncate">{label}</p>
           )}
           {keyPreview && (
-            <p className="text-[10px] text-gray-400 truncate font-mono">{keyPreview}</p>
+            <p className="text-xs text-gray-400 truncate font-mono">{keyPreview}</p>
           )}
         </div>
         <div className="ml-auto flex flex-col items-end gap-1 flex-shrink-0">
@@ -108,7 +109,7 @@ export default function ProviderCard({
           </span>
           {openAlerts.length > 0 && (
             <span
-              className={`text-[10px] font-medium px-2 py-0.5 rounded ${
+              className={`text-xs font-medium px-2 py-0.5 rounded ${
                 hasCritical
                   ? "bg-red-50 text-red-700"
                   : "bg-amber-50 text-amber-700"
@@ -152,12 +153,12 @@ export default function ProviderCard({
             {formatNumber(latestSnapshot?.totalRequests ?? null)}
           </p>
         </div>
-        <div>
+        <div className={(isCreditBased || hasCredits) ? "col-span-2" : ""}>
           <p className="text-xs text-gray-500 mb-1">Monthly</p>
           <p className="text-sm font-medium text-gray-900">
             {formatUsd(estimatedMonthlyCostUsd)}
           </p>
-          <p className="text-[10px] uppercase text-gray-400">{billingMode}</p>
+          <p className="text-xs uppercase text-gray-400">{billingMode}</p>
         </div>
       </div>
 
@@ -178,6 +179,6 @@ export default function ProviderCard({
           Last updated: {new Date(latestSnapshot.fetchedAt).toLocaleString()}
         </p>
       )}
-    </Link>
+    </div>
   );
 }
