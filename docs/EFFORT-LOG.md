@@ -109,6 +109,9 @@ Protocol: /Users/jay/apps/EFFORT-LOG-PROTOCOL.md (canonical). Live board:
 
 ## Planned / Reserved
 
+- **End-of-Month Spend Forecasting (unassigned, S)** — IDEA: Add a simple linear extrapolation algorithm based on the `UsageSnapshotDailyRollup` data to project EOM spend and display it on the dashboard as `Projected EOM Spend: $X`.
+- **Dark Mode Support (unassigned, S)** — IDEA: Add standard CSS dark mode via media queries to support dark mode on the frontend dashboard without breaking the current UI.
+- **Email/PagerDuty Alerting (unassigned, M)** — IDEA: PR #33 added Slack/webhook delivery channels. Expand this to support email alerting (via Resend/SendGrid) or PagerDuty integration for critical budget breaches.
 **2026-07-05 (CLAUDE next-wave): CORRECTION — this mirror lagged the live board.** In Progress:
 previously showed none, despite the live board having active rows. Because the issues-sync
 workflow only closes an issue when the *mirror* row moves to Completed, the lag kept merged
