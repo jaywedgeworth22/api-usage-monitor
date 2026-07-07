@@ -13,12 +13,30 @@ Protocol: /Users/jay/apps/EFFORT-LOG-PROTOCOL.md (canonical). Live board:
   exists specifically to make this section verifiable going forward instead of inferred.
 
 ## Completed
-- **Ingest-auth refactor + ESLint setup (MONET) — PR pending, 2026-07-05.** Wired the
+- **Ingest-auth refactor + ESLint setup (the "Cursor quality sweep") (MONET) — MERGED as PR #42
+  (squash `8452a0b`) 2026-07-05.** Wired the
   `budget-status` and `ingest/usage` routes onto the shared `@/lib/ingest-auth` helpers
   (`tokenFromRequest`/`safeEqual`/`isUsageIngestAuthorized`), removing duplicated token-auth code.
-  Adds flat-config ESLint (`eslint.config.mjs`) + deps + a CI lint step, a rate-limit
-  in-process-only caveat note, `.cursor/` gitignore, and a README. Carried from an uncommitted
-  Cursor working set, rebased clean onto `main`.
+  Adds flat-config ESLint (`eslint.config.mjs`) + deps + a CI lint step + a CI `npm test` step, a
+  rate-limit in-process-only caveat note, `.cursor/` gitignore, and a README. Carried from an
+  uncommitted Cursor working set, rebased clean onto `main`. Landed after an independent adversarial
+  LAND review (no auth regression byte-for-byte; fresh eslint/tsc/56-tests/build green).
+  Discharges Cursor-sweep issues #22 (CI tests), #23 (ESLint), #24 (auth consolidation + env-example),
+  #25 (README). **#26 (close parked `claude/budget-status` + prune branches) is NOT done — the parked
+  branch still exists on origin — leave it open.** #22-#25 are orphaned-open (their per-item keyed rows
+  were consolidated into this summary, so the issues-sync can't match/close them) → CLAUDE's issue-
+  reconciliation lane for a manual close (grouped with #34/#35).
+- **Fix /api/budget-status 401: exclude it from the dashboard-session middleware matcher (MONET, S)**
+  — DONE via PR #58 (squash `dfdb39e`), merged to `main` 2026-07-05. Added `api/budget-status(?:/|$)`
+  to the `src/middleware.ts` matcher exclusion (the route self-authenticates on GET with
+  `USAGE_READ_TOKEN`||`USAGE_INGEST_TOKEN` + `timingSafeEqual`, so the session gate was 401'ing every
+  bearer request before the route's own check), plus a matcher regression test
+  (`src/__tests__/middleware.test.ts`) and a `render.yaml` note that prod reuses `USAGE_INGEST_TOKEN`
+  for read unless a distinct `USAGE_READ_TOKEN` is provisioned. Security-reviewed SAFE (route
+  self-auths GET-only, no nested routes, prefix collisions stay gated). **DEPLOYED + VERIFIED against
+  prod: `POST /api/budget-status` unauth `401`→`405` (session gate gone, route reached) and `GET`
+  authed → `200` with a real budget payload — the token-gated endpoint that had never worked
+  externally now works.** Standalone single-purpose PR, independent of AG's #56.
 - **Effort-issues sync secondary-rate-limit hardening (CLAUDE) — PR #38, 2026-07-05.** Verbatim propagation of the fleet-standard `scripts/sync-effort-issues.py` hardening from Socratic.Trade: 2.5s creation throttle, Retry-After/exponential-backoff retries under a bounded 300s per-run budget, and exit-0 "PARTIAL SYNC — resume on next run" summary on budget exhaustion (bulk issue creation previously 403'd on GitHub's secondary rate limit and hard-failed the sync workflow; the sync is idempotent, so a partial pass resumes cleanly on the next run). Lands with this PR.
   Review refinements re-propagated via PR #40 (merged 2026-07-05): issue listing inside
   partial handling, server-sent Retry-After honored uncapped, 1s update throttle.
@@ -73,11 +91,9 @@ Protocol: /Users/jay/apps/EFFORT-LOG-PROTOCOL.md (canonical). Live board:
   prematurely off this stale row.
 
 ## In Progress
-- **Cursor quality sweep — now carried by OPEN PR #42 (MONET, `monet/aum-ingest-auth-refactor-eslint`).**
-  _2026-07-05 (CLAUDE next-wave): moved here from Completed — see correction note on the row under
-  Completed. #42 rebases the stranded `cursor` branch content onto current `main` (auth
-  consolidation via shared `ingest-auth.ts`, ESLint config, CI test step, README, etc.). Move to
-  Completed only when #42 merges; issues #22-#26 close then, not before._
+_2026-07-06 (MONET): the "Cursor quality sweep — carried by OPEN PR #42" row was removed from here —
+PR #42 MERGED (`8452a0b`); see the updated Completed entry above. (Its stale keyed issue #47 is
+orphaned-open and needs a manual close in CLAUDE's issue-reconciliation lane.)_
 - **Litestream backup for the Render SQLite disk (CLAUDE, was AG) — IN PROGRESS 2026-07-05.**
   Branch `claude/litestream-render-backup`. Adapting the Socratic.Trade `litestream.yml`/R2
   pattern to this app's Render deployment: litestream binary fetched at build, startCommand
@@ -130,16 +146,8 @@ not locks — re-negotiate in #agent-sync._
   is accept-and-drop by design today.
 
 ### 2026-07-05 next-wave (cycle 2)
-- **Fix /api/budget-status 401: exclude it from the dashboard-session middleware matcher (MONET, S)**
-  — `src/middleware.ts`'s matcher excludes `api/ingest` and `api/otlp` but NOT `api/budget-status`,
-  so the session gate 401s every bearer-token request before the route's own
-  `USAGE_READ_TOKEN`/`USAGE_INGEST_TOKEN` check — confirmed live against prod with a valid token.
-  Also decide/document whether prod gets a distinct `USAGE_READ_TOKEN` (`render.yaml` doesn't define
-  one). _(why now: CONFIRMED production bug, verified today: the token-gated budget endpoint (PR #6,
-  built so sibling apps like Socratic.Trade can check spend before LLM calls) has never worked
-  externally. Same bug class PR #13 found and fixed for OTLP. MONET's open PR #42 already touches
-  this route's auth, so it is the cheapest hands to carry the one-line matcher fix plus a regression
-  test.)_
+_2026-07-06 (MONET): the budget-status 401 middleware row was moved to Completed above — DONE via
+PR #58 (`dfdb39e`)._
 - **Verify Claude Code OTLP metrics are actually landing end-to-end (data check, not just auth) (CLAUDE, S)**
   — Ingest auth is proven (202 authed / 401 unauthed, token from `~/.claude/settings.json`), but
   nobody has confirmed real Claude Code sessions produce `ExternalUsageEvent` rows, the lazily-seeded
@@ -216,6 +224,12 @@ not locks — re-negotiate in #agent-sync._
   fix (MONET), OTLP data-landing verification (CLAUDE), alert-channel config+test-fire
   (OWNER/CODEX), /api/health commit-SHA stamp (CODEX), long-horizon rollup usage view (CURSOR),
   agent-sync relay monitoring (AG).
+- 2026-07-06 — MONET: reconciled this mirror to my two merged+deployed items. PR #42 (`8452a0b`,
+  ingest-auth/ESLint/CI/README) Completed entry updated from "PR pending" to MERGED; removed the
+  stale "Cursor sweep carried by OPEN PR #42" In Progress row; moved the budget-status 401 middleware
+  fix (PR #58 `dfdb39e`, deployed+verified) Planned→Completed so the issues-sync closes #50. Left
+  open: #47 + #22-#25 (orphaned — keyed rows consolidated, need a manual close in CLAUDE's lane) and
+  #26 (genuinely not done — parked `claude/budget-status` still on origin).
 
 ### 2026-07-06
 - **Update Settings Page and Dashboard Page to support Projects UI (AG, S)**
