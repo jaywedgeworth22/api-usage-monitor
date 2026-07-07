@@ -54,6 +54,7 @@ interface ExternalUsageEventRow {
   limitWindow: string | null;
   tier: string | null;
   confidence: string;
+  projectId: string | null;
   occurredAt: Date;
 }
 
@@ -72,6 +73,7 @@ interface ExternalRollupValues {
   limitWindow: string | null;
   tier: string | null;
   confidence: string;
+  projectId: string | null;
   eventCount: number;
   totalCostUsd: number;
   totalRequests: number;
@@ -264,6 +266,11 @@ function externalGroupKey(row: ExternalUsageEventRow): string {
     row.limitWindow,
     row.tier,
     row.confidence,
+    // projectId joins the rollup identity so per-project cost never merges
+    // across projects. NOTE: appending a dimension changes every group's hash,
+    // so rollup rows written before this shipped won't merge with new ones — a
+    // one-time reindex, acceptable because per-project attribution is new.
+    row.projectId,
   ]);
 }
 
@@ -300,6 +307,7 @@ function groupExternalRows(rows: ExternalUsageEventRow[]): ExternalRollupValues[
         limitWindow: row.limitWindow,
         tier: row.tier,
         confidence: row.confidence,
+        projectId: row.projectId,
         eventCount: 0,
         totalCostUsd: 0,
         totalRequests: 0,
@@ -455,6 +463,7 @@ async function pruneExternalUsageEvents(
         limitWindow: true,
         tier: true,
         confidence: true,
+        projectId: true,
         occurredAt: true,
       },
     });
@@ -482,6 +491,7 @@ async function pruneExternalUsageEvents(
             limitWindow: true,
             tier: true,
             confidence: true,
+            projectId: true,
             eventCount: true,
             totalCostUsd: true,
             totalRequests: true,

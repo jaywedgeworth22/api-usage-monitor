@@ -18,6 +18,11 @@ enum sets, and the idempotency-key algorithm **must stay byte-for-byte identical
 - `congress-trading-shared/src/usageTelemetry.ts` (Zod schemas + `deriveUsageTelemetryIdempotencyKey`)
 - `src/lib/usage-telemetry.ts` (this repo's hand-written parser — no dependency on the shared pkg)
 
+The optional top-level **`project`** field (per-project attribution) and the **`subscription`**
+`metricType` value were added to this repo's parser; mirror them in the shared package when App B
+should send them. `project` is intentionally excluded from the idempotency basis — keep it out of
+`deriveUsageTelemetryIdempotencyKey` so adding it never rekeys existing events.
+
 Note: the ingest route currently **discards `idempotencyKey`** (no dedup column on
 `ExternalUsageEvent`); if you add server-side dedup, mirror the shared algorithm and store the key.
 
@@ -68,6 +73,48 @@ SQLite datasource — match provider names case-insensitively in JS (`.toLowerCa
   configures one in Settings) — but only if no `anthropic`-named provider exists yet, so it never
   collides with a manually-added one from the existing poll adapter
   (`src/lib/adapters/anthropic.ts`, keyed on `orgId`).
+
+## Per-project cost attribution
+
+`ExternalUsageEvent.projectId` (nullable FK → `Project`, `onDelete: SetNull`) is the first-class
+per-project dimension. It is set **at ingest** by resolving a producer-supplied project *name* to a
+`Project.id` (case-insensitive, `src/lib/project-resolver.ts`); unknown names stay null and the raw
+name is preserved in `metadata` so a Project created later can be back-filled.
+
+- **Claude Code / OTLP:** set `OTEL_RESOURCE_ATTRIBUTES=project=<name>` (or `project.name=`), ideally
+  per-repo via direnv — Claude Code emits one resource-attribute set per process, so this is constant
+  for a session. The mapper reads it onto `MappedUsageEvent.projectName`.
+- **Generic ingest contract:** a top-level `project` field (`src/lib/usage-telemetry.ts`). It is
+  **deliberately NOT part of the idempotency basis** (that algorithm is the byte-for-byte shared
+  contract — see below), so if you mirror `project` into `congress-trading-shared`, do **not** add it
+  to `deriveUsageTelemetryIdempotencyKey`.
+- `projectId` is folded into the daily-rollup `groupKey` (`src/lib/data-retention.ts`) so per-project
+  cost survives raw-event retention. Appending it rehashed every group once — historical rollups
+  written before this shipped won't merge with new ones (acceptable; the feature is new).
+- Budget math (`computeProjectBudgetStatus`): explicit `projectId` is authoritative; the legacy
+  `sourceApp == Project.name` match is a fallback for **untagged** rows only; percentage
+  `ProviderProjectAllocation` distributes each provider's *residual* (spend not directly attributed).
+  This fixed the prior double-count. `ProjectBudgetStatus` now also exposes `directUsd`/`allocatedUsd`.
+
+## Subscriptions (recurring fixed costs)
+
+`Subscription` (one-per-many providers, optional `projectId`) is the source of truth for recurring
+fees. The **materializer** (`src/lib/subscription-materializer.ts`) emits one synthetic
+`ExternalUsageEvent` (`metricType="subscription"`, `sourceApp="subscription"`, `provider=<provider
+name>`, carrying the subscription's `projectId`) per elapsed billing period, so subscription cost
+flows through the SAME month-to-date sums / rollups / per-project attribution / budgets as metered
+usage — no special-casing. Idempotent by `(subscriptionId, periodStart)` hash + a
+`lastChargedPeriodStart` watermark, so it's safe on every maintenance cycle.
+
+- Period math is pure in `src/lib/subscriptions.ts` (advance, monthly-equivalent, anchor day,
+  renewal roll-forward). CRUD at `/api/subscriptions[/:id]`; UI is the Settings **Subscriptions** tab.
+- `ProviderPlan.billingInterval` + `rollForwardProviderRenewals` (`src/lib/provider-renewals.ts`) fix
+  the old bug where `renewalDate` never advanced and stayed permanently `renewal_overdue`. Alerts
+  compute the effective next renewal in-memory; the maintenance cycle persists the advance.
+- Both the materializer and the renewal roll-forward run inside `runUsageMaintenance`
+  (`src/lib/usage-maintenance.ts`), before retention and alert delivery.
+- A recurring fee should be modeled EITHER as `ProviderPlan.fixedMonthlyCostUsd` (a flat read-time
+  add) OR as a `Subscription` (materialized events) — not both, or it double-counts.
 
 ## Sentry Health card
 

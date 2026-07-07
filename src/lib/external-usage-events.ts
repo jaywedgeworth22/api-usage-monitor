@@ -7,6 +7,9 @@ export interface ExternalUsageEventInput {
   environment?: string;
   provider: string;
   service?: string;
+  // Resolved Project.id (see project-resolver.ts). Null/undefined when the
+  // producer supplied no project or none matched a known Project.
+  projectId?: string | null;
   label?: string;
   keyRef?: string;
   billingMode: string;
@@ -32,11 +35,23 @@ export interface PersistExternalUsageEventsResult {
   skippedPrunedDuplicates: number;
 }
 
+// Prisma raises P2003 on a foreign-key constraint violation (e.g. a projectId
+// pointing at a Project deleted between resolution and insert).
+function isForeignKeyError(error: unknown): boolean {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    "code" in error &&
+    (error as { code?: unknown }).code === "P2003"
+  );
+}
+
 export interface ExternalUsageEventSummaryGroup {
   sourceApp: string;
   environment: string | null;
   provider: string;
   service: string | null;
+  projectId: string | null;
   eventCount: number;
   totalCostUsd: number;
   totalRequests: number;
@@ -46,13 +61,26 @@ export interface ExternalUsageEventSummaryGroup {
   latestAt: string;
 }
 
-function toCreateData(event: ExternalUsageEventInput): Prisma.ExternalUsageEventCreateInput {
+// One month-to-date cost total per (provider, sourceApp, projectId) triple,
+// summed across raw events and daily rollups. This is the single source the
+// project budget computation slices to derive direct per-project cost,
+// legacy sourceApp-name attribution, and the true unattributed residual —
+// see budget-status.ts's computeProjectBudgetStatus.
+export interface ExternalCostAttributionRow {
+  provider: string;
+  sourceApp: string;
+  projectId: string | null;
+  costUsd: number;
+}
+
+function toCreateData(event: ExternalUsageEventInput): Prisma.ExternalUsageEventUncheckedCreateInput {
   return {
     idempotencyKey: event.idempotencyKey,
     sourceApp: event.sourceApp,
     environment: event.environment,
     provider: event.provider,
     service: event.service,
+    projectId: event.projectId ?? null,
     label: event.label,
     keyRef: event.keyRef,
     billingMode: event.billingMode,
@@ -86,11 +114,11 @@ export async function persistExternalUsageEvents(
     select: { idempotencyKey: true },
   });
   const prunedKeys = new Set(tombstones.map((row) => row.idempotencyKey));
-  const activeEvents = events.filter((event) => !prunedKeys.has(event.idempotencyKey));
+  let activeEvents = events.filter((event) => !prunedKeys.has(event.idempotencyKey));
 
-  if (activeEvents.length > 0) {
-    await prisma.$transaction(
-      activeEvents.map((event) =>
+  const upsertAll = (batch: ExternalUsageEventInput[]) =>
+    prisma.$transaction(
+      batch.map((event) =>
         prisma.externalUsageEvent.upsert({
           where: { idempotencyKey: event.idempotencyKey },
           create: toCreateData(event),
@@ -98,6 +126,38 @@ export async function persistExternalUsageEvents(
         })
       )
     );
+
+  if (activeEvents.length > 0) {
+    try {
+      await upsertAll(activeEvents);
+    } catch (error) {
+      // A referenced Project can be deleted in the window between name
+      // resolution and this insert; its projectId then FK-violates and, because
+      // all events share one transaction, the whole batch would be lost. Rather
+      // than drop durable usage rows for a rare race, drop only the stale
+      // attribution: re-check which referenced projects still exist, null the
+      // dangling projectIds, and retry once. (SetNull governs deletes of an
+      // existing row, not insert-time FK validation, so it can't prevent this.)
+      if (isForeignKeyError(error)) {
+        const referencedIds = Array.from(
+          new Set(activeEvents.map((e) => e.projectId).filter((id): id is string => !!id))
+        );
+        const alive = new Set(
+          (
+            await prisma.project.findMany({
+              where: { id: { in: referencedIds } },
+              select: { id: true },
+            })
+          ).map((p) => p.id)
+        );
+        activeEvents = activeEvents.map((e) =>
+          e.projectId && !alive.has(e.projectId) ? { ...e, projectId: null } : e
+        );
+        await upsertAll(activeEvents);
+      } else {
+        throw error;
+      }
+    }
   }
 
   return {
@@ -112,12 +172,14 @@ function summaryGroupKey(group: {
   environment: string | null;
   provider: string;
   service: string | null;
+  projectId: string | null;
 }): string {
   return [
     group.sourceApp,
     group.environment ?? "",
     group.provider,
     group.service ?? "",
+    group.projectId ?? "",
   ].join("|");
 }
 
@@ -163,6 +225,7 @@ export async function summarizeExternalUsageEvents(
         environment: true,
         provider: true,
         service: true,
+        projectId: true,
         quantity: true,
         costUsd: true,
         requests: true,
@@ -184,6 +247,7 @@ export async function summarizeExternalUsageEvents(
             environment: true,
             provider: true,
             service: true,
+            projectId: true,
             eventCount: true,
             totalCostUsd: true,
             totalRequests: true,
@@ -202,6 +266,7 @@ export async function summarizeExternalUsageEvents(
       environment: event.environment,
       provider: event.provider,
       service: event.service,
+      projectId: event.projectId,
       eventCount: 1,
       totalCostUsd: event.costUsd ?? 0,
       totalRequests: event.requests ?? 0,
@@ -218,6 +283,7 @@ export async function summarizeExternalUsageEvents(
       environment: rollup.environment,
       provider: rollup.provider,
       service: rollup.service,
+      projectId: rollup.projectId,
       eventCount: rollup.eventCount,
       totalCostUsd: rollup.totalCostUsd,
       totalRequests: rollup.totalRequests,
@@ -239,15 +305,28 @@ export async function summarizeExternalUsageEvents(
   };
 }
 
+// Month-to-date pushed cost per provider, split by whether it is "usage-like"
+// (metered cost a poll snapshot also sees — deduped against the snapshot via
+// max()) or a materialized "subscription" fee (a recurring charge DISJOINT from
+// metered usage — always additive). Keeping these separate is what lets
+// budget-status add a subscription fee on top of a provider's poll snapshot
+// instead of letting max(snapshot, pushed) swallow it.
+export const SUBSCRIPTION_METRIC_TYPE = "subscription";
+
+export interface ProviderPushedCost {
+  usagePushed: number;
+  subscriptionPushed: number;
+}
+
 export async function sumMonthToDateExternalCostByProvider(
   monthStart: Date,
   rawCutoff: Date
-): Promise<Map<string, number>> {
+): Promise<Map<string, ProviderPushedCost>> {
   const rawSince = monthStart > rawCutoff ? monthStart : rawCutoff;
 
   const [rawGroups, rollups] = await Promise.all([
     prisma.externalUsageEvent.groupBy({
-      by: ["provider"],
+      by: ["provider", "metricType"],
       where: { occurredAt: { gte: rawSince }, costUsd: { not: null } },
       _sum: { costUsd: true },
     }),
@@ -258,55 +337,84 @@ export async function sumMonthToDateExternalCostByProvider(
           },
           select: {
             provider: true,
+            metricType: true,
             totalCostUsd: true,
           },
         })
       : Promise.resolve([]),
   ]);
 
-  const totals = new Map<string, number>();
+  const totals = new Map<string, ProviderPushedCost>();
+  const add = (provider: string, metricType: string, cost: number) => {
+    const key = provider.toLowerCase();
+    const bucket = totals.get(key) ?? { usagePushed: 0, subscriptionPushed: 0 };
+    if (metricType === SUBSCRIPTION_METRIC_TYPE) {
+      bucket.subscriptionPushed += cost;
+    } else {
+      bucket.usagePushed += cost;
+    }
+    totals.set(key, bucket);
+  };
+
   for (const row of rawGroups) {
-    totals.set(row.provider.toLowerCase(), row._sum.costUsd ?? 0);
+    add(row.provider, row.metricType, row._sum.costUsd ?? 0);
   }
   for (const rollup of rollups) {
-    const key = rollup.provider.toLowerCase();
-    totals.set(key, (totals.get(key) ?? 0) + rollup.totalCostUsd);
+    add(rollup.provider, rollup.metricType, rollup.totalCostUsd);
   }
   return totals;
 }
 
-export async function sumMonthToDateExternalCostBySourceApp(
+// Month-to-date external cost split by (provider, sourceApp, projectId), across
+// both raw events and rollups. The project budget computation derives every
+// attribution slice it needs from this one result: direct per-project cost
+// (rows with a projectId), legacy sourceApp-name attribution (untagged rows
+// whose sourceApp matches a Project.name), and the residual that percentage
+// allocations distribute (provider cost not directly attributed to any
+// project). Returning the raw triples — rather than pre-summed maps — is what
+// lets budget-status avoid the previous double-count between the provider-keyed
+// and sourceApp-keyed aggregations.
+export async function sumMonthToDateExternalCostAttribution(
   monthStart: Date,
   rawCutoff: Date
-): Promise<Map<string, number>> {
+): Promise<ExternalCostAttributionRow[]> {
   const rawSince = monthStart > rawCutoff ? monthStart : rawCutoff;
 
   const [rawGroups, rollups] = await Promise.all([
     prisma.externalUsageEvent.groupBy({
-      by: ["sourceApp"],
+      by: ["provider", "sourceApp", "projectId"],
       where: { occurredAt: { gte: rawSince }, costUsd: { not: null } },
       _sum: { costUsd: true },
     }),
     monthStart < rawCutoff
       ? prisma.externalUsageEventDailyRollup.findMany({
-          where: {
-            day: { gte: monthStart, lt: rawCutoff },
-          },
+          where: { day: { gte: monthStart, lt: rawCutoff } },
           select: {
+            provider: true,
             sourceApp: true,
+            projectId: true,
             totalCostUsd: true,
           },
         })
       : Promise.resolve([]),
   ]);
 
-  const totals = new Map<string, number>();
+  const rows = new Map<string, ExternalCostAttributionRow>();
+  const add = (provider: string, sourceApp: string, projectId: string | null, cost: number) => {
+    const key = `${provider.toLowerCase()}|${sourceApp.toLowerCase()}|${projectId ?? ""}`;
+    const existing = rows.get(key);
+    if (existing) {
+      existing.costUsd += cost;
+    } else {
+      rows.set(key, { provider, sourceApp, projectId, costUsd: cost });
+    }
+  };
+
   for (const row of rawGroups) {
-    totals.set(row.sourceApp.toLowerCase(), row._sum.costUsd ?? 0);
+    add(row.provider, row.sourceApp, row.projectId, row._sum.costUsd ?? 0);
   }
   for (const rollup of rollups) {
-    const key = rollup.sourceApp.toLowerCase();
-    totals.set(key, (totals.get(key) ?? 0) + rollup.totalCostUsd);
+    add(rollup.provider, rollup.sourceApp, rollup.projectId, rollup.totalCostUsd);
   }
-  return totals;
+  return Array.from(rows.values());
 }

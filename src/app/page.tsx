@@ -34,6 +34,8 @@ interface ExternalUsageGroup {
   environment: string | null;
   provider: string;
   service: string | null;
+  projectId: string | null;
+  projectName?: string | null;
   eventCount: number;
   totalCostUsd: number;
   totalRequests: number;
@@ -265,7 +267,7 @@ export default function DashboardPage() {
                     : null;
                 return (
                   <div
-                    key={`${group.sourceApp}-${group.environment ?? ""}-${group.provider}-${group.service ?? ""}`}
+                    key={`${group.sourceApp}-${group.environment ?? ""}-${group.provider}-${group.service ?? ""}-${group.projectId ?? ""}`}
                     className="px-6 py-4"
                   >
                     <div className="flex items-start justify-between gap-4">
@@ -278,6 +280,11 @@ export default function DashboardPage() {
                           {group.provider}
                           {group.service ? ` - ${group.service}` : ""}
                         </p>
+                        {group.projectName && (
+                          <span className="inline-flex mt-1 px-1.5 py-0.5 text-[10px] font-medium rounded bg-blue-50 text-blue-700 border border-blue-100">
+                            {group.projectName}
+                          </span>
+                        )}
                       </div>
                       <div className="text-right">
                         <p className="text-sm font-semibold text-gray-900">

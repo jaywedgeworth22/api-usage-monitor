@@ -4,6 +4,7 @@ import { persistExternalUsageEvents } from "@/lib/external-usage-events";
 import { parseUsageTelemetryBatch } from "@/lib/usage-telemetry";
 import { createRateLimiter, getClientIp } from "@/lib/rate-limit";
 import { isUsageIngestAuthorized } from "@/lib/ingest-auth";
+import { resolveProjectIdsByName } from "@/lib/project-resolver";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -39,31 +40,48 @@ export async function POST(request: NextRequest) {
     );
   }
 
+  // Resolve any top-level `project` field to a Project.id. Unknown names stay
+  // null but are preserved in metadata so a later-created Project can be
+  // back-filled.
+  const projectIdByName = await resolveProjectIdsByName(
+    events.map((event) => event.project).filter((name): name is string => !!name)
+  );
+
   const persistResult = await persistExternalUsageEvents(
-    events.map((event) => ({
-      idempotencyKey: event.idempotencyKey,
-      sourceApp: event.sourceApp,
-      environment: event.environment,
-      provider: event.provider,
-      service: event.service,
-      label: event.label,
-      keyRef: event.keyRef,
-      billingMode: event.billingMode,
-      metricType: event.metricType,
-      quantity: event.quantity,
-      unit: event.unit,
-      costUsd: event.costUsd,
-      requests: event.requests,
-      credits: event.credits,
-      limit: event.limit,
-      limitWindow: event.limitWindow,
-      tier: event.tier,
-      confidence: event.confidence,
-      windowStart: event.windowStart,
-      windowEnd: event.windowEnd,
-      occurredAt: event.occurredAt,
-      metadata: event.metadata as Prisma.InputJsonObject | undefined,
-    }))
+    events.map((event) => {
+      const projectId = event.project
+        ? projectIdByName.get(event.project.trim().toLowerCase()) ?? null
+        : null;
+      const metadata =
+        event.project && !(event.metadata && "project" in event.metadata)
+          ? { ...(event.metadata ?? {}), project: event.project }
+          : event.metadata;
+      return {
+        idempotencyKey: event.idempotencyKey,
+        sourceApp: event.sourceApp,
+        environment: event.environment,
+        provider: event.provider,
+        service: event.service,
+        projectId,
+        label: event.label,
+        keyRef: event.keyRef,
+        billingMode: event.billingMode,
+        metricType: event.metricType,
+        quantity: event.quantity,
+        unit: event.unit,
+        costUsd: event.costUsd,
+        requests: event.requests,
+        credits: event.credits,
+        limit: event.limit,
+        limitWindow: event.limitWindow,
+        tier: event.tier,
+        confidence: event.confidence,
+        windowStart: event.windowStart,
+        windowEnd: event.windowEnd,
+        occurredAt: event.occurredAt,
+        metadata: metadata as Prisma.InputJsonObject | undefined,
+      };
+    })
   );
 
   return NextResponse.json(

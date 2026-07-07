@@ -12,6 +12,7 @@ interface ProviderPlan {
   lowBalanceUsd: number | null;
   lowCredits: number | null;
   renewalDate: string | null;
+  billingInterval: string | null;
   mustKeepFunded: boolean;
   notes: string | null;
 }
@@ -216,6 +217,9 @@ export default function AddProviderModal({
   const [renewalDate, setRenewalDate] = useState(
     dateInputValue(editProvider?.plan?.renewalDate)
   );
+  const [billingInterval, setBillingInterval] = useState(
+    editProvider?.plan?.billingInterval ?? "monthly"
+  );
   const [mustKeepFunded, setMustKeepFunded] = useState(
     editProvider?.plan?.mustKeepFunded ?? false
   );
@@ -250,6 +254,7 @@ export default function AddProviderModal({
     setLowBalanceUsd(planNumber(editProvider?.plan?.lowBalanceUsd));
     setLowCredits(planNumber(editProvider?.plan?.lowCredits));
     setRenewalDate(dateInputValue(editProvider?.plan?.renewalDate));
+    setBillingInterval(editProvider?.plan?.billingInterval ?? "monthly");
     setMustKeepFunded(editProvider?.plan?.mustKeepFunded ?? false);
     setPlanNotes(editProvider?.plan?.notes ?? "");
     setAllocations(editProvider?.allocations || []);
@@ -285,6 +290,7 @@ export default function AddProviderModal({
     lowBalanceUsd: parseNumberField(lowBalanceUsd, "Low balance alert"),
     lowCredits: parseNumberField(lowCredits, "Low credit alert"),
     renewalDate: renewalDate || null,
+    billingInterval,
     mustKeepFunded,
     notes: planNotes.trim() || null,
   });
@@ -448,6 +454,21 @@ export default function AddProviderModal({
             onChange={(e) => setRenewalDate(e.target.value)}
             className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
           />
+        </div>
+        <div>
+          <label className="block text-xs text-gray-500 mb-1">
+            Renewal cadence
+          </label>
+          <select
+            value={billingInterval}
+            onChange={(e) => setBillingInterval(e.target.value)}
+            className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+          >
+            <option value="weekly">Weekly</option>
+            <option value="monthly">Monthly</option>
+            <option value="quarterly">Quarterly</option>
+            <option value="annual">Annual</option>
+          </select>
         </div>
       </div>
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">

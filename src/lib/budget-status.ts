@@ -1,5 +1,8 @@
 import { prisma } from "@/lib/prisma";
-import { sumMonthToDateExternalCostByProvider, sumMonthToDateExternalCostBySourceApp } from "@/lib/external-usage-events";
+import {
+  sumMonthToDateExternalCostByProvider,
+  sumMonthToDateExternalCostAttribution,
+} from "@/lib/external-usage-events";
 import { buildProviderAlertState, type ProviderAlert } from "@/lib/provider-alerts";
 import { getExternalEventRawCutoff } from "@/lib/data-retention";
 
@@ -81,6 +84,7 @@ export async function computeBudgetStatus(now: Date = new Date()): Promise<Budge
             lowBalanceUsd: true,
             lowCredits: true,
             renewalDate: true,
+            billingInterval: true,
             mustKeepFunded: true,
           },
         },
@@ -94,7 +98,8 @@ export async function computeBudgetStatus(now: Date = new Date()): Promise<Budge
     sumMonthToDateExternalCostByProvider(monthStart, rawCutoff),
   ]);
 
-  // Case-insensitive provider name → month-to-date pushed cost.
+  // Case-insensitive provider name → month-to-date pushed cost (split into
+  // usage-like vs subscription — see sumMonthToDateExternalCostByProvider).
   const pushedMap = pushedByProvider;
 
   const providerStatuses: ProviderBudgetStatus[] = providers.map((p) => {
@@ -102,8 +107,13 @@ export async function computeBudgetStatus(now: Date = new Date()): Promise<Budge
     const latestSnapshot = p.snapshots[0] ?? null;
     const fixedMonthlyCostUsd = plan?.fixedMonthlyCostUsd ?? 0;
     const snapshotCostUsd = latestSnapshot?.totalCost ?? null;
-    const pushedMonthToDateUsd = pushedMap.get(p.name.toLowerCase()) ?? 0;
-    const usageCost = Math.max(snapshotCostUsd ?? 0, pushedMonthToDateUsd);
+    const pushed = pushedMap.get(p.name.toLowerCase()) ?? { usagePushed: 0, subscriptionPushed: 0 };
+    const pushedMonthToDateUsd = pushed.usagePushed + pushed.subscriptionPushed;
+    // Usage-like pushed cost is deduped against the poll snapshot via max()
+    // (they measure the same spend); materialized subscription fees are DISJOINT
+    // from metered usage and are always added on top — otherwise a subscription
+    // on a poll-tracked provider vanishes whenever snapshot ≥ the fee.
+    const usageCost = Math.max(snapshotCostUsd ?? 0, pushed.usagePushed) + pushed.subscriptionPushed;
     const spentUsd = fixedMonthlyCostUsd + usageCost;
     const monthlyBudgetUsd = plan?.monthlyBudgetUsd ?? null;
 
@@ -188,6 +198,13 @@ export interface ProjectBudgetStatus {
   description: string | null;
   monthlyBudgetUsd: number | null;
   spentUsd: number;
+  // Cost attributed directly to this project — events carrying its projectId
+  // (incl. materialized subscription charges) plus the legacy fallback where an
+  // untagged event's sourceApp matches this project's name.
+  directUsd: number;
+  // Cost distributed to this project by ProviderProjectAllocation percentages
+  // out of each provider's residual (spend not directly attributed anywhere).
+  allocatedUsd: number;
   remainingUsd: number | null;
   percentUsed: number | null;
   status: BudgetStatusLevel;
@@ -210,7 +227,7 @@ export interface ProjectBudgetStatusResponse {
 }
 
 export async function computeProjectBudgetStatus(now: Date = new Date()): Promise<ProjectBudgetStatusResponse> {
-  const [providerStatus, projects, pushedBySourceApp] = await Promise.all([
+  const [providerStatus, projects, attribution] = await Promise.all([
     computeBudgetStatus(now),
     prisma.project.findMany({
       include: {
@@ -218,31 +235,51 @@ export async function computeProjectBudgetStatus(now: Date = new Date()): Promis
       },
       orderBy: { name: "asc" }
     }),
-    sumMonthToDateExternalCostBySourceApp(monthStartUtc(now), getExternalEventRawCutoff(now))
+    sumMonthToDateExternalCostAttribution(monthStartUtc(now), getExternalEventRawCutoff(now)),
   ]);
 
-  const pushedMap = pushedBySourceApp;
+  // Lowercased Project.name -> id, for the legacy sourceApp-name fallback.
+  const projectIdByName = new Map(projects.map((p) => [p.name.toLowerCase(), p.id]));
+
+  // Slice the (provider, sourceApp, projectId) triples into:
+  //   directByProjectId  — cost attributed to a specific project. A row counts
+  //     when it carries a projectId (authoritative), OR — only if untagged —
+  //     when its sourceApp matches a known Project.name (legacy behaviour, kept
+  //     for back-compat but no longer able to double-count a projectId row).
+  //   attributedByProvider — for each provider, the slice of its cost that
+  //     landed on SOME project above; subtracted from provider.spentUsd to get
+  //     the residual that percentage allocations distribute (this is the fix
+  //     for the old code, which subtracted a differently-keyed pushed total).
+  const directByProjectId = new Map<string, number>();
+  const attributedByProvider = new Map<string, number>();
+  for (const row of attribution) {
+    const projectId = row.projectId ?? projectIdByName.get(row.sourceApp.toLowerCase()) ?? null;
+    if (!projectId) continue;
+    directByProjectId.set(projectId, (directByProjectId.get(projectId) ?? 0) + row.costUsd);
+    const providerKey = row.provider.toLowerCase();
+    attributedByProvider.set(providerKey, (attributedByProvider.get(providerKey) ?? 0) + row.costUsd);
+  }
+
+  const providerById = new Map(providerStatus.providers.map((p) => [p.id, p]));
 
   const projectStatuses: ProjectBudgetStatus[] = projects.map((proj) => {
-    let spentUsd = 0;
-    
-    // 1. Direct pushed telemetry matching this project's name
-    const directPushedCost = pushedMap.get(proj.name.toLowerCase()) ?? 0;
-    spentUsd += directPushedCost;
+    // 1. Direct per-event attribution (projectId, plus legacy name match).
+    const directUsd = directByProjectId.get(proj.id) ?? 0;
 
-    // 2. Fractional allocation of provider fixed costs + unattributed usage costs
+    // 2. Percentage allocation of each provider's residual — the spend NOT
+    // already directly attributed to any project (fixed fees, poll-snapshot
+    // usage, and any untagged pushed telemetry).
+    let allocatedUsd = 0;
     for (const alloc of proj.allocations) {
-      const provider = providerStatus.providers.find(p => p.id === alloc.providerId);
-      if (provider) {
-        // Find the amount of provider's spentUsd that is NOT already accounted for by its own pushed telemetry
-        // (to prevent double counting if the telemetry was also tagged with a sourceApp)
-        const unattributedCost = Math.max(0, provider.spentUsd - provider.pushedMonthToDateUsd);
-        
-        // Percentage is stored as 0-100
-        const ratio = Math.max(0, Math.min(100, alloc.percentage)) / 100;
-        spentUsd += unattributedCost * ratio;
-      }
+      const provider = providerById.get(alloc.providerId);
+      if (!provider) continue;
+      const attributed = attributedByProvider.get(provider.name.toLowerCase()) ?? 0;
+      const residual = Math.max(0, provider.spentUsd - attributed);
+      const ratio = Math.max(0, Math.min(100, alloc.percentage)) / 100;
+      allocatedUsd += residual * ratio;
     }
+
+    const spentUsd = directUsd + allocatedUsd;
 
     let status: BudgetStatusLevel;
     let remainingUsd: number | null;
@@ -268,6 +305,8 @@ export async function computeProjectBudgetStatus(now: Date = new Date()): Promis
       description: proj.description,
       monthlyBudgetUsd: proj.monthlyBudgetUsd,
       spentUsd,
+      directUsd,
+      allocatedUsd,
       remainingUsd,
       percentUsed,
       status,

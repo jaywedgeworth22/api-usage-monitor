@@ -7,6 +7,7 @@ import { decodeMetricsJson } from "@/lib/otlp/json-decode";
 import { decodeMetricsProtobuf } from "@/lib/otlp/protobuf-decode";
 import { mapClaudeCodeMetrics } from "@/lib/otlp/claude-code-mapper";
 import { ensureAnthropicProviderSeeded } from "@/lib/otlp/ensure-anthropic-provider";
+import { resolveProjectIdsByName } from "@/lib/project-resolver";
 
 // OTLP-HTTP metrics ingest: POST /api/otlp/v1/metrics
 //
@@ -114,6 +115,14 @@ export async function POST(request: NextRequest) {
 
   let skippedPrunedDuplicates = 0;
   if (events.length > 0) {
+    // Resolve any `project` resource attribute (OTEL_RESOURCE_ATTRIBUTES) to a
+    // Project.id. Unknown names stay null; the raw name is already preserved in
+    // metadata via the mapper's cleanMetadata, so a later-created Project can be
+    // back-filled.
+    const projectIdByName = await resolveProjectIdsByName(
+      events.map((event) => event.projectName).filter((name): name is string => !!name)
+    );
+
     const persistResult = await persistExternalUsageEvents(
       events.map((event) => ({
         idempotencyKey: event.idempotencyKey,
@@ -121,6 +130,9 @@ export async function POST(request: NextRequest) {
         environment: event.environment,
         provider: event.provider,
         service: event.service,
+        projectId: event.projectName
+          ? projectIdByName.get(event.projectName.trim().toLowerCase()) ?? null
+          : null,
         label: event.label,
         keyRef: event.keyRef,
         billingMode: event.billingMode,

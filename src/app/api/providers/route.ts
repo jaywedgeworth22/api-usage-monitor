@@ -50,6 +50,7 @@ export async function GET() {
           lowBalanceUsd: true,
           lowCredits: true,
           renewalDate: true,
+          billingInterval: true,
           mustKeepFunded: true,
           notes: true,
         },

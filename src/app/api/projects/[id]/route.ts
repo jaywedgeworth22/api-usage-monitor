@@ -37,7 +37,23 @@ export async function PUT(
     if (!name) {
       return NextResponse.json({ error: "name cannot be empty" }, { status: 400 });
     }
+    // Reject a rename that case-collides with another project (see the create
+    // route + project-resolver.ts for why case-insensitive uniqueness matters).
+    // The unique `nameKey` column is the atomic guarantee; this is the friendly
+    // pre-check. A P2002 from the update is caught below as a backstop.
+    const nameKey = name.trim().toLowerCase();
+    const others = await prisma.project.findMany({
+      where: { id: { not: id } },
+      select: { name: true },
+    });
+    if (others.some((p) => p.name.trim().toLowerCase() === nameKey)) {
+      return NextResponse.json(
+        { error: "Project name already exists (names are case-insensitive)" },
+        { status: 409 }
+      );
+    }
     updateData.name = name;
+    updateData.nameKey = nameKey;
   }
 
   if (body.description !== undefined) {

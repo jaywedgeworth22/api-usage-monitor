@@ -4,7 +4,7 @@ const MAX_EVENTS = 100;
 const MAX_METADATA_KEYS = 50;
 const MAX_METADATA_STRING_LENGTH = 500;
 
-const metricTypes = new Set(["usage", "cost", "quota", "tier", "health", "balance", "limit", "quota_sync", "credit_balance"]);
+const metricTypes = new Set(["usage", "cost", "quota", "tier", "health", "balance", "limit", "quota_sync", "credit_balance", "subscription"]);
 const units = new Set([
   "request",
   "call",
@@ -26,6 +26,13 @@ export interface ParsedUsageTelemetryEvent {
   environment?: string;
   provider: string;
   service?: string;
+  // Producer-supplied project name/key. Resolved to a Project.id at ingest
+  // (see project-resolver.ts). Deliberately NOT part of the idempotency basis
+  // — the derived-key algorithm is a byte-for-byte contract shared with the
+  // congress-trading-shared package, so adding a field would rekey every
+  // existing event. Two events identical except for `project` therefore share
+  // a key; that collision is acceptable versus breaking cross-app dedupe.
+  project?: string;
   label?: string;
   keyRef?: string;
   billingMode: string;
@@ -231,6 +238,7 @@ function parseEvent(value: unknown): ParsedUsageTelemetryEvent {
     environment,
     provider,
     service,
+    project: readString(record, "project", { max: 120 }),
     label,
     keyRef,
     billingMode: readEnum(record, "billingMode", billingModes, "estimated"),
