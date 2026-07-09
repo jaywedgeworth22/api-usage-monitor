@@ -19,12 +19,15 @@ enum sets, and the idempotency-key algorithm **must stay byte-for-byte identical
 - `src/lib/usage-telemetry.ts` (this repo's hand-written parser — no dependency on the shared pkg)
 
 The optional top-level **`project`** field (per-project attribution) and the **`subscription`**
-`metricType` value were added to this repo's parser; mirror them in the shared package when App B
-should send them. `project` is intentionally excluded from the idempotency basis — keep it out of
+`metricType` value are accepted here and mirrored in shared `UsageTelemetryEventSchema` (v1.4.2+).
+`project` is intentionally excluded from the idempotency basis — keep it out of
 `deriveUsageTelemetryIdempotencyKey` so adding it never rekeys existing events.
 
-Note: the ingest route currently **discards `idempotencyKey`** (no dedup column on
-`ExternalUsageEvent`); if you add server-side dedup, mirror the shared algorithm and store the key.
+Monitor-only metricTypes `quota_sync` and `credit_balance` stay internal (not in the shared enum).
+
+Idempotency: when the producer omits `idempotencyKey`, the server derives the same 5-field SHA-256
+key as shared (`sourceApp` + `provider` + `metricType` + `keyRef` + `occurredAt`). Explicit keys
+are persisted and upsert-deduped on `ExternalUsageEvent.idempotencyKey`.
 
 ## Endpoints (App B integration)
 

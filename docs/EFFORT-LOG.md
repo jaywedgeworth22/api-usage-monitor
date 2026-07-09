@@ -109,6 +109,12 @@ Protocol: /Users/jay/apps/EFFORT-LOG-PROTOCOL.md (canonical). Live board:
   prematurely off this stale row.
 
 ## In Progress
+- **Restore shared 5-field usage-telemetry idempotency (CURSOR, S) — started 2026-07-09.**
+  Branch `cursor/shared-dep-adoption-9577`. Reverted server fallback `deriveIdempotencyKey` from
+  a drifted 12-field basis to the shared 5-field contract; ported the 7 shared hash vectors into
+  monitor tests; corrected AGENTS.md (idempotencyKey is persisted + upsert-deduped; project +
+  subscription already mirrored in shared v1.4.2). Verified: usage-telemetry tests 21/21, typecheck clean.
+
 _2026-07-06 (CLAUDE): none. The Litestream + per-adapter-resilience rows that were here MERGED as
 PR #59 (`a6ce13b`) and PR #60 (`42d3559`) — see Completed above. (The "Cursor quality sweep — carried
 by OPEN PR #42" row that was also here merged as PR #42.) Stale keyed issues for all of these are

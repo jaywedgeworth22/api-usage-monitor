@@ -12,51 +12,100 @@ const SHA256_HEX_LENGTH = 64;
 const HEX_PATTERN = /^[0-9a-f]{64}$/;
 
 describe("deriveIdempotencyKey", () => {
-  // ---- Hardcoded input/output vectors -----------------------------------
+  // ---- Shared contract vectors (byte-for-byte with congress-trading-shared) ---
+  // These hashes MUST match src/__tests__/usageTelemetry.test.ts in the shared
+  // package. If they diverge, the cross-app idempotency contract is broken.
 
-  it("produces a deterministic 64-char hex key for vector 1 (openai / gpt-5.5)", () => {
-    const input = {
-      sourceApp: "socratic-trade",
-      provider: "openai",
+  it("vector 1: basic usage event", () => {
+    const events = parseUsageTelemetryBatch({
+      sourceApp: "congress-trade",
+      provider: "cloudflare",
       metricType: "usage",
-      keyRef: "gpt-5.5",
-      occurredAt: "2026-06-15T00:00:00.000Z",
-    };
-    const events = parseUsageTelemetryBatch(input);
+      keyRef: "",
+      occurredAt: "2026-01-15T10:30:00.000Z",
+    });
     expect(events).toHaveLength(1);
-    const key = events[0].idempotencyKey;
-    expect(key).toMatch(HEX_PATTERN);
-    expect(key).toHaveLength(SHA256_HEX_LENGTH);
+    expect(events[0].idempotencyKey).toBe(
+      "a580c6a4b2836b7ee5474f00200d2f073245369701273bc7764869783eb07343",
+    );
   });
 
-  it("produces a deterministic 64-char hex key for vector 2 (voyage / cost)", () => {
-    const input = {
-      sourceApp: "socratic-trade",
-      provider: "voyage",
+  it("vector 2: different sourceApp", () => {
+    const events = parseUsageTelemetryBatch({
+      sourceApp: "agentic-trading",
+      provider: "cloudflare",
+      metricType: "usage",
+      keyRef: "",
+      occurredAt: "2026-01-15T10:30:00.000Z",
+    });
+    expect(events[0].idempotencyKey).toBe(
+      "0a7d4876d2f48397f04dcb6d8a61fd73e61d7b3ac518e9e4617016f1f55cc3e8",
+    );
+  });
+
+  it("vector 3: different provider", () => {
+    const events = parseUsageTelemetryBatch({
+      sourceApp: "congress-trade",
+      provider: "pinecone",
+      metricType: "usage",
+      keyRef: "",
+      occurredAt: "2026-01-15T10:30:00.000Z",
+    });
+    expect(events[0].idempotencyKey).toBe(
+      "cb9a7853f5641727929d6a065f5ae06999981120ac8c597e84394ba2b962a363",
+    );
+  });
+
+  it("vector 4: with non-empty keyRef", () => {
+    const events = parseUsageTelemetryBatch({
+      sourceApp: "congress-trade",
+      provider: "cloudflare",
+      metricType: "usage",
+      keyRef: "api-usage-monitor-lite",
+      occurredAt: "2026-01-15T10:30:00.000Z",
+    });
+    expect(events[0].idempotencyKey).toBe(
+      "300ff3d978e9153e616c1e2d7d30d67cb20d6360fe37702df19f31e4338fcacb",
+    );
+  });
+
+  it("vector 5: different metricType", () => {
+    const events = parseUsageTelemetryBatch({
+      sourceApp: "congress-trade",
+      provider: "cloudflare",
       metricType: "cost",
       keyRef: "",
-      occurredAt: "2026-06-15T00:00:00.000Z",
-    };
-    const events = parseUsageTelemetryBatch(input);
-    expect(events).toHaveLength(1);
-    const key = events[0].idempotencyKey;
-    expect(key).toMatch(HEX_PATTERN);
-    expect(key).toHaveLength(SHA256_HEX_LENGTH);
+      occurredAt: "2026-01-15T10:30:00.000Z",
+    });
+    expect(events[0].idempotencyKey).toBe(
+      "683201827280518fcd9657a54790ddf2122b6aac7b8f87b88aaf26b860fe2593",
+    );
   });
 
-  it("produces a deterministic 64-char hex key for vector 3 (congress-feed / fmp)", () => {
-    const input = {
-      sourceApp: "congress-feed",
-      provider: "fmp",
+  it("vector 6: different timestamp", () => {
+    const events = parseUsageTelemetryBatch({
+      sourceApp: "congress-trade",
+      provider: "cloudflare",
       metricType: "usage",
       keyRef: "",
-      occurredAt: "2026-06-15T12:00:00.000Z",
-    };
-    const events = parseUsageTelemetryBatch(input);
-    expect(events).toHaveLength(1);
-    const key = events[0].idempotencyKey;
-    expect(key).toMatch(HEX_PATTERN);
-    expect(key).toHaveLength(SHA256_HEX_LENGTH);
+      occurredAt: "2026-01-16T14:45:00.000Z",
+    });
+    expect(events[0].idempotencyKey).toBe(
+      "9693f31f9477e3a8c9864147a8ecb3310ef7e7f6027e3dea92aeeffc49271f63",
+    );
+  });
+
+  it("vector 7: special characters in provider name", () => {
+    const events = parseUsageTelemetryBatch({
+      sourceApp: "congress-trade",
+      provider: "acme-corp|v2",
+      metricType: "usage",
+      keyRef: "",
+      occurredAt: "2026-01-15T10:30:00.000Z",
+    });
+    expect(events[0].idempotencyKey).toBe(
+      "32a0a0b13d5b3edafd460655d6fb9b6d277c2f87c2c4be6460b1bcd2f3d701e0",
+    );
   });
 
   // ---- Determinism: same input → same key -------------------------------
