@@ -149,6 +149,30 @@ npm run build    # next build
 
 Deploy via the Render `render.yaml` blueprint (see `DEPLOY.md`).
 
+## Cursor Cloud specific instructions
+
+Dependency install is `npm install` (its `postinstall` runs `prisma generate`). Local dev also
+needs a `.env` and a SQLite DB, both git-ignored (so recreate them if starting from a clean
+checkout): copy `.env.example` to `.env` and fill the required vars (`DATABASE_URL`,
+`ENCRYPTION_KEY`, `USAGE_INGEST_TOKEN`, `DASHBOARD_PASSWORD` — dev values are fine), then run
+`npx prisma db push` to create `dev.db` from `schema.prisma` (there is no `prisma/migrations/`
+dir, so use `db push`, not `migrate dev`). Log in at `/login` with `DASHBOARD_PASSWORD`.
+
+- **Run `next dev` with Turbopack — the default (webpack) `next dev` is broken here.** Plain
+  `npm run dev` compiles `src/instrumentation.ts` for the Edge runtime, which fails to resolve the
+  Node `crypto` built-in (via `src/lib/crypto.ts` ← adapters ← `usage-recorder`) and then returns
+  **500 on every server-rendered request** (even `/api/health`), despite the correct
+  `NEXT_RUNTIME !== "nodejs"` guard — this is upstream Next dev-analysis behavior
+  (vercel/next.js#86479), not an app bug. Turbopack splits the Node/Edge instrumentation entries
+  correctly and works cleanly. Run dev as: `npm run dev -- --turbopack` (per the owner's Cursor
+  preview-port rule, on 4103: `npx next dev -p 4103 --turbopack`).
+- `npm run build` + `npm start` (production, webpack) are **unaffected** by the above and serve
+  fine; only `next dev`'s webpack path hits it. Note `next dev` and `next start` share `.next`, so
+  after running dev you must `npm run build` again before `next start` finds a production build.
+- On startup the app self-seeds a built-in "Agent Sync Relay" provider
+  (`src/lib/ensure-agent-sync-provider.ts`), so a freshly-pushed DB is not empty in the dashboard —
+  expected, not leftover data.
+
 ## Inter-agent coordination
 
 Coordinate with other AI agents via Slack channel #agent-sync (id `C0BEZDJDNKV`).
