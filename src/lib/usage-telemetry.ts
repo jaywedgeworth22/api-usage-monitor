@@ -184,13 +184,11 @@ function deriveIdempotencyKey(
   const explicit = readString(record, "idempotencyKey", { max: 200 });
   if (explicit) return explicit;
 
-  // Derive from the raw (pre-default) occurredAt string the caller sent, so that
-  // retries of the same logical event collapse to the same key. This fallback
-  // only runs when the caller sends no explicit idempotencyKey, so it's the
-  // *only* signal separating two such events - it must include every field
-  // that can legitimately differ between two rows of a batched snapshot that
-  // happen to share sourceApp/provider/metricType/keyRef/occurredAt, or the
-  // second row silently collides with the first and its data is dropped.
+  // CONTRACT: must stay byte-for-byte identical to
+  // `@jaywedgeworth22/congress-trading-shared`'s deriveUsageTelemetryIdempotencyKey.
+  // Basis = sourceApp + provider + metricType + keyRef + occurredAt (5 fields).
+  // Distinct same-timestamp rows must send an explicit idempotencyKey from the
+  // client — do not expand this basis without bumping both repos together.
   const rawOccurredAt = readString(record, "occurredAt", { max: 80 });
   if (rawOccurredAt) {
     const basisFields = [
@@ -198,13 +196,6 @@ function deriveIdempotencyKey(
       resolved.provider,
       resolved.metricType,
       resolved.keyRef ?? "",
-      resolved.environment ?? "",
-      resolved.service ?? "",
-      resolved.label ?? "",
-      resolved.quantity != null ? String(resolved.quantity) : "",
-      resolved.costUsd != null ? String(resolved.costUsd) : "",
-      resolved.requests != null ? String(resolved.requests) : "",
-      resolved.credits != null ? String(resolved.credits) : "",
       rawOccurredAt,
     ];
     return crypto
