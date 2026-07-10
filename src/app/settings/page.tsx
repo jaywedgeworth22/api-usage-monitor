@@ -3,8 +3,11 @@
 import { useState, useEffect, useCallback } from "react";
 import AddProviderModal from "@/components/AddProviderModal";
 import AddProjectModal, { Project } from "@/components/AddProjectModal";
+import AddSubscriptionModal, { type SubscriptionFormValue } from "@/components/AddSubscriptionModal";
+import SubscriptionsPanel, { type SubscriptionRow } from "@/components/SubscriptionsPanel";
 
 type BillingMode = "actual" | "estimated" | "manual";
+type SettingsTab = "providers" | "projects" | "subscriptions";
 
 interface ProviderPlan {
   billingMode: BillingMode;
@@ -14,6 +17,7 @@ interface ProviderPlan {
   lowBalanceUsd: number | null;
   lowCredits: number | null;
   renewalDate: string | null;
+  billingInterval: string | null;
   mustKeepFunded: boolean;
   notes: string | null;
 }
@@ -51,16 +55,21 @@ interface Provider {
 export default function SettingsPage() {
   const [providers, setProviders] = useState<Provider[]>([]);
   const [projects, setProjects] = useState<Project[]>([]);
+  const [subscriptions, setSubscriptions] = useState<SubscriptionRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [projectsLoading, setProjectsLoading] = useState(true);
-  const [activeTab, setActiveTab] = useState<"providers" | "projects">("providers");
+  const [subscriptionsLoading, setSubscriptionsLoading] = useState(true);
+  const [activeTab, setActiveTab] = useState<SettingsTab>("providers");
   const [error, setError] = useState("");
   const [modalOpen, setModalOpen] = useState(false);
   const [projectModalOpen, setProjectModalOpen] = useState(false);
+  const [subscriptionModalOpen, setSubscriptionModalOpen] = useState(false);
   const [editProvider, setEditProvider] = useState<Provider | null>(null);
   const [editProject, setEditProject] = useState<Project | null>(null);
+  const [editSubscription, setEditSubscription] = useState<SubscriptionFormValue | null>(null);
   const [deleteConfirm, setDeleteConfirm] = useState<string | null>(null);
   const [deleteProjectConfirm, setDeleteProjectConfirm] = useState<string | null>(null);
+  const [deleteSubscriptionConfirm, setDeleteSubscriptionConfirm] = useState<string | null>(null);
   const [actionLoading, setActionLoading] = useState<string | null>(null);
 
   const fetchProviders = useCallback(async () => {
@@ -93,11 +102,27 @@ export default function SettingsPage() {
     }
   }, []);
 
+  const fetchSubscriptions = useCallback(async () => {
+    try {
+      setSubscriptionsLoading(true);
+      setError("");
+      const res = await fetch("/api/subscriptions");
+      if (!res.ok) throw new Error("Failed to fetch subscriptions");
+      const data = await res.json();
+      setSubscriptions(data);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to load subscriptions");
+    } finally {
+      setSubscriptionsLoading(false);
+    }
+  }, []);
+
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect -- data fetching on mount
     fetchProviders();
     fetchProjects();
-  }, [fetchProviders, fetchProjects]);
+    fetchSubscriptions();
+  }, [fetchProviders, fetchProjects, fetchSubscriptions]);
 
   const handleSave = async (provider: {
     id?: string;
@@ -194,6 +219,35 @@ export default function SettingsPage() {
     }
   };
 
+  const handleSaveSubscription = async (subscription: SubscriptionFormValue) => {
+    const url = subscription.id ? `/api/subscriptions/${subscription.id}` : "/api/subscriptions";
+    const res = await fetch(url, {
+      method: subscription.id ? "PUT" : "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(subscription),
+    });
+    if (!res.ok) {
+      const err = await res.json();
+      throw new Error(err.error || "Failed to save subscription");
+    }
+    await fetchSubscriptions();
+    setEditSubscription(null);
+  };
+
+  const handleDeleteSubscription = async (id: string) => {
+    setActionLoading(id);
+    try {
+      const res = await fetch(`/api/subscriptions/${id}`, { method: "DELETE" });
+      if (!res.ok) throw new Error("Failed to delete subscription");
+      await fetchSubscriptions();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to delete subscription");
+    } finally {
+      setActionLoading(null);
+      setDeleteSubscriptionConfirm(null);
+    }
+  };
+
   const handleToggleActive = async (provider: Provider) => {
     setActionLoading(provider.id);
     try {
@@ -255,7 +309,11 @@ export default function SettingsPage() {
     critical: provider.alerts.filter((a) => a.severity === "critical").length,
   });
 
-  if ((loading && activeTab === "providers") || (projectsLoading && activeTab === "projects")) {
+  if (
+    (loading && activeTab === "providers") ||
+    (projectsLoading && activeTab === "projects") ||
+    (subscriptionsLoading && activeTab === "subscriptions")
+  ) {
     return (
       <div className="space-y-6 animate-pulse">
         <div className="flex items-center justify-between">
@@ -288,7 +346,7 @@ export default function SettingsPage() {
           >
             Add Provider
           </button>
-        ) : (
+        ) : activeTab === "projects" ? (
           <button
             onClick={() => {
               setEditProject(null);
@@ -297,6 +355,16 @@ export default function SettingsPage() {
             className="px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700 transition-colors"
           >
             Add Project
+          </button>
+        ) : (
+          <button
+            onClick={() => {
+              setEditSubscription(null);
+              setSubscriptionModalOpen(true);
+            }}
+            className="px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700 transition-colors"
+          >
+            Add Subscription
           </button>
         )}
       </div>
@@ -321,6 +389,16 @@ export default function SettingsPage() {
           }`}
         >
           Projects
+        </button>
+        <button
+          onClick={() => setActiveTab("subscriptions")}
+          className={`pb-3 px-4 text-sm font-medium border-b-2 transition-colors ${
+            activeTab === "subscriptions"
+              ? "border-blue-500 text-blue-600"
+              : "border-transparent text-gray-500 hover:text-gray-700"
+          }`}
+        >
+          Subscriptions
         </button>
       </div>
 
@@ -533,7 +611,7 @@ export default function SettingsPage() {
             </tbody>
           </table>
         </div>
-      )) : projects.length === 0 ? (
+      )) : activeTab === "projects" ? (projects.length === 0 ? (
         <div className="flex flex-col items-center justify-center py-16 gap-4 text-center bg-white rounded-xl border border-gray-200">
           <p className="text-gray-500">No projects configured yet.</p>
           <button
@@ -619,6 +697,37 @@ export default function SettingsPage() {
             </tbody>
           </table>
         </div>
+      )) : (
+        <SubscriptionsPanel
+          subscriptions={subscriptions}
+          onAdd={() => {
+            setEditSubscription(null);
+            setSubscriptionModalOpen(true);
+          }}
+          onEdit={(sub) => {
+            setEditSubscription({
+              id: sub.id,
+              providerId: sub.provider.id,
+              projectId: sub.project?.id ?? null,
+              name: sub.name,
+              description: sub.description,
+              costUsd: sub.costUsd,
+              currency: sub.currency,
+              interval: sub.interval,
+              intervalCount: sub.intervalCount,
+              anchorDay: sub.anchorDay,
+              startDate: sub.startDate,
+              autoRenew: sub.autoRenew,
+              status: sub.status,
+              notes: sub.notes,
+            });
+            setSubscriptionModalOpen(true);
+          }}
+          onDelete={handleDeleteSubscription}
+          deleteConfirm={deleteSubscriptionConfirm}
+          setDeleteConfirm={setDeleteSubscriptionConfirm}
+          actionLoading={actionLoading}
+        />
       )}
 
       <AddProviderModal
@@ -640,6 +749,24 @@ export default function SettingsPage() {
         }}
         onSave={handleSaveProject}
         editProject={editProject}
+      />
+
+      <AddSubscriptionModal
+        open={subscriptionModalOpen}
+        onClose={() => {
+          setSubscriptionModalOpen(false);
+          setEditSubscription(null);
+        }}
+        onSave={handleSaveSubscription}
+        editSubscription={editSubscription}
+        providers={providers.map((p) => ({
+          id: p.id,
+          name: p.name,
+          displayName: p.displayName,
+        }))}
+        projects={projects
+          .filter((p): p is Project & { id: string } => Boolean(p.id))
+          .map((p) => ({ id: p.id, name: p.name }))}
       />
     </div>
   );

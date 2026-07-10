@@ -275,4 +275,30 @@ describe("mapClaudeCodeMetrics", () => {
     const b = mapClaudeCodeMetrics(requestB).events.find((e) => e.metricType === "cost")!;
     expect(a.idempotencyKey).not.toBe(b.idempotencyKey);
   });
+
+  it("extracts the project resource attribute (OTEL_RESOURCE_ATTRIBUTES) onto every event", () => {
+    const request = sampleRequest();
+    (request.resourceMetrics as any)[0].resource.attributes.push({
+      key: "project",
+      value: { stringValue: "socratic-trade" },
+    });
+    const { events } = mapClaudeCodeMetrics(request);
+    expect(events.length).toBeGreaterThan(0);
+    expect(events.every((e) => e.projectName === "socratic-trade")).toBe(true);
+  });
+
+  it("accepts the dotted project.name attribute form", () => {
+    const request = sampleRequest();
+    (request.resourceMetrics as any)[0].resource.attributes.push({
+      key: "project.name",
+      value: { stringValue: "congress-trade" },
+    });
+    const { events } = mapClaudeCodeMetrics(request);
+    expect(events.every((e) => e.projectName === "congress-trade")).toBe(true);
+  });
+
+  it("leaves projectName undefined when no project attribute is present", () => {
+    const { events } = mapClaudeCodeMetrics(sampleRequest());
+    expect(events.every((e) => e.projectName === undefined)).toBe(true);
+  });
 });

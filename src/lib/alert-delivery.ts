@@ -208,6 +208,7 @@ export async function deliverProviderAlerts(options: {
           lowBalanceUsd: true,
           lowCredits: true,
           renewalDate: true,
+          billingInterval: true,
           mustKeepFunded: true,
         },
       },

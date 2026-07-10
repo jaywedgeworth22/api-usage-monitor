@@ -27,13 +27,17 @@ export async function POST(request: Request) {
       );
     }
 
-    const existing = await prisma.project.findUnique({
-      where: { name },
-    });
-
-    if (existing) {
+    // Case-insensitive uniqueness: Project.name is only BINARY-unique in SQLite,
+    // but project attribution resolves producer-supplied names case-insensitively
+    // (project-resolver.ts). Allowing "Foo" and "foo" to coexist would make that
+    // resolution ambiguous. The app-level check gives a friendly message; the
+    // unique `nameKey` column is the real guarantee (it closes the race two
+    // app-level checks can't — both would pass, but the second insert fails).
+    const nameKey = String(name).trim().toLowerCase();
+    const existing = await prisma.project.findMany({ select: { name: true } });
+    if (existing.some((p) => p.name.trim().toLowerCase() === nameKey)) {
       return NextResponse.json(
-        { error: "Project name already exists" },
+        { error: "Project name already exists (names are case-insensitive)" },
         { status: 400 }
       );
     }
@@ -41,6 +45,7 @@ export async function POST(request: Request) {
     const project = await prisma.project.create({
       data: {
         name,
+        nameKey,
         description,
         monthlyBudgetUsd,
       },
@@ -48,6 +53,12 @@ export async function POST(request: Request) {
 
     return NextResponse.json(project);
   } catch (error) {
+    if (typeof error === "object" && error !== null && "code" in error && (error as { code?: unknown }).code === "P2002") {
+      return NextResponse.json(
+        { error: "Project name already exists (names are case-insensitive)" },
+        { status: 409 }
+      );
+    }
     console.error("Failed to create project:", error);
     return NextResponse.json(
       { error: "Failed to create project" },

@@ -22,6 +22,7 @@ CREATE TABLE "Provider" (
 CREATE TABLE "Project" (
   "id" TEXT NOT NULL PRIMARY KEY,
   "name" TEXT NOT NULL,
+  "nameKey" TEXT,
   "description" TEXT,
   "monthlyBudgetUsd" REAL,
   "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -49,11 +50,37 @@ CREATE TABLE "ProviderPlan" (
   "lowBalanceUsd" REAL,
   "lowCredits" REAL,
   "renewalDate" DATETIME,
+  "billingInterval" TEXT DEFAULT 'monthly',
   "mustKeepFunded" BOOLEAN NOT NULL DEFAULT false,
   "notes" TEXT,
   "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   "updatedAt" DATETIME NOT NULL,
   CONSTRAINT "ProviderPlan_providerId_fkey" FOREIGN KEY ("providerId") REFERENCES "Provider" ("id") ON DELETE CASCADE ON UPDATE CASCADE
+);
+
+CREATE TABLE "Subscription" (
+  "id" TEXT NOT NULL PRIMARY KEY,
+  "providerId" TEXT NOT NULL,
+  "projectId" TEXT,
+  "name" TEXT NOT NULL,
+  "description" TEXT,
+  "costUsd" REAL NOT NULL,
+  "currency" TEXT NOT NULL DEFAULT 'USD',
+  "interval" TEXT NOT NULL DEFAULT 'monthly',
+  "intervalCount" INTEGER NOT NULL DEFAULT 1,
+  "anchorDay" INTEGER,
+  "startDate" DATETIME NOT NULL,
+  "currentPeriodStart" DATETIME NOT NULL,
+  "nextRenewalAt" DATETIME NOT NULL,
+  "lastChargedPeriodStart" DATETIME,
+  "autoRenew" BOOLEAN NOT NULL DEFAULT true,
+  "status" TEXT NOT NULL DEFAULT 'active',
+  "canceledAt" DATETIME,
+  "notes" TEXT,
+  "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  "updatedAt" DATETIME NOT NULL,
+  CONSTRAINT "Subscription_providerId_fkey" FOREIGN KEY ("providerId") REFERENCES "Provider" ("id") ON DELETE CASCADE ON UPDATE CASCADE,
+  CONSTRAINT "Subscription_projectId_fkey" FOREIGN KEY ("projectId") REFERENCES "Project" ("id") ON DELETE SET NULL ON UPDATE CASCADE
 );
 
 CREATE TABLE "UsageSnapshot" (
@@ -113,7 +140,9 @@ CREATE TABLE "ExternalUsageEvent" (
   "windowEnd" DATETIME,
   "occurredAt" DATETIME NOT NULL,
   "metadata" JSONB,
-  "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+  "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  "projectId" TEXT,
+  CONSTRAINT "ExternalUsageEvent_projectId_fkey" FOREIGN KEY ("projectId") REFERENCES "Project" ("id") ON DELETE SET NULL ON UPDATE CASCADE
 );
 
 CREATE TABLE "ExternalUsageEventDailyRollup" (
@@ -140,7 +169,8 @@ CREATE TABLE "ExternalUsageEventDailyRollup" (
   "maxLimit" REAL,
   "latestOccurredAt" DATETIME NOT NULL,
   "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  "updatedAt" DATETIME NOT NULL
+  "updatedAt" DATETIME NOT NULL,
+  "projectId" TEXT
 );
 
 CREATE TABLE "ExternalUsageEventTombstone" (
@@ -170,6 +200,7 @@ CREATE TABLE "ProviderAlertNotification" (
 
 CREATE UNIQUE INDEX "ProviderPlan_providerId_key" ON "ProviderPlan"("providerId");
 CREATE UNIQUE INDEX "Project_name_key" ON "Project"("name");
+CREATE UNIQUE INDEX "Project_nameKey_key" ON "Project"("nameKey");
 CREATE UNIQUE INDEX "ProviderProjectAllocation_providerId_projectId_key" ON "ProviderProjectAllocation"("providerId", "projectId");
 CREATE INDEX "UsageSnapshotDailyRollup_day_idx" ON "UsageSnapshotDailyRollup"("day");
 CREATE UNIQUE INDEX "UsageSnapshotDailyRollup_providerId_day_key" ON "UsageSnapshotDailyRollup"("providerId", "day");
@@ -177,9 +208,14 @@ CREATE UNIQUE INDEX "ExternalUsageEvent_idempotencyKey_key" ON "ExternalUsageEve
 CREATE INDEX "ExternalUsageEvent_sourceApp_occurredAt_idx" ON "ExternalUsageEvent"("sourceApp", "occurredAt");
 CREATE INDEX "ExternalUsageEvent_provider_occurredAt_idx" ON "ExternalUsageEvent"("provider", "occurredAt");
 CREATE INDEX "ExternalUsageEvent_keyRef_occurredAt_idx" ON "ExternalUsageEvent"("keyRef", "occurredAt");
+CREATE INDEX "ExternalUsageEvent_projectId_occurredAt_idx" ON "ExternalUsageEvent"("projectId", "occurredAt");
 CREATE INDEX "ExternalUsageEventDailyRollup_sourceApp_day_idx" ON "ExternalUsageEventDailyRollup"("sourceApp", "day");
 CREATE INDEX "ExternalUsageEventDailyRollup_provider_day_idx" ON "ExternalUsageEventDailyRollup"("provider", "day");
+CREATE INDEX "ExternalUsageEventDailyRollup_projectId_day_idx" ON "ExternalUsageEventDailyRollup"("projectId", "day");
 CREATE UNIQUE INDEX "ExternalUsageEventDailyRollup_day_groupKey_key" ON "ExternalUsageEventDailyRollup"("day", "groupKey");
+CREATE INDEX "Subscription_providerId_idx" ON "Subscription"("providerId");
+CREATE INDEX "Subscription_projectId_idx" ON "Subscription"("projectId");
+CREATE INDEX "Subscription_status_nextRenewalAt_idx" ON "Subscription"("status", "nextRenewalAt");
 CREATE INDEX "ExternalUsageEventTombstone_occurredAt_idx" ON "ExternalUsageEventTombstone"("occurredAt");
 CREATE INDEX "ExternalUsageEventTombstone_prunedAt_idx" ON "ExternalUsageEventTombstone"("prunedAt");
 CREATE UNIQUE INDEX "ProviderAlertNotification_stateKey_key" ON "ProviderAlertNotification"("stateKey");

@@ -81,6 +81,14 @@ export interface MappedUsageEvent {
   provider: string;
   service: string;
   environment?: string;
+  // Producer-supplied project name from the `project` (or `project.name`)
+  // OTLP resource attribute, set via OTEL_RESOURCE_ATTRIBUTES on the Claude
+  // Code side (e.g. `OTEL_RESOURCE_ATTRIBUTES=project=socratic-trade`, ideally
+  // per-repo via direnv). Resolved to a Project.id at the ingest route. Claude
+  // Code emits one resource-attribute set per process, so this is constant for
+  // a whole session — per-repo attribution comes from setting it per project
+  // directory, not from Claude Code varying it mid-session.
+  projectName?: string;
   keyRef?: string;
   label?: string;
   billingMode: "actual" | "estimated" | "manual";
@@ -178,12 +186,21 @@ function mapDataPoint(
   const occurredAt = nanosToDate(point.timeUnixNano) ?? nanosToDate(point.startTimeUnixNano) ?? new Date();
   const model = asString(pointAttrs.model);
   const environment = asString(resourceAttrs["deployment.environment"]) ?? asString(pointAttrs["deployment.environment"]);
+  // `project` is the canonical key; accept `project.name` too since operators
+  // may follow OTel's dotted-namespace convention. A point-level attribute
+  // wins over the resource-level one if both are somehow present.
+  const projectName =
+    asString(pointAttrs.project) ??
+    asString(pointAttrs["project.name"]) ??
+    asString(resourceAttrs.project) ??
+    asString(resourceAttrs["project.name"]);
 
   const base = {
     sourceApp: SOURCE_APP,
     provider: PROVIDER,
     service: SERVICE,
     environment,
+    projectName,
     billingMode: "actual" as const,
     occurredAt,
   };

@@ -13,6 +13,24 @@ Protocol: /Users/jay/apps/EFFORT-LOG-PROTOCOL.md (canonical). Live board:
   exists specifically to make this section verifiable going forward instead of inferred.
 
 ## Completed
+- **Litestream backup for the Render SQLite disk (CLAUDE, was AG) — MERGED as PR #59 (`a6ce13b`),
+  2026-07-06.** Opt-in continuous replication of `/data/prod.db` to Cloudflare R2 (build fetches a
+  pinned, sha256-verified litestream v0.5.13; `start-with-litestream.sh` restores-if-empty then
+  `-exec`-supervises `npm start`; top-level 0.5.x `snapshot:` retention; deploy-safe fetch that
+  can't block a build on a GitHub outage). Dormant until the owner sets `LITESTREAM_S3_*` in Render
+  → zero runtime change otherwise. Frontier-adversarially reviewed (caught+fixed a MAJOR 0.5.x
+  retention-schema bug, verified vs the real binary); all bot review threads resolved; CI green.
+- **Per-adapter resilience review (CLAUDE, was AG) — MERGED as PR #60 (`42d3559`), 2026-07-06.**
+  `fetchJson` per-request timeout + bounded 429/5xx Retry-After backoff (15s cap) + query-string
+  redaction + per-provider `Promise.race` budget in `fetchAllDueProviders`; body-cancel-on-retry +
+  cleared timeout timer (bot findings). +13 tests; CI green; all review threads resolved.
+- **Verify Claude Code OTLP metrics land end-to-end (CLAUDE) — DONE 2026-07-06.** Post-#58,
+  `GET /api/budget-status` shows `anthropic` `pushedMonthToDateUsd`/`spentUsd` populated
+  (~$1454 MTD) with null snapshot cost → real pushed OTLP data is persisting in prod. Closes the
+  PR #13 chain's last unverified link (issue #51 / #32 follow-through).
+- **Monitor the agent-sync relay endpoint (AG) — DONE via PR #63 (`c7aaed7`), 2026-07-06.**
+  `src/lib/adapters/agent-sync-relay.ts` dynamic health-check adapter + lazy-seeded builtin
+  provider polling `agent-sync.jays.services/health` every 15 min (issue #55).
 - **Ingest-auth refactor + ESLint setup (the "Cursor quality sweep") (MONET) — MERGED as PR #42
   (squash `8452a0b`) 2026-07-05.** Wired the
   `budget-status` and `ingest/usage` routes onto the shared `@/lib/ingest-auth` helpers
@@ -91,37 +109,16 @@ Protocol: /Users/jay/apps/EFFORT-LOG-PROTOCOL.md (canonical). Live board:
   prematurely off this stale row.
 
 ## In Progress
-_2026-07-06 (MONET): the "Cursor quality sweep — carried by OPEN PR #42" row was removed from here —
-PR #42 MERGED (`8452a0b`); see the updated Completed entry above. (Its stale keyed issue #47 is
-orphaned-open and needs a manual close in CLAUDE's issue-reconciliation lane.)_
-- **Litestream backup for the Render SQLite disk (CLAUDE, was AG) — IN PROGRESS 2026-07-05.**
-  Branch `claude/litestream-render-backup`. Adapting the Socratic.Trade `litestream.yml`/R2
-  pattern to this app's Render deployment: litestream binary fetched at build, startCommand
-  wrapper (`litestream replicate -exec` when LITESTREAM_* env set, plain `npm start`
-  passthrough otherwise — opt-in, zero behavior change until owner configures R2), restore
-  script + docs, render.yaml env plumbing. _2026-07-05 (CLAUDE): picked up from the AG
-  reservation per owner-directed session ("work all assigned tasks"); AG inactive in this
-  repo since the 2026-07-04 seed — renegotiated in #agent-sync, will yield if AG already started._
-  **2026-07-05 (CLAUDE next-wave): CORRECTION — branch does not exist, locally or on origin.**
-  The only candidate work sites are two clean MONET worktrees
-  (`monet-awesome-pascal-259e1e`, `monet-strange-kare-d779d5`) parked at `16aab87` with zero
-  commits and zero dirty files — no visible progress toward this row. Seat attribution also
-  conflicts: this row says CLAUDE post-correction, but the worktrees and all recent activity are
-  MONET-named. Leaving IN PROGRESS one more cycle per the reassignment threshold below; if still
-  no commits next cycle, treat this reservation as dead, release it, and hand it to CODEX (idle
-  since PR #33 merged ~24h ago, natural fit for Render/litestream plumbing).
-- **Per-adapter resilience review (CLAUDE, was AG) — IN PROGRESS 2026-07-05.** Branch
-  `claude/adapter-resilience`. Timeouts + 429/Retry-After-aware bounded backoff centralized in
-  `src/lib/adapters/helpers.ts` `fetchJson`, per-provider timeout + partial-failure isolation
-  in `fetchAllDueProviders` (today a hung fetch has no timeout and stalls the whole 15-min
-  poll loop), sweep all ~33 adapters onto the hardened path, vitest coverage. _Same
-  reassignment note as the Litestream row._
-  **2026-07-05 (CLAUDE next-wave): CORRECTION — same as the Litestream row above: branch does
-  not exist locally or on origin, and the two clean MONET worktrees parked at `16aab87` show zero
-  commits toward it.** Seat attribution conflict noted (board says CLAUDE, worktrees say MONET) —
-  reconcile per the owner's 2026-07-05 seat-identity directive (local state is not a seat signal)
-  before reassigning. If still no commits by next cycle, treat as a dead reservation and release;
-  this is a mechanical sweep over a hardened `fetchJson`, suited to a mid-tier lane (CODEX is idle).
+- **Restore shared 5-field usage-telemetry idempotency (CURSOR, S) — started 2026-07-09.**
+  Branch `cursor/shared-dep-adoption-9577`. Reverted server fallback `deriveIdempotencyKey` from
+  a drifted 12-field basis to the shared 5-field contract; ported the 7 shared hash vectors into
+  monitor tests; corrected AGENTS.md (idempotencyKey is persisted + upsert-deduped; project +
+  subscription already mirrored in shared v1.4.2). Verified: usage-telemetry tests 21/21, typecheck clean.
+
+_2026-07-06 (CLAUDE): none. The Litestream + per-adapter-resilience rows that were here MERGED as
+PR #59 (`a6ce13b`) and PR #60 (`42d3559`) — see Completed above. (The "Cursor quality sweep — carried
+by OPEN PR #42" row that was also here merged as PR #42.) Stale keyed issues for all of these are
+being closed in this same reconciliation pass._
 
 ## Planned / Reserved
 
@@ -148,14 +145,8 @@ not locks — re-negotiate in #agent-sync._
 ### 2026-07-05 next-wave (cycle 2)
 _2026-07-06 (MONET): the budget-status 401 middleware row was moved to Completed above — DONE via
 PR #58 (`dfdb39e`)._
-- **Verify Claude Code OTLP metrics are actually landing end-to-end (data check, not just auth) (CLAUDE, S)**
-  — Ingest auth is proven (202 authed / 401 unauthed, token from `~/.claude/settings.json`), but
-  nobody has confirmed real Claude Code sessions produce `ExternalUsageEvent` rows, the lazily-seeded
-  `anthropic` Provider, and dashboard/budget visibility. After the budget-status fix, query it (or the
-  dashboard) for `provider=anthropic service=claude-code` rows and record the result on the board.
-  _(why now: Owner env activation happened today; the last unverified link in the PR #13 chain is
-  whether metrics map and persist in prod. Cheap to verify from the Mac now that the read path is
-  about to work, and it closes issue #32's follow-through.)_
+_2026-07-06 (CLAUDE): "Verify Claude Code OTLP metrics land end-to-end" moved to Completed above —
+VERIFIED in prod (issue #51)._
 - **Configure and test-fire alert delivery channels in production (Render env + test mechanism) (OWNER, M)**
   — `ALERT_SLACK_WEBHOOK_URL` / `ALERT_WEBHOOK_URL` are `sync:false` in `render.yaml` and almost
   certainly unset, so PR #33's delivery code is dormant; there is also no way to verify delivery
@@ -180,17 +171,8 @@ PR #58 (`dfdb39e`)._
   data now accumulates specifically to preserve long-horizon history, but as shipped it is
   write-only — invisible to the owner. Pure UI work on existing endpoints, a good fit for the now-idle
   Cursor lane.)_
-- **Monitor the agent-sync relay endpoint from the usage monitor; keep its token docs in fleet infra (AG, M)**
-  — `agent-sync.jays.services` (Mac-local PM2 `agent-sync-push`, now with the authed `/post`
-  endpoint) is fleet-critical with zero monitoring — add it as a monitored endpoint (custom adapter or
-  a lightweight uptime check) with a stale/down alert via the new delivery channels. Documentation
-  ruling: `AGENT_SYNC_POST_TOKEN`/`URL` config stays canonical in `/Users/jay/apps/AGENT-SYNC.md`
-  (already done by CODEX) — do NOT duplicate secrets/config into this repo; this repo's role is
-  watching the endpoint, not documenting it. _(why now: The `/post` endpoint went live on the Mac
-  today; every remote agent now depends on it, and an outage would silently break fleet coordination.
-  This app is literally the fleet's monitoring surface. Also answers the open question of where the
-  token/config should be documented: fleet infra, which already has it. AG is idle in this repo and
-  this is self-contained.)_
+_2026-07-06 (CLAUDE): "Monitor the agent-sync relay endpoint" moved to Completed above — DONE via
+PR #63's `agent-sync-relay` health-check adapter (issue #55)._
 
 ## Changelog of this log
 - 2026-07-04 — bootstrapped by CLAUDE (effort-log standardization).
@@ -230,6 +212,14 @@ PR #58 (`dfdb39e`)._
   fix (PR #58 `dfdb39e`, deployed+verified) Planned→Completed so the issues-sync closes #50. Left
   open: #47 + #22-#25 (orphaned — keyed rows consolidated, need a manual close in CLAUDE's lane) and
   #26 (genuinely not done — parked `claude/budget-status` still on origin).
+- 2026-07-06 — CLAUDE: full mirror↔reality reconciliation (owner-directed). Moved to Completed:
+  Litestream (PR #59 `a6ce13b`), per-adapter resilience (PR #60 `42d3559`), OTLP end-to-end
+  verification (done), agent-sync relay monitoring (PR #63). In Progress is now empty. Manually
+  closed the stale/orphaned issues for already-merged work: #22 #23 #24 #25 #47 (→ #42), #27 #28
+  #34 #35 (→ #33), #29 #30 (→ #59/#60), and #48 #49 #51 #55 (this pass). Genuinely-open work left
+  as Planned: #17 (CI adoption, blocked), #26 (parked-branch prune, not done), #31 (OTLP logs,
+  deferred), #52 (alert config+test-fire), #53 (/api/health SHA stamp), #54 (long-horizon rollup
+  UI), #67/#68/#69 (forecasting / dark mode / email+PagerDuty alerting ideas).
 - 2026-07-08 — CODEX: live board mirror note for shared agent-sync infra: Slack app Event
   Subscriptions are enabled, the PM2 `agent-sync-push` relay is appending real #agent-sync events
   to `/Users/jay/apps/agent-sync/events.jsonl`, `/post` fleet notice was verified through the local

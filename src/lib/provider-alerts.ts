@@ -1,4 +1,5 @@
 import { calculateEomForecast } from "@/lib/forecasting";
+import { isSubscriptionInterval, rollForwardRenewal } from "@/lib/subscriptions";
 
 export type AlertSeverity = "critical" | "warning" | "info";
 
@@ -28,6 +29,7 @@ export interface ProviderPlanForAlerts {
   lowBalanceUsd: number | null;
   lowCredits: number | null;
   renewalDate: Date | string | null;
+  billingInterval?: string | null;
   mustKeepFunded: boolean;
 }
 
@@ -191,7 +193,17 @@ export function buildProviderAlertState(
   }
 
   if (plan?.renewalDate) {
-    const renewal = new Date(plan.renewalDate);
+    const rawRenewal = new Date(plan.renewalDate);
+    // When a cadence is known, roll a past renewalDate forward to the next
+    // upcoming occurrence so a recurring plan never reads as permanently
+    // "overdue" once its date passes (the persisted date is advanced on the
+    // maintenance cycle — see rollForwardProviderRenewals). Without a cadence
+    // there is nothing to advance to, so a past date is genuinely overdue.
+    const interval =
+      plan.billingInterval && isSubscriptionInterval(plan.billingInterval)
+        ? plan.billingInterval
+        : null;
+    const renewal = interval ? rollForwardRenewal(rawRenewal, interval, 1, now) : rawRenewal;
     const daysUntilRenewal = Math.ceil(
       (renewal.getTime() - now.getTime()) / MS_PER_DAY
     );

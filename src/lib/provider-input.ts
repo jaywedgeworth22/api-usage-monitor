@@ -1,3 +1,5 @@
+import { SUBSCRIPTION_INTERVALS } from "@/lib/subscriptions";
+
 export interface ProviderInput {
   name: string;
   displayName: string;
@@ -31,12 +33,14 @@ export interface ProviderPlanInput {
   lowBalanceUsd?: number | null;
   lowCredits?: number | null;
   renewalDate?: Date | null;
+  billingInterval?: string | null;
   mustKeepFunded?: boolean;
   notes?: string | null;
 }
 
 const MAX_REFRESH_INTERVAL_MIN = 60 * 24 * 7;
 const BILLING_MODES = new Set(["actual", "estimated", "manual"]);
+const BILLING_INTERVALS = new Set(SUBSCRIPTION_INTERVALS);
 
 function asRecord(value: unknown): Record<string, unknown> | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
@@ -156,6 +160,19 @@ function parseProviderPlanInput(value: unknown): ProviderPlanInput | undefined {
   const renewalDate = parseNullableDate(body.renewalDate, "renewalDate");
   if (renewalDate !== undefined) {
     plan.renewalDate = renewalDate;
+  }
+
+  if (body.billingInterval !== undefined) {
+    if (body.billingInterval === null || body.billingInterval === "") {
+      plan.billingInterval = null;
+    } else if (
+      typeof body.billingInterval !== "string" ||
+      !BILLING_INTERVALS.has(body.billingInterval as (typeof SUBSCRIPTION_INTERVALS)[number])
+    ) {
+      throw new Error("billingInterval must be weekly, monthly, quarterly, or annual");
+    } else {
+      plan.billingInterval = body.billingInterval;
+    }
   }
 
   if (body.mustKeepFunded !== undefined) {

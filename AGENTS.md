@@ -18,8 +18,16 @@ enum sets, and the idempotency-key algorithm **must stay byte-for-byte identical
 - `congress-trading-shared/src/usageTelemetry.ts` (Zod schemas + `deriveUsageTelemetryIdempotencyKey`)
 - `src/lib/usage-telemetry.ts` (this repo's hand-written parser — no dependency on the shared pkg)
 
-Note: the ingest route currently **discards `idempotencyKey`** (no dedup column on
-`ExternalUsageEvent`); if you add server-side dedup, mirror the shared algorithm and store the key.
+The optional top-level **`project`** field (per-project attribution) and the **`subscription`**
+`metricType` value are accepted here and mirrored in shared `UsageTelemetryEventSchema` (v1.4.2+).
+`project` is intentionally excluded from the idempotency basis — keep it out of
+`deriveUsageTelemetryIdempotencyKey` so adding it never rekeys existing events.
+
+Monitor-only metricTypes `quota_sync` and `credit_balance` stay internal (not in the shared enum).
+
+Idempotency: when the producer omits `idempotencyKey`, the server derives the same 5-field SHA-256
+key as shared (`sourceApp` + `provider` + `metricType` + `keyRef` + `occurredAt`). Explicit keys
+are persisted and upsert-deduped on `ExternalUsageEvent.idempotencyKey`.
 
 ## Endpoints (App B integration)
 
@@ -69,6 +77,48 @@ SQLite datasource — match provider names case-insensitively in JS (`.toLowerCa
   collides with a manually-added one from the existing poll adapter
   (`src/lib/adapters/anthropic.ts`, keyed on `orgId`).
 
+## Per-project cost attribution
+
+`ExternalUsageEvent.projectId` (nullable FK → `Project`, `onDelete: SetNull`) is the first-class
+per-project dimension. It is set **at ingest** by resolving a producer-supplied project *name* to a
+`Project.id` (case-insensitive, `src/lib/project-resolver.ts`); unknown names stay null and the raw
+name is preserved in `metadata` so a Project created later can be back-filled.
+
+- **Claude Code / OTLP:** set `OTEL_RESOURCE_ATTRIBUTES=project=<name>` (or `project.name=`), ideally
+  per-repo via direnv — Claude Code emits one resource-attribute set per process, so this is constant
+  for a session. The mapper reads it onto `MappedUsageEvent.projectName`.
+- **Generic ingest contract:** a top-level `project` field (`src/lib/usage-telemetry.ts`). It is
+  **deliberately NOT part of the idempotency basis** (that algorithm is the byte-for-byte shared
+  contract — see below), so if you mirror `project` into `congress-trading-shared`, do **not** add it
+  to `deriveUsageTelemetryIdempotencyKey`.
+- `projectId` is folded into the daily-rollup `groupKey` (`src/lib/data-retention.ts`) so per-project
+  cost survives raw-event retention. Appending it rehashed every group once — historical rollups
+  written before this shipped won't merge with new ones (acceptable; the feature is new).
+- Budget math (`computeProjectBudgetStatus`): explicit `projectId` is authoritative; the legacy
+  `sourceApp == Project.name` match is a fallback for **untagged** rows only; percentage
+  `ProviderProjectAllocation` distributes each provider's *residual* (spend not directly attributed).
+  This fixed the prior double-count. `ProjectBudgetStatus` now also exposes `directUsd`/`allocatedUsd`.
+
+## Subscriptions (recurring fixed costs)
+
+`Subscription` (one-per-many providers, optional `projectId`) is the source of truth for recurring
+fees. The **materializer** (`src/lib/subscription-materializer.ts`) emits one synthetic
+`ExternalUsageEvent` (`metricType="subscription"`, `sourceApp="subscription"`, `provider=<provider
+name>`, carrying the subscription's `projectId`) per elapsed billing period, so subscription cost
+flows through the SAME month-to-date sums / rollups / per-project attribution / budgets as metered
+usage — no special-casing. Idempotent by `(subscriptionId, periodStart)` hash + a
+`lastChargedPeriodStart` watermark, so it's safe on every maintenance cycle.
+
+- Period math is pure in `src/lib/subscriptions.ts` (advance, monthly-equivalent, anchor day,
+  renewal roll-forward). CRUD at `/api/subscriptions[/:id]`; UI is the Settings **Subscriptions** tab.
+- `ProviderPlan.billingInterval` + `rollForwardProviderRenewals` (`src/lib/provider-renewals.ts`) fix
+  the old bug where `renewalDate` never advanced and stayed permanently `renewal_overdue`. Alerts
+  compute the effective next renewal in-memory; the maintenance cycle persists the advance.
+- Both the materializer and the renewal roll-forward run inside `runUsageMaintenance`
+  (`src/lib/usage-maintenance.ts`), before retention and alert delivery.
+- A recurring fee should be modeled EITHER as `ProviderPlan.fixedMonthlyCostUsd` (a flat read-time
+  add) OR as a `Subscription` (materialized events) — not both, or it double-counts.
+
 ## Sentry Health card
 
 `GET /api/sentry-health` (dashboard-session-gated like every non-ingest route) returns per-project
@@ -102,6 +152,30 @@ npm run build    # next build
 
 Deploy via the Render `render.yaml` blueprint (see `DEPLOY.md`).
 
+## Cursor Cloud specific instructions
+
+Dependency install is `npm install` (its `postinstall` runs `prisma generate`). Local dev also
+needs a `.env` and a SQLite DB, both git-ignored (so recreate them if starting from a clean
+checkout): copy `.env.example` to `.env` and fill the required vars (`DATABASE_URL`,
+`ENCRYPTION_KEY`, `USAGE_INGEST_TOKEN`, `DASHBOARD_PASSWORD` — dev values are fine), then run
+`npx prisma db push` to create `dev.db` from `schema.prisma` (there is no `prisma/migrations/`
+dir, so use `db push`, not `migrate dev`). Log in at `/login` with `DASHBOARD_PASSWORD`.
+
+- **Run `next dev` with Turbopack — the default (webpack) `next dev` is broken here.** Plain
+  `npm run dev` compiles `src/instrumentation.ts` for the Edge runtime, which fails to resolve the
+  Node `crypto` built-in (via `src/lib/crypto.ts` ← adapters ← `usage-recorder`) and then returns
+  **500 on every server-rendered request** (even `/api/health`), despite the correct
+  `NEXT_RUNTIME !== "nodejs"` guard — this is upstream Next dev-analysis behavior
+  (vercel/next.js#86479), not an app bug. Turbopack splits the Node/Edge instrumentation entries
+  correctly and works cleanly. Run dev as: `npm run dev -- --turbopack` (per the owner's Cursor
+  preview-port rule, on 4103: `npx next dev -p 4103 --turbopack`).
+- `npm run build` + `npm start` (production, webpack) are **unaffected** by the above and serve
+  fine; only `next dev`'s webpack path hits it. Note `next dev` and `next start` share `.next`, so
+  after running dev you must `npm run build` again before `next start` finds a production build.
+- On startup the app self-seeds a built-in "Agent Sync Relay" provider
+  (`src/lib/ensure-agent-sync-provider.ts`), so a freshly-pushed DB is not empty in the dashboard —
+  expected, not leftover data.
+
 ## Inter-agent coordination
 
 Coordinate with other AI agents via Slack channel #agent-sync (id `C0BEZDJDNKV`).
@@ -126,3 +200,23 @@ Effort-log protocol (standardized all apps): `/Users/jay/apps/EFFORT-LOG-PROTOCO
 - **Same bar at every tier:** full gates, receipts, and board discipline apply no matter
   which model did the work.
 - Canonical reference: `/Users/jay/apps/AGENT-SYNC.md` — "Delegation & model economics".
+
+## Cursor Cloud specific instructions
+
+Standard local setup/verify commands live in `README.md` (Quick start) and the **Verify**
+section above; this section only records non-obvious caveats. Dependencies are refreshed
+automatically on VM startup (`npm ci` + `prisma generate` via `postinstall`).
+
+- **Run the dev server with Turbopack: `npm run dev -- --turbopack` (bind port 4103 in this
+  workspace: `npm run dev -- -p 4103 --turbopack`).** The default `npm run dev` uses the
+  webpack dev compiler, which fails to resolve the bare `crypto` builtin while bundling
+  `src/instrumentation.ts` (→ `usage-recorder` → adapters → `src/lib/crypto.ts`). That makes
+  every Node route (e.g. `/api/health`) 500 with `Module not found: Can't resolve 'crypto'`.
+  `next build`/`npm start` are unaffected (production build succeeds), and Turbopack resolves
+  node builtins natively, so dev works under `--turbopack`.
+- **Local DB bootstrap:** there is no `prisma/migrations/` dir, so use `npx prisma db push`
+  (not `prisma migrate dev`) to create the local SQLite `dev.db` from `schema.prisma`.
+- **Env:** copy `.env.example` → `.env`. Beyond the vars listed in the **Env vars** section,
+  local dev also needs `DASHBOARD_PASSWORD` (gates `/login` and all non-ingest routes); without
+  it, login returns 503 and the dashboard is unreachable. `ENCRYPTION_KEY` must be 64-hex
+  (`openssl rand -hex 32`).

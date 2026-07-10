@@ -4,7 +4,7 @@ const MAX_EVENTS = 100;
 const MAX_METADATA_KEYS = 50;
 const MAX_METADATA_STRING_LENGTH = 500;
 
-const metricTypes = new Set(["usage", "cost", "quota", "tier", "health", "balance", "limit", "quota_sync", "credit_balance"]);
+const metricTypes = new Set(["usage", "cost", "quota", "tier", "health", "balance", "limit", "quota_sync", "credit_balance", "subscription"]);
 const units = new Set([
   "request",
   "call",
@@ -26,6 +26,13 @@ export interface ParsedUsageTelemetryEvent {
   environment?: string;
   provider: string;
   service?: string;
+  // Producer-supplied project name/key. Resolved to a Project.id at ingest
+  // (see project-resolver.ts). Deliberately NOT part of the idempotency basis
+  // — the derived-key algorithm is a byte-for-byte contract shared with the
+  // congress-trading-shared package, so adding a field would rekey every
+  // existing event. Two events identical except for `project` therefore share
+  // a key; that collision is acceptable versus breaking cross-app dedupe.
+  project?: string;
   label?: string;
   keyRef?: string;
   billingMode: string;
@@ -177,13 +184,11 @@ function deriveIdempotencyKey(
   const explicit = readString(record, "idempotencyKey", { max: 200 });
   if (explicit) return explicit;
 
-  // Derive from the raw (pre-default) occurredAt string the caller sent, so that
-  // retries of the same logical event collapse to the same key. This fallback
-  // only runs when the caller sends no explicit idempotencyKey, so it's the
-  // *only* signal separating two such events - it must include every field
-  // that can legitimately differ between two rows of a batched snapshot that
-  // happen to share sourceApp/provider/metricType/keyRef/occurredAt, or the
-  // second row silently collides with the first and its data is dropped.
+  // CONTRACT: must stay byte-for-byte identical to
+  // `@jaywedgeworth22/congress-trading-shared`'s deriveUsageTelemetryIdempotencyKey.
+  // Basis = sourceApp + provider + metricType + keyRef + occurredAt (5 fields).
+  // Distinct same-timestamp rows must send an explicit idempotencyKey from the
+  // client — do not expand this basis without bumping both repos together.
   const rawOccurredAt = readString(record, "occurredAt", { max: 80 });
   if (rawOccurredAt) {
     const basisFields = [
@@ -191,13 +196,6 @@ function deriveIdempotencyKey(
       resolved.provider,
       resolved.metricType,
       resolved.keyRef ?? "",
-      resolved.environment ?? "",
-      resolved.service ?? "",
-      resolved.label ?? "",
-      resolved.quantity != null ? String(resolved.quantity) : "",
-      resolved.costUsd != null ? String(resolved.costUsd) : "",
-      resolved.requests != null ? String(resolved.requests) : "",
-      resolved.credits != null ? String(resolved.credits) : "",
       rawOccurredAt,
     ];
     return crypto
@@ -231,6 +229,7 @@ function parseEvent(value: unknown): ParsedUsageTelemetryEvent {
     environment,
     provider,
     service,
+    project: readString(record, "project", { max: 120 }),
     label,
     keyRef,
     billingMode: readEnum(record, "billingMode", billingModes, "estimated"),

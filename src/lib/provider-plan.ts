@@ -12,6 +12,7 @@ export function toPrismaProviderPlanData(
     lowBalanceUsd: plan.lowBalanceUsd,
     lowCredits: plan.lowCredits,
     renewalDate: plan.renewalDate,
+    billingInterval: plan.billingInterval ?? undefined,
     mustKeepFunded: plan.mustKeepFunded ?? false,
     notes: plan.notes,
   };

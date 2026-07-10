@@ -26,6 +26,7 @@ model Provider {
   snapshotRollups    UsageSnapshotDailyRollup[]
   alertNotifications ProviderAlertNotification[]
   allocations        ProviderProjectAllocation[]
+  subscriptions      Subscription[]
 }
 
 model ProviderPlan {
@@ -39,6 +40,10 @@ model ProviderPlan {
   lowBalanceUsd       Float?
   lowCredits          Float?
   renewalDate         DateTime?
+  // Cadence at which renewalDate rolls forward once it passes (see
+  // provider-alerts.ts effectiveRenewal + subscription-materializer's
+  // renewal roll-forward). Independent of any Subscription row.
+  billingInterval     String?   @default("monthly")
   mustKeepFunded      Boolean   @default(false)
   notes               String?
   createdAt           DateTime  @default(now())
@@ -113,10 +118,20 @@ model ExternalUsageEvent {
   occurredAt     DateTime
   metadata       Json?
   createdAt      DateTime  @default(now())
+  // First-class per-project attribution. Resolved at ingest from a
+  // producer-supplied project name (OTEL_RESOURCE_ATTRIBUTES `project` for
+  // Claude Code, or the top-level `project` field on the generic ingest
+  // contract) by matching Project.name case-insensitively. Null when no
+  // project was supplied or none matched; the raw producer string is kept in
+  // metadata so a Project created later can be back-filled. SetNull so
+  // deleting a Project never destroys usage history.
+  projectId      String?
+  project        Project?  @relation(fields: [projectId], references: [id], onDelete: SetNull)
 
   @@index([sourceApp, occurredAt])
   @@index([provider, occurredAt])
   @@index([keyRef, occurredAt])
+  @@index([projectId, occurredAt])
 }
 
 model ExternalUsageEventDailyRollup {
@@ -135,6 +150,10 @@ model ExternalUsageEventDailyRollup {
   limitWindow      String?
   tier             String?
   confidence       String
+  // Denormalized project dimension so per-project cost survives the raw-event
+  // retention cutoff. Folded into groupKey (see data-retention.ts's
+  // externalGroupKey) so rollup buckets never merge across projects.
+  projectId        String?
   eventCount       Int      @default(0)
   totalCostUsd     Float    @default(0)
   totalRequests    Int      @default(0)
@@ -148,6 +167,7 @@ model ExternalUsageEventDailyRollup {
   @@unique([day, groupKey])
   @@index([sourceApp, day])
   @@index([provider, day])
+  @@index([projectId, day])
 }
 
 model ExternalUsageEventTombstone {
@@ -184,12 +204,68 @@ model ProviderAlertNotification {
 model Project {
   id               String   @id @default(uuid())
   name             String   @unique
+  // Lowercased/trimmed `name`, set on every create/rename. DB-enforced
+  // case-insensitive uniqueness: since project attribution resolves
+  // producer-supplied names case-insensitively (project-resolver.ts), two
+  // projects differing only in case would make that ambiguous. `name` alone is
+  // only BINARY-unique in SQLite, so this closes the concurrent-create race an
+  // app-level check can't. Nullable so the column is an additive migration on
+  // existing rows (they read back via the lowercased-name fallback).
+  nameKey          String?  @unique
   description      String?
   monthlyBudgetUsd Float?
   createdAt        DateTime @default(now())
   updatedAt        DateTime @updatedAt
 
-  allocations ProviderProjectAllocation[]
+  allocations    ProviderProjectAllocation[]
+  externalEvents ExternalUsageEvent[]
+  subscriptions  Subscription[]
+}
+
+// Recurring, fixed-fee cost (a SaaS plan, seat, add-on, etc.) attached to a
+// provider and optionally attributed to a project. Source of truth for the
+// schedule; the actual money flows through the usage pipeline via the
+// subscription materializer (src/lib/subscription-materializer.ts), which
+// emits one synthetic ExternalUsageEvent (metricType="subscription") per
+// elapsed billing period. That keeps subscription cost in the SAME
+// month-to-date sums, rollups, per-project attribution, and budgets as
+// metered usage — no special-casing in budget-status.
+model Subscription {
+  id                     String    @id @default(uuid())
+  providerId             String
+  provider               Provider  @relation(fields: [providerId], references: [id], onDelete: Cascade)
+  // Optional project attribution: materialized charges carry this projectId so
+  // the fee lands in the right project budget. SetNull so deleting a Project
+  // doesn't cascade-delete the subscription.
+  projectId              String?
+  project                Project?  @relation(fields: [projectId], references: [id], onDelete: SetNull)
+  name                   String
+  description            String?
+  costUsd                Float
+  currency               String    @default("USD")
+  // weekly | monthly | quarterly | annual — combined with intervalCount for
+  // arbitrary cadences (e.g. intervalCount=3 + interval="monthly").
+  interval               String    @default("monthly")
+  intervalCount          Int       @default(1)
+  // Day-of-month the cycle renews (1-31); null derives the anchor from startDate.
+  anchorDay              Int?
+  startDate              DateTime
+  currentPeriodStart     DateTime
+  nextRenewalAt          DateTime
+  // Materializer watermark: the periodStart of the most recent period already
+  // emitted as a synthetic charge. Null until the first charge is generated.
+  lastChargedPeriodStart DateTime?
+  autoRenew              Boolean   @default(true)
+  // active | paused | canceled — only "active" subscriptions generate charges.
+  status                 String    @default("active")
+  canceledAt             DateTime?
+  notes                  String?
+  createdAt              DateTime  @default(now())
+  updatedAt              DateTime  @updatedAt
+
+  @@index([providerId])
+  @@index([projectId])
+  @@index([status, nextRenewalAt])
 }
 
 model ProviderProjectAllocation {
