@@ -11,6 +11,7 @@ interface ProviderCardProps {
   label?: string | null;
   keyPreview?: string | null;
   estimatedMonthlyCostUsd?: number;
+  projectedEomUsd?: number;
   billingMode?: "actual" | "estimated" | "manual";
   alerts?: {
     severity: "critical" | "warning" | "info";
@@ -60,6 +61,7 @@ export default function ProviderCard({
   label,
   keyPreview,
   estimatedMonthlyCostUsd = 0,
+  projectedEomUsd = 0,
   billingMode = "manual",
   alerts = [],
   latestSnapshot,
@@ -154,9 +156,9 @@ export default function ProviderCard({
           </p>
         </div>
         <div className={(isCreditBased || hasCredits) ? "col-span-2" : ""}>
-          <p className="text-xs text-gray-500 mb-1">Monthly</p>
+          <p className="text-xs text-gray-500 mb-1">MTD / EOM</p>
           <p className="text-sm font-medium text-gray-900">
-            {formatUsd(estimatedMonthlyCostUsd)}
+            {formatUsd(estimatedMonthlyCostUsd)} <span className="text-gray-400 font-normal">/ {formatUsd(projectedEomUsd)}</span>
           </p>
           <p className="text-xs uppercase text-gray-400">{billingMode}</p>
         </div>

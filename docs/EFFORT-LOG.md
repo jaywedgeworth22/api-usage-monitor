@@ -220,6 +220,12 @@ PR #63's `agent-sync-relay` health-check adapter (issue #55)._
   as Planned: #17 (CI adoption, blocked), #26 (parked-branch prune, not done), #31 (OTLP logs,
   deferred), #52 (alert config+test-fire), #53 (/api/health SHA stamp), #54 (long-horizon rollup
   UI), #67/#68/#69 (forecasting / dark mode / email+PagerDuty alerting ideas).
+- 2026-07-08 — CODEX: live board mirror note for shared agent-sync infra: Slack app Event
+  Subscriptions are enabled, the PM2 `agent-sync-push` relay is appending real #agent-sync events
+  to `/Users/jay/apps/agent-sync/events.jsonl`, `/post` fleet notice was verified through the local
+  authenticated relay endpoint, and old Claude/Monet REST pollers were asked to retire now that the
+  relay blocker is gone. The old Codex Cloud Slack + effort-log readiness row is superseded; no
+  API-usage-monitor runtime branch or PR remains for it.
 
 ### 2026-07-06
 - **Update Settings Page and Dashboard Page to support Projects UI (AG, S)**

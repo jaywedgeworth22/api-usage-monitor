@@ -4,7 +4,9 @@ import { buildProviderAlertState, type AlertSeverity, type ProviderAlert } from 
 
 export type AlertDeliveryChannel =
   | { kind: "slack"; url: string }
-  | { kind: "webhook"; url: string };
+  | { kind: "webhook"; url: string }
+  | { kind: "email"; apiKey: string; from: string; to: string }
+  | { kind: "pagerduty"; routingKey: string };
 
 export interface AlertDeliveryConfig {
   channels: AlertDeliveryChannel[];
@@ -34,8 +36,19 @@ export function readAlertDeliveryConfig(env: NodeJS.ProcessEnv = process.env): A
   const channels: AlertDeliveryChannel[] = [];
   const slackUrl = env.ALERT_SLACK_WEBHOOK_URL?.trim();
   const webhookUrl = env.ALERT_WEBHOOK_URL?.trim();
+  const emailApiKey = env.ALERT_RESEND_API_KEY?.trim();
+  const emailFrom = env.ALERT_EMAIL_FROM?.trim();
+  const emailTo = env.ALERT_EMAIL_TO?.trim();
+  const pagerdutyRoutingKey = env.ALERT_PAGERDUTY_ROUTING_KEY?.trim();
+
   if (slackUrl) channels.push({ kind: "slack", url: slackUrl });
   if (webhookUrl) channels.push({ kind: "webhook", url: webhookUrl });
+  if (emailApiKey && emailFrom && emailTo) {
+    channels.push({ kind: "email", apiKey: emailApiKey, from: emailFrom, to: emailTo });
+  }
+  if (pagerdutyRoutingKey) {
+    channels.push({ kind: "pagerduty", routingKey: pagerdutyRoutingKey });
+  }
 
   const minSeverity = normalizeSeverity(env.ALERT_MIN_SEVERITY) ?? "warning";
   const reminderHours = normalizePositiveNumber(env.ALERT_REMINDER_HOURS) ?? DEFAULT_REMINDER_HOURS;
@@ -89,6 +102,55 @@ async function sendToChannel(
       body: JSON.stringify({ text: alertText(provider, alert) }),
     });
     if (!response.ok) throw new Error(`Slack webhook HTTP ${response.status}`);
+    return;
+  }
+
+  if (channel.kind === "email") {
+    const response = await fetchImpl("https://api.resend.com/emails", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${channel.apiKey}`,
+      },
+      body: JSON.stringify({
+        from: channel.from,
+        to: channel.to,
+        subject: `[${alert.severity.toUpperCase()}] Alert for ${provider.displayName || provider.name}`,
+        html: `
+          <h2>API Usage Monitor Alert</h2>
+          <p><strong>Provider:</strong> ${provider.displayName || provider.name}</p>
+          <p><strong>Severity:</strong> ${alert.severity}</p>
+          <p><strong>Message:</strong> ${alert.message}</p>
+          <p><strong>Detected At:</strong> ${now.toISOString()}</p>
+        `,
+      }),
+    });
+    if (!response.ok) throw new Error(`Resend API HTTP ${response.status}`);
+    return;
+  }
+
+  if (channel.kind === "pagerduty") {
+    const pdSeverity = alert.severity === "critical" ? "critical" : "warning";
+    const response = await fetchImpl("https://events.pagerduty.com/v2/enqueue", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        routing_key: channel.routingKey,
+        event_action: "trigger",
+        payload: {
+          summary: alertText(provider, alert),
+          source: "API Usage Monitor",
+          severity: pdSeverity,
+          component: provider.name,
+          custom_details: {
+            provider_id: provider.id,
+            alert_code: alert.code,
+            detected_at: now.toISOString(),
+          },
+        },
+      }),
+    });
+    if (!response.ok) throw new Error(`PagerDuty API HTTP ${response.status}`);
     return;
   }
 

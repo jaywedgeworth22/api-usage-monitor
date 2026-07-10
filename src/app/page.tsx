@@ -15,6 +15,7 @@ interface Provider {
   label: string | null;
   keyPreview?: string | null;
   estimatedMonthlyCostUsd: number;
+  projectedEomUsd: number;
   billingMode: "actual" | "estimated" | "manual";
   alerts: {
     severity: "critical" | "warning" | "info";
@@ -119,7 +120,7 @@ export default function DashboardPage() {
     0
   );
   const totalProjectedMonthlyCost = providers.reduce(
-    (sum, p) => sum + (p.estimatedMonthlyCostUsd || 0),
+    (sum, p) => sum + (p.projectedEomUsd || 0),
     0
   );
   const externalCost = usageSummary?.totalCostUsd ?? 0;
@@ -472,6 +473,7 @@ export default function DashboardPage() {
               label={provider.label}
               keyPreview={provider.keyPreview}
               estimatedMonthlyCostUsd={provider.estimatedMonthlyCostUsd}
+              projectedEomUsd={provider.projectedEomUsd}
               billingMode={provider.billingMode}
               alerts={provider.alerts}
               latestSnapshot={provider.latestSnapshot}

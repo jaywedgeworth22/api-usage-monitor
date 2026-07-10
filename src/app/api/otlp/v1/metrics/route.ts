@@ -6,6 +6,7 @@ import { createRateLimiter, getClientIp } from "@/lib/rate-limit";
 import { decodeMetricsJson } from "@/lib/otlp/json-decode";
 import { decodeMetricsProtobuf } from "@/lib/otlp/protobuf-decode";
 import { mapClaudeCodeMetrics } from "@/lib/otlp/claude-code-mapper";
+import { mapSystemMetrics } from "@/lib/otlp/system-mapper";
 import { ensureAnthropicProviderSeeded } from "@/lib/otlp/ensure-anthropic-provider";
 import { resolveProjectIdsByName } from "@/lib/project-resolver";
 
@@ -101,7 +102,15 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  const { events, unknownMetrics } = mapClaudeCodeMetrics(parsed);
+  const claudeResult = mapClaudeCodeMetrics(parsed);
+  const systemResult = mapSystemMetrics(parsed);
+
+  const events = [...claudeResult.events, ...systemResult.events];
+  
+  // A metric is only truly "unknown" if neither mapper understood it
+  const unknownMetrics = claudeResult.unknownMetrics.filter((claudeUnknown) => 
+    systemResult.unknownMetrics.some(sysUnknown => sysUnknown.name === claudeUnknown.name)
+  );
 
   for (const unknown of unknownMetrics) {
     const key = unknown.name;

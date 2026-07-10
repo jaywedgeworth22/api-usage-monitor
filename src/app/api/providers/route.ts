@@ -86,6 +86,7 @@ export async function GET() {
       latestSnapshot,
       alerts: alertState.alerts,
       estimatedMonthlyCostUsd: alertState.estimatedMonthlyCostUsd,
+      projectedEomUsd: alertState.projectedEomUsd,
       billingMode: alertState.billingMode,
     };
   });

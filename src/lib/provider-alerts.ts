@@ -1,3 +1,4 @@
+import { calculateEomForecast } from "@/lib/forecasting";
 import { isSubscriptionInterval, rollForwardRenewal } from "@/lib/subscriptions";
 
 export type AlertSeverity = "critical" | "warning" | "info";
@@ -50,6 +51,7 @@ export interface ProviderAlertInput {
 export interface ProviderAlertState {
   alerts: ProviderAlert[];
   estimatedMonthlyCostUsd: number;
+  projectedEomUsd: number;
   billingMode: "actual" | "estimated" | "manual";
 }
 
@@ -84,10 +86,11 @@ export function buildProviderAlertState(
   const fixedMonthlyCost = plan?.fixedMonthlyCostUsd ?? 0;
   const usageCost = latestSnapshot?.totalCost ?? 0;
   const estimatedMonthlyCostUsd = fixedMonthlyCost + usageCost;
+  const projectedEomUsd = calculateEomForecast(estimatedMonthlyCostUsd, fixedMonthlyCost, now);
   const billingMode = normalizeBillingMode(plan?.billingMode);
 
   if (!input.isActive) {
-    return { alerts, estimatedMonthlyCostUsd, billingMode };
+    return { alerts, estimatedMonthlyCostUsd, projectedEomUsd, billingMode };
   }
 
   if (!plan) {
@@ -221,5 +224,5 @@ export function buildProviderAlertState(
     }
   }
 
-  return { alerts, estimatedMonthlyCostUsd, billingMode };
+  return { alerts, estimatedMonthlyCostUsd, projectedEomUsd, billingMode };
 }

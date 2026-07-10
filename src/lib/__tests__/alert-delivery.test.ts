@@ -113,4 +113,110 @@ describe("alert delivery", () => {
     });
     expect(resolved.resolvedAt).not.toBeNull();
   });
+
+  it("supports email delivery via Resend", async () => {
+    const provider = await prisma.provider.create({
+      data: {
+        name: "test_email",
+        displayName: "Test Email",
+        type: "builtin",
+      },
+    });
+
+    const fetchMock = vi.fn().mockResolvedValue(new Response("ok", { status: 200 }));
+    const config = {
+      channels: [
+        { kind: "email" as const, apiKey: "test-api-key", from: "alerts@example.com", to: "oncall@example.com" },
+      ],
+      minSeverity: "warning" as const,
+      reminderHours: 24,
+    };
+
+    // We need an alert to be triggered, let's create a snapshot to trigger a balance low
+    await prisma.providerPlan.create({
+      data: {
+        providerId: provider.id,
+        billingMode: "actual",
+        lowBalanceUsd: 10,
+      }
+    });
+
+    await prisma.usageSnapshot.create({
+      data: {
+        providerId: provider.id,
+        fetchedAt: new Date("2026-07-20T08:00:00.000Z"),
+        balance: 5,
+      },
+    });
+
+    const first = await deliverProviderAlerts({
+      now: new Date("2026-07-20T12:00:00.000Z"),
+      config,
+      fetchImpl: fetchMock,
+    });
+    
+    expect(first.sent).toBe(1);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    const callArgs = fetchMock.mock.calls[0];
+    expect(callArgs[0]).toBe("https://api.resend.com/emails");
+    expect(callArgs[1].headers).toMatchObject({
+      Authorization: "Bearer test-api-key",
+    });
+    const body = JSON.parse(callArgs[1].body);
+    expect(body.to).toBe("oncall@example.com");
+    expect(body.from).toBe("alerts@example.com");
+    expect(body.subject).toContain("Test Email");
+    expect(body.html).toContain("Test Email");
+  });
+
+  it("supports pagerduty delivery", async () => {
+    const provider = await prisma.provider.create({
+      data: {
+        name: "test_pd",
+        displayName: "Test PD",
+        type: "builtin",
+        plan: {
+          create: {
+            billingMode: "actual",
+            lowBalanceUsd: 10,
+          },
+        },
+      },
+    });
+
+    await prisma.usageSnapshot.create({
+      data: {
+        providerId: provider.id,
+        fetchedAt: new Date("2026-07-20T08:00:00.000Z"),
+        balance: 5,
+      },
+    });
+
+    const fetchMock = vi.fn().mockResolvedValue(new Response("ok", { status: 200 }));
+    const config = {
+      channels: [
+        { kind: "pagerduty" as const, routingKey: "test-routing-key" },
+      ],
+      minSeverity: "warning" as const,
+      reminderHours: 24,
+    };
+
+    const first = await deliverProviderAlerts({
+      now: new Date("2026-07-20T12:00:00.000Z"),
+      config,
+      fetchImpl: fetchMock,
+    });
+    
+    expect(first.sent).toBe(1);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    const callArgs = fetchMock.mock.calls[0];
+    expect(callArgs[0]).toBe("https://events.pagerduty.com/v2/enqueue");
+    const body = JSON.parse(callArgs[1].body);
+    expect(body.routing_key).toBe("test-routing-key");
+    expect(body.payload.source).toBe("API Usage Monitor");
+    expect(body.payload.component).toBe("test_pd");
+    expect(body.payload.severity).toBe("warning"); // The default balance low is warning
+  });
 });
