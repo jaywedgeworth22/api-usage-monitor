@@ -25,6 +25,10 @@ export interface SubscriptionCreateInput {
   autoRenew: boolean;
   status: SubscriptionStatus;
   notes: string | null;
+  // Env-var knob name -> string value implied by this plan tier, overriding
+  // the provider's free-tier ProviderPlan.knobEnv when present. Null when the
+  // caller didn't supply one (falls back to the provider's free tier).
+  knobEnv: Record<string, string> | null;
 }
 
 // Fields a caller may change. Schedule fields (interval/intervalCount/anchorDay/
@@ -43,6 +47,7 @@ export interface SubscriptionUpdateInput {
   intervalCount?: number;
   anchorDay?: number | null;
   startDate?: Date;
+  knobEnv?: Record<string, string> | null;
 }
 
 function asRecord(value: unknown): Record<string, unknown> {
@@ -110,9 +115,27 @@ function parseDate(value: unknown, field: string, fallback: () => Date): Date {
 function parseStatus(value: unknown): SubscriptionStatus {
   if (value === undefined || value === null || value === "") return "active";
   if (typeof value !== "string" || !isSubscriptionStatus(value)) {
-    throw new Error("status must be active, paused, or canceled");
+    throw new Error("status must be active, paused, canceled, or considering");
   }
   return value;
+}
+
+// A flat map of env-var knob name -> string value (e.g.
+// {"PROVIDER_QUOTA_TIINGO_PER_HOUR": "10000"}). Every value must be a string
+// so it round-trips directly into an env var — no numbers/booleans/nesting.
+function parseKnobEnv(value: unknown, field: string): Record<string, string> | null {
+  if (value === undefined || value === null) return null;
+  if (typeof value !== "object" || Array.isArray(value)) {
+    throw new Error(`${field} must be a JSON object mapping knob names to string values`);
+  }
+  const result: Record<string, string> = {};
+  for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
+    if (typeof entry !== "string") {
+      throw new Error(`${field}.${key} must be a string value`);
+    }
+    result[key] = entry;
+  }
+  return result;
 }
 
 export function parseSubscriptionCreateInput(
@@ -156,6 +179,7 @@ export function parseSubscriptionCreateInput(
     autoRenew: record.autoRenew === undefined ? true : Boolean(record.autoRenew),
     status: parseStatus(record.status),
     notes: cleanNullableString(record.notes, "notes"),
+    knobEnv: parseKnobEnv(record.knobEnv, "knobEnv"),
   };
 }
 
@@ -186,6 +210,7 @@ export function parseSubscriptionUpdateInput(body: unknown): SubscriptionUpdateI
   if (record.startDate !== undefined) {
     update.startDate = parseDate(record.startDate, "startDate", () => new Date());
   }
+  if (record.knobEnv !== undefined) update.knobEnv = parseKnobEnv(record.knobEnv, "knobEnv");
 
   return update;
 }

@@ -7,7 +7,12 @@
 
 export const SUBSCRIPTION_INTERVALS = ["weekly", "monthly", "quarterly", "annual"] as const;
 export type SubscriptionInterval = (typeof SUBSCRIPTION_INTERVALS)[number];
-export const SUBSCRIPTION_STATUSES = ["active", "paused", "canceled"] as const;
+// "considering" models a candidate paid tier that isn't purchased yet — it
+// never generates charges (materializeDueSubscriptions filters status ===
+// "active" at the DB query level; see subscription-materializer.ts), but it
+// is a first-class row so its knobEnv can be compared against the active
+// plan/free tier before committing to it.
+export const SUBSCRIPTION_STATUSES = ["active", "paused", "canceled", "considering"] as const;
 export type SubscriptionStatus = (typeof SUBSCRIPTION_STATUSES)[number];
 
 export function isSubscriptionInterval(value: string): value is SubscriptionInterval {

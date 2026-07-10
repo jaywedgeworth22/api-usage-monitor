@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import type { Prisma } from "@prisma/client";
+import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { parseSubscriptionUpdateInput } from "@/lib/subscription-input";
 import { advancePeriod, rescheduleCycle, isSubscriptionInterval, type SubscriptionInterval } from "@/lib/subscriptions";
@@ -50,6 +50,9 @@ export async function PUT(request: Request, { params }: { params: Promise<{ id: 
     // Stamp/clear the cancellation time so the UI and any future reporting can
     // tell when a subscription stopped generating charges.
     data.canceledAt = update.status === "canceled" ? new Date() : null;
+  }
+  if (update.knobEnv !== undefined) {
+    data.knobEnv = update.knobEnv === null ? Prisma.JsonNull : (update.knobEnv as Prisma.InputJsonObject);
   }
 
   // Recompute the cycle only when the schedule ACTUALLY changes (by value — not

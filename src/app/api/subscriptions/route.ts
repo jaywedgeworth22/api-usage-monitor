@@ -1,5 +1,8 @@
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
+import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
+import { SESSION_COOKIE_NAME, verifySessionToken } from "@/lib/auth";
+import { isUsageReadAuthorized } from "@/lib/ingest-auth";
 import { parseSubscriptionCreateInput } from "@/lib/subscription-input";
 import {
   normalizeMonthlyUsd,
@@ -7,14 +10,37 @@ import {
   type SubscriptionInterval,
 } from "@/lib/subscriptions";
 
+function hasSessionCookie(request: NextRequest): boolean {
+  return verifySessionToken(request.cookies.get(SESSION_COOKIE_NAME)?.value);
+}
+
 // GET /api/subscriptions — list every subscription with provider/project labels
 // and a monthly-equivalent cost (so mixed cadences are comparable).
-export async function GET() {
+//
+// This is the ONE collection route the dashboard-session middleware excludes
+// (see src/middleware.ts's `api/subscriptions/?$` — collection path only, the
+// [id] sub-route stays session-gated there), so GET self-authenticates here:
+// the dashboard session cookie OR a bearer/x-usage-ingest-token
+// (USAGE_READ_TOKEN falling back to USAGE_INGEST_TOKEN, same as
+// GET /api/budget-status) so a headless sibling app can read the
+// subscription/knobEnv list without a browser session.
+export async function GET(request: NextRequest) {
+  if (!hasSessionCookie(request) && !isUsageReadAuthorized(request)) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
   try {
     const subscriptions = await prisma.subscription.findMany({
       orderBy: [{ status: "asc" }, { nextRenewalAt: "asc" }],
       include: {
-        provider: { select: { id: true, name: true, displayName: true } },
+        provider: {
+          select: {
+            id: true,
+            name: true,
+            displayName: true,
+            plan: { select: { knobEnv: true } },
+          },
+        },
         project: { select: { id: true, name: true } },
       },
     });
@@ -23,6 +49,8 @@ export async function GET() {
       const interval: SubscriptionInterval = isSubscriptionInterval(sub.interval)
         ? sub.interval
         : "monthly";
+      const freeTierKnobEnv = (sub.provider.plan?.knobEnv as Record<string, string> | null) ?? null;
+      const knobEnv = (sub.knobEnv as Record<string, string> | null) ?? freeTierKnobEnv;
       return {
         id: sub.id,
         name: sub.name,
@@ -39,7 +67,14 @@ export async function GET() {
         autoRenew: sub.autoRenew,
         status: sub.status,
         notes: sub.notes,
-        provider: sub.provider,
+        // Effective knobEnv: this subscription's own override if set, else the
+        // provider's free-tier ProviderPlan.knobEnv. freeTierKnobEnv is always
+        // the provider's free-tier map (may be null), regardless of override,
+        // so a consumer can diff "what I'd get on the free tier" vs "what this
+        // plan actually implies."
+        knobEnv,
+        freeTierKnobEnv,
+        provider: { id: sub.provider.id, name: sub.provider.name, displayName: sub.provider.displayName },
         project: sub.project,
       };
     });
@@ -51,7 +86,15 @@ export async function GET() {
   }
 }
 
-export async function POST(request: Request) {
+// POST /api/subscriptions — dashboard-session-only (deliberately NOT covered
+// by the token auth above): the middleware exclusion is collection-path-wide
+// (it can't distinguish GET from POST), so this handler enforces the session
+// cookie itself now that middleware no longer gates this path.
+export async function POST(request: NextRequest) {
+  if (!hasSessionCookie(request)) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
   let input;
   try {
     input = parseSubscriptionCreateInput(await request.json());
@@ -91,6 +134,7 @@ export async function POST(request: Request) {
         autoRenew: input.autoRenew,
         status: input.status,
         notes: input.notes,
+        knobEnv: input.knobEnv === null ? Prisma.JsonNull : (input.knobEnv as Prisma.InputJsonObject),
       },
     });
     return NextResponse.json(subscription, { status: 201 });

@@ -53,6 +53,7 @@ CREATE TABLE "ProviderPlan" (
   "billingInterval" TEXT DEFAULT 'monthly',
   "mustKeepFunded" BOOLEAN NOT NULL DEFAULT false,
   "notes" TEXT,
+  "knobEnv" JSONB,
   "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   "updatedAt" DATETIME NOT NULL,
   CONSTRAINT "ProviderPlan_providerId_fkey" FOREIGN KEY ("providerId") REFERENCES "Provider" ("id") ON DELETE CASCADE ON UPDATE CASCADE
@@ -77,6 +78,7 @@ CREATE TABLE "Subscription" (
   "status" TEXT NOT NULL DEFAULT 'active',
   "canceledAt" DATETIME,
   "notes" TEXT,
+  "knobEnv" JSONB,
   "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   "updatedAt" DATETIME NOT NULL,
   CONSTRAINT "Subscription_providerId_fkey" FOREIGN KEY ("providerId") REFERENCES "Provider" ("id") ON DELETE CASCADE ON UPDATE CASCADE,

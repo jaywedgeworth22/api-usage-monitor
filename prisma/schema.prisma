@@ -46,6 +46,12 @@ model ProviderPlan {
   billingInterval     String?   @default("monthly")
   mustKeepFunded      Boolean   @default(false)
   notes               String?
+  // Machine-readable map of env-var knob name -> string value implied by this
+  // provider's FREE tier (e.g. PROVIDER_QUOTA_* / PROVIDER_RATE_LIMIT_* / other
+  // toggles a consuming app — Socratic.Trade — should apply at baseline). This
+  // is the free-tier floor; a Subscription.knobEnv (paid tier) overrides it
+  // when present. Null when no knob map has been defined yet.
+  knobEnv             Json?
   createdAt           DateTime  @default(now())
   updatedAt           DateTime  @updatedAt
 }
@@ -256,10 +262,18 @@ model Subscription {
   // emitted as a synthetic charge. Null until the first charge is generated.
   lastChargedPeriodStart DateTime?
   autoRenew              Boolean   @default(true)
-  // active | paused | canceled — only "active" subscriptions generate charges.
+  // active | paused | canceled | considering — only "active" subscriptions
+  // generate charges. "considering" models a candidate paid tier that isn't
+  // purchased yet, so its knobEnv can be compared against the free tier
+  // without emitting phantom spend.
   status                 String    @default("active")
   canceledAt             DateTime?
   notes                  String?
+  // Machine-readable map of env-var knob name -> string value implied by THIS
+  // plan tier, overriding the provider's free-tier ProviderPlan.knobEnv when
+  // present (see GET /api/subscriptions, which returns both the effective and
+  // free-tier maps). Null means "no override — use the provider's free tier."
+  knobEnv                Json?
   createdAt              DateTime  @default(now())
   updatedAt              DateTime  @updatedAt
 

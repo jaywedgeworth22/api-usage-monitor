@@ -251,6 +251,23 @@ describe("materializeDueSubscriptions + project attribution (integration)", () =
     expect(await prisma.externalUsageEvent.count()).toBe(1);
   });
 
+  it("never charges a 'considering' subscription (candidate plan, not yet purchased)", async () => {
+    // Regression for subscription->knob linkage phase 1: "considering" is a
+    // first-class status (alongside active|paused|canceled) so a candidate
+    // paid tier's knobEnv can be compared before committing to it — it must
+    // behave exactly like "paused" for billing purposes: zero charges, ever.
+    const provider = await prisma.provider.create({
+      data: { name: "tiingo", displayName: "Tiingo", type: "builtin", refreshIntervalMin: 60 },
+    });
+    await createSubscription(provider.id, { status: "considering", costUsd: 30 });
+
+    const result = await materializeDueSubscriptions(NOW);
+    expect(result.examined).toBe(0);
+    expect(result.charged).toBe(0);
+    expect(result.eventsWritten).toBe(0);
+    expect(await prisma.externalUsageEvent.count()).toBe(0);
+  });
+
   it("does not emit an overlapping charge when the anchor day moves later in the billed month", async () => {
     // Regression for the fix-review finding: charged Jul-1 period, then move
     // anchorDay to 15 — the new Aug-anchored period must not overlap July.

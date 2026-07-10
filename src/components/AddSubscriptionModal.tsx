@@ -41,7 +41,7 @@ interface AddSubscriptionModalProps {
 }
 
 const INTERVALS = ["weekly", "monthly", "quarterly", "annual"];
-const STATUSES = ["active", "paused", "canceled"];
+const STATUSES = ["active", "paused", "canceled", "considering"];
 
 function todayIso(): string {
   return new Date().toISOString().slice(0, 10);

@@ -16,6 +16,13 @@ export interface SubscriptionRow {
   autoRenew: boolean;
   status: string;
   notes: string | null;
+  // Effective knobEnv (this subscription's own override if set, else the
+  // provider's free-tier ProviderPlan.knobEnv) and the provider's free-tier
+  // map on its own (always present when the provider has one, regardless of
+  // this subscription's override). Not yet rendered in this table — phase 1
+  // is data model + API only (see docs/rollouts/2026-07-10-subscription-knob-linkage.md).
+  knobEnv: Record<string, string> | null;
+  freeTierKnobEnv: Record<string, string> | null;
   provider: { id: string; name: string; displayName: string };
   project: { id: string; name: string } | null;
 }
@@ -34,6 +41,7 @@ const STATUS_STYLES: Record<string, string> = {
   active: "bg-emerald-50 text-emerald-700",
   paused: "bg-amber-50 text-amber-700",
   canceled: "bg-gray-100 text-gray-400",
+  considering: "bg-indigo-50 text-indigo-700",
 };
 
 function formatUsd(amount: number, currency: string): string {
