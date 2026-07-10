@@ -45,6 +45,7 @@ async function loadAdapters() {
     import("./robinhood"),
     import("./alpaca"),
     import("./agent-sync-relay"),
+    import("./hetzner"),
   ]);
 
   const [
@@ -58,6 +59,7 @@ async function loadAdapters() {
     stripe,
     robinhood, alpaca,
     agentSyncRelay,
+    hetzner,
   ] = modules;
 
   // LLM/AI
@@ -100,6 +102,7 @@ async function loadAdapters() {
 
   // Infrastructure
   adapters["cloudflare"] = cloudflare.fetchUsage;
+  adapters["hetzner"] = hetzner.fetchUsage;
 
   // Data
   adapters["apify"] = apify.fetchUsage;
