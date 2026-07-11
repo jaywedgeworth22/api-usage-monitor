@@ -5,12 +5,17 @@ writes to `/data/prod.db` (the Render disk backing this app) to a Cloudflare R2 
 as LTX files. Adapted from the sibling Socratic.Trade app's PM2/macOS setup
 (`docs/litestream.md` there) for Render's single-web-service, build-then-run model.
 
-**Fully opt-in.** With `LITESTREAM_S3_*` unset (the default), `render.yaml`'s
+**Opt-in, with fail-closed configuration.** With `LITESTREAM_S3_*` unset and
+`LITESTREAM_REQUIRED=false` (the initial default), `render.yaml`'s
 `startCommand` runs exactly as it did before this was added: `migrate-safe.mjs` then
 `npm start`, no litestream process — same logical behavior as before (it also uses
 `exec` so the server process receives Render's SIGTERM directly). Setting the four
 required `LITESTREAM_S3_*` env vars (BUCKET/ENDPOINT/ACCESS_KEY_ID/SECRET_ACCESS_KEY;
-REGION is optional) turns replication (and restore-on-fresh-disk) on.
+REGION is optional) turns replication (and restore-on-fresh-disk) on. Partial
+credentials or a configured replica with a missing/unverified binary stop
+startup. After the first successful restore drill, set
+`LITESTREAM_REQUIRED=true` so an entirely missing replica also stops startup
+and makes `/api/ready` fail.
 
 > **0.5.x note:** Litestream 0.5 only supports a **single replica per database**. It
 > also replaced the `snapshots`/`generations` model with **LTX files** — inspect them
@@ -32,7 +37,8 @@ REGION is optional) turns replication (and restore-on-fresh-disk) on.
   R2 first if `/data/prod.db` doesn't exist yet (fresh disk or disaster recovery),
   runs `migrate-safe.mjs`, then `exec`s `litestream replicate -exec "npm start"` so
   litestream supervises the Next.js server as PID 1's child and every write gets
-  replicated. Otherwise: logs one "replication disabled" line, runs
+  replicated. Otherwise, when backup is explicitly optional and completely
+  unconfigured: logs one "replication disabled" line, runs
   `migrate-safe.mjs`, then `exec`s `npm start` directly — today's behavior.
 - `scripts/litestream-restore.sh` — manual disaster-recovery restore, run from
   Render's Shell tab (see below).
@@ -58,11 +64,13 @@ LITESTREAM_S3_REGION=auto
 LITESTREAM_S3_ENDPOINT=https://<account-id>.r2.cloudflarestorage.com
 LITESTREAM_S3_ACCESS_KEY_ID=...
 LITESTREAM_S3_SECRET_ACCESS_KEY=...
+LITESTREAM_REQUIRED=false
 ```
 
-All four of bucket/endpoint/access-key-id/secret-access-key must be set together —
-`scripts/start-with-litestream.sh` only enables replication when every one of them is
-non-empty. `LITESTREAM_S3_REGION` is optional for R2 and can be left unset: Litestream
+All four of bucket/endpoint/access-key-id/secret-access-key must be set together.
+The startup wrapper rejects partial configuration, and it rejects full
+configuration when the verified binary is unavailable. `LITESTREAM_S3_REGION`
+is optional for R2 and can be left unset: Litestream
 expands config env vars with Go's `os.Getenv` (not a shell, so `${VAR:-default}` is not
 supported), and with an S3 endpoint set an empty region falls back to `us-east-1`, which
 R2 accepts for SigV4. Set it to `auto` only if you prefer to be explicit.
@@ -88,9 +96,13 @@ bin/litestream ltx -config litestream.yml /data/prod.db
 In the service's **Logs**, look for the `[start-with-litestream] replication ENABLED`
 line at boot, followed by litestream's own `replicating to type=s3 bucket=...` and
 periodic `ltx file uploaded` / `replica sync` lines. If instead you see
-`[start-with-litestream] replication DISABLED`, one or more `LITESTREAM_S3_*` vars
-aren't set (or `bin/litestream` is missing — check the build logs for
-`fetch-litestream.sh` output).
+`[start-with-litestream] replication DISABLED`, all required `LITESTREAM_S3_*`
+vars are unset and backup is still optional. Partial values or a missing binary
+are startup errors; check `fetch-litestream.sh` and startup logs.
+
+After the first successful restore drill, set `LITESTREAM_REQUIRED=true` in
+Render and redeploy. Confirm `/api/ready` reports
+`checks.backup.required=true` and `checks.backup.active=true`.
 
 ## Disaster recovery
 

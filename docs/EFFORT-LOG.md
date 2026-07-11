@@ -125,6 +125,11 @@ Protocol: /Users/jay/apps/EFFORT-LOG-PROTOCOL.md (canonical). Live board:
 - **UI refactoring for Dashboard and Settings + API Type Safety (AG, S) — 2026-07-11.** Refactor monolithic page components (Dashboard, Settings) into discrete UI components and replace 'any' casting with PrismaClientKnownRequestError for P2002 checks.
 
 ## In Progress
+- **App-wide hardening + direct billing integrations (CODEX, owner-directed 2026-07-11).** Branch
+  `codex-app-wide-hardening`. Implementing the 2026-07-11 audit backlog across telemetry/spend,
+  subscriptions, security, adapter failure semantics, accessible/responsive UI, readiness/deploy/
+  backup/CI, plus official-API-backed provider billing and subscription integrations. Multi-agent
+  isolated sublanes; no production writes or merges without an explicit landing decision.
 - **Subscription->knob linkage phase 1 (CLAUDE, sonnet subagent, owner-directed 2026-07-10,
   background agent in an isolated worktree off main) — mirrored from the live board, OPEN PR #83
   (`claude/subscription-knob-linkage`), opened 2026-07-10. NOT merged.** Goal: the monitor becomes the source of truth for which market-data plan is active

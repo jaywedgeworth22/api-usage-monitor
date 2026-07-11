@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { getRuntimeIdentity } from "@/lib/runtime-health";
 
 // Unauthenticated liveness check for external uptime monitors. Deliberately
 // excluded from src/middleware.ts's session gate, since the dashboard's own
@@ -8,5 +9,14 @@ import { NextResponse } from "next/server";
 export const dynamic = "force-dynamic";
 
 export async function GET() {
-  return NextResponse.json({ ok: true });
+  return NextResponse.json(
+    {
+      ok: true,
+      status: "live",
+      ...getRuntimeIdentity(),
+      uptimeSeconds: Math.floor(process.uptime()),
+      checkedAt: new Date().toISOString(),
+    },
+    { headers: { "Cache-Control": "no-store" } }
+  );
 }

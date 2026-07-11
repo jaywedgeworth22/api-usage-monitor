@@ -2,6 +2,11 @@ import { prisma } from "@/lib/prisma";
 import { fetchProviderUsage } from "@/lib/adapters";
 import { runUsageMaintenance } from "@/lib/usage-maintenance";
 import { ensureAgentSyncProviderSeeded } from "@/lib/ensure-agent-sync-provider";
+import {
+  markSchedulerStarted,
+  markSchedulerTickCompleted,
+  markSchedulerTickStarted,
+} from "@/lib/runtime-health";
 import type { Provider, UsageSnapshot } from "@prisma/client";
 
 const DEFAULT_PROVIDER_TIMEOUT_MS = 90_000;
@@ -161,11 +166,20 @@ let schedulerStarted = false;
 export function startUsagePollingScheduler(): void {
   if (schedulerStarted) return; // instrumentation.register() can fire more than once in some Next.js scenarios - guard against double-scheduling
   schedulerStarted = true;
+  markSchedulerStarted();
   const tick = async () => {
+    markSchedulerTickStarted();
     try {
-      await fetchAllDueProviders();
+      const result = await fetchAllDueProviders();
       await runUsageMaintenance();
+      markSchedulerTickCompleted(true, {
+        total: result.total,
+        successes: result.successes,
+        failures: result.failures,
+        skipped: result.skipped,
+      });
     } catch (error) {
+      markSchedulerTickCompleted(false, null);
       console.error("[usage-scheduler] tick failed", error);
     }
   };

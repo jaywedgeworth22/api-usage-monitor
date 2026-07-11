@@ -5,6 +5,10 @@ on:
     - cron: '*/5 * * * *'  # Every 5 minutes
   workflow_dispatch: {}
 
+concurrency:
+  group: usage-monitor-uptime
+  cancel-in-progress: true
+
 permissions:
   contents: read
   issues: write
@@ -12,25 +16,81 @@ permissions:
 jobs:
   ping:
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
-      - name: Health check
+      - name: Readiness check
         id: check
+        shell: bash
         run: |
-          HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" https://usage.jays.services/api/health || echo "000")
-          echo "http_code=$HTTP_CODE" >> "$GITHUB_OUTPUT"
-          if [ "$HTTP_CODE" != "200" ]; then
-            echo "status=fail" >> "$GITHUB_OUTPUT"
+          set -u
+          body_file="$RUNNER_TEMP/usage-ready.json"
+          http_code=$(curl \
+            --silent \
+            --show-error \
+            --location \
+            --max-time 10 \
+            --retry 2 \
+            --retry-all-errors \
+            --output "$body_file" \
+            --write-out "%{http_code}" \
+            https://usage.jays.services/api/ready) || http_code="000"
+
+          if [ "$http_code" = "200" ] && jq -e '.ok == true' "$body_file" >/dev/null 2>&1; then
+            status="ok"
           else
-            echo "status=ok" >> "$GITHUB_OUTPUT"
+            status="fail"
           fi
 
-      - name: Open issue on failure
+          echo "http_code=$http_code" >> "$GITHUB_OUTPUT"
+          echo "status=$status" >> "$GITHUB_OUTPUT"
+          echo "Readiness status=$status http=$http_code"
+
+      - name: Open or update incident on failure
         if: steps.check.outputs.status == 'fail'
+        shell: bash
         run: |
-          gh issue create \
+          set -euo pipefail
+          title="[Uptime] usage.jays.services readiness failure"
+          gh label create incident \
             --repo "$GITHUB_REPOSITORY" \
-            --title "🚨 Uptime Alert: usage.jays.services returned HTTP ${{ steps.check.outputs.http_code }}" \
-            --label "incident" \
-            --body "Health check failed at $(date -u). HTTP status: ${{ steps.check.outputs.http_code }}."
+            --color B60205 \
+            --description "Production availability incident" \
+            --force
+          issue_number=$(gh issue list \
+            --repo "$GITHUB_REPOSITORY" \
+            --state open \
+            --label incident \
+            --limit 100 \
+            --json number,title | jq -r --arg title "$title" 'first(.[] | select(.title == $title) | .number) // empty')
+          message="Readiness failed at $(date -u +'%Y-%m-%dT%H:%M:%SZ'). HTTP status: ${{ steps.check.outputs.http_code }}. Endpoint: https://usage.jays.services/api/ready"
+          if [ -n "$issue_number" ]; then
+            gh issue comment "$issue_number" --repo "$GITHUB_REPOSITORY" --body "$message"
+          else
+            gh issue create \
+              --repo "$GITHUB_REPOSITORY" \
+              --title "$title" \
+              --label incident \
+              --body "$message"
+          fi
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Resolve open incident after recovery
+        if: steps.check.outputs.status == 'ok'
+        shell: bash
+        run: |
+          set -euo pipefail
+          title="[Uptime] usage.jays.services readiness failure"
+          issue_number=$(gh issue list \
+            --repo "$GITHUB_REPOSITORY" \
+            --state open \
+            --label incident \
+            --limit 100 \
+            --json number,title | jq -r --arg title "$title" 'first(.[] | select(.title == $title) | .number) // empty')
+          if [ -n "$issue_number" ]; then
+            gh issue close "$issue_number" \
+              --repo "$GITHUB_REPOSITORY" \
+              --comment "Readiness recovered at $(date -u +'%Y-%m-%dT%H:%M:%SZ')."
+          fi
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
