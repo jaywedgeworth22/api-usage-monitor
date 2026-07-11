@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, Fragment } from "react";
 import { type Provider } from "@/app/settings/page";
 import { isExternalBillingStale } from "@/components/ExternalBillingDetails";
 
@@ -32,6 +32,11 @@ export default function ProviderTable({
 }: ProviderTableProps) {
   const [sortField, setSortField] = useState<SortField>("name");
   const [sortDirection, setSortDirection] = useState<SortDirection>("asc");
+  const [collapsedGroups, setCollapsedGroups] = useState<Record<string, boolean>>({});
+
+  const toggleGroup = (type: string) => {
+    setCollapsedGroups(prev => ({ ...prev, [type]: !prev[type] }));
+  };
 
   const handleSort = (field: SortField) => {
     if (sortField === field) {
@@ -198,16 +203,58 @@ export default function ProviderTable({
           </tr>
         </thead>
         <tbody>
-          {sortedProviders.map((provider) => {
-            const alertCounts = countProviderAlerts(provider);
-            const connectedBilling = provider.externalBilling?.[0];
-            const fetchedDate = formatDateObject(provider.latestSnapshot?.fetchedAt ?? null);
+          {Object.entries(
+            sortedProviders.reduce((acc, provider) => {
+              const t = provider.type;
+              if (!acc[t]) acc[t] = [];
+              acc[t].push(provider);
+              return acc;
+            }, {} as Record<string, Provider[]>)
+          )
+            .sort(([typeA], [typeB]) => typeA.localeCompare(typeB))
+            .map(([type, groupProviders]) => {
+              const groupSpend = groupProviders.reduce((sum, p) => sum + (p.spentUsd ?? p.estimatedMonthlyCostUsd ?? 0), 0);
+              const groupBudget = groupProviders.reduce((sum, p) => sum + (p.plan?.monthlyBudgetUsd ?? 0), 0);
+              
+              const isCollapsed = collapsedGroups[type] || false;
+              
+              return (
+                <Fragment key={type}>
+                  <tr 
+                    className="bg-gray-50 dark:bg-gray-800/50 border-b border-gray-100 dark:border-gray-800 cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
+                    onClick={() => toggleGroup(type)}
+                  >
+                    <td colSpan={hasAnyCredits ? 9 : 8} className="px-6 py-2">
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-2">
+                          <svg 
+                            className={`w-4 h-4 text-gray-400 transition-transform ${isCollapsed ? "-rotate-90" : ""}`}
+                            fill="none" 
+                            stroke="currentColor" 
+                            viewBox="0 0 24 24"
+                          >
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                          </svg>
+                          <span className="text-xs font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400 select-none">
+                            {type} <span className="font-normal normal-case opacity-75">({groupProviders.length})</span>
+                          </span>
+                        </div>
+                        <span className="text-xs font-medium text-gray-500 dark:text-gray-400">
+                          Group Spend: {formatUsd(groupSpend)} {groupBudget > 0 && ` / ${formatUsd(groupBudget)}`}
+                        </span>
+                      </div>
+                    </td>
+                  </tr>
+                  {!isCollapsed && groupProviders.map((provider) => {
+                    const alertCounts = countProviderAlerts(provider);
+                    const connectedBilling = provider.externalBilling?.[0];
+                    const fetchedDate = formatDateObject(provider.latestSnapshot?.fetchedAt ?? null);
 
-            return (
-              <tr
-                key={provider.id}
-                className="border-b border-gray-50 hover:bg-gray-50"
-              >
+                    return (
+                      <tr
+                        key={provider.id}
+                        className="border-b border-gray-50 dark:border-gray-800 hover:bg-gray-50 dark:hover:bg-gray-800/50 transition-colors"
+                      >
                 <td data-label="Name" className="px-6 py-4">
                   <div>
                     <p className="font-medium text-gray-900">
@@ -382,6 +429,9 @@ export default function ProviderTable({
               </tr>
             );
           })}
+          </Fragment>
+          );
+        })}
         </tbody>
       </table>
     </div>

@@ -12,7 +12,7 @@ import ProjectTable from "@/components/ProjectTable";
 import type { ExternalBillingRecord } from "@/components/ExternalBillingDetails";
 
 export type BillingMode = "actual" | "estimated" | "manual";
-type SettingsTab = "providers" | "projects" | "subscriptions";
+type SettingsTab = "api-keys" | "notifications" | "billing";
 
 export interface ProviderPlan {
   billingMode: BillingMode;
@@ -63,7 +63,7 @@ export interface Provider {
 }
 
 function parseSettingsTab(value: string | null): SettingsTab {
-  return value === "projects" || value === "subscriptions" ? value : "providers";
+  return value === "notifications" || value === "billing" ? value : "api-keys";
 }
 
 function SettingsPageContent() {
@@ -304,21 +304,20 @@ function SettingsPageContent() {
   };
 
   if (
-    (loading && activeTab === "providers") ||
-    (projectsLoading && activeTab === "projects") ||
-    (subscriptionsLoading && activeTab === "subscriptions")
+    (loading && activeTab === "api-keys") ||
+    ((projectsLoading || subscriptionsLoading) && activeTab === "billing")
   ) {
     return (
       <div className="space-y-6 animate-pulse">
         <div className="flex items-center justify-between">
-          <div className="h-8 w-32 bg-gray-200 rounded"></div>
-          <div className="h-10 w-32 bg-gray-200 rounded-lg"></div>
+          <div className="h-8 w-32 bg-gray-200 dark:bg-gray-700 rounded"></div>
+          <div className="h-10 w-32 bg-gray-200 dark:bg-gray-700 rounded-lg"></div>
         </div>
-        <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
-          <div className="h-12 bg-gray-50 border-b border-gray-100"></div>
-          <div className="divide-y divide-gray-50">
+        <div className="bg-white dark:bg-gray-800 rounded-xl border border-gray-200 dark:border-gray-700 overflow-hidden">
+          <div className="h-12 bg-gray-50 dark:bg-gray-900 border-b border-gray-100 dark:border-gray-800"></div>
+          <div className="divide-y divide-gray-50 dark:divide-gray-800">
             {[...Array(5)].map((_, i) => (
-              <div key={i} className="h-20 bg-white"></div>
+              <div key={i} className="h-20 bg-white dark:bg-gray-800"></div>
             ))}
           </div>
         </div>
@@ -329,8 +328,8 @@ function SettingsPageContent() {
   return (
     <div className="space-y-6">
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <h1 className="text-2xl font-bold text-gray-900">Settings</h1>
-        {activeTab === "providers" ? (
+        <h1 className="text-2xl font-bold text-gray-900 dark:text-gray-100">Settings</h1>
+        {activeTab === "api-keys" ? (
           <button
             type="button"
             onClick={() => {
@@ -339,69 +338,70 @@ function SettingsPageContent() {
             }}
             className="px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700 transition-colors"
           >
-            Add Provider
+            Add API Key
           </button>
-        ) : activeTab === "projects" ? (
-          <button
-            type="button"
-            onClick={() => {
-              setEditProject(null);
-              setProjectModalOpen(true);
-            }}
-            className="px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700 transition-colors"
-          >
-            Add Project
-          </button>
-        ) : (
-          <button
-            type="button"
-            onClick={() => {
-              setEditSubscription(null);
-              setSubscriptionModalOpen(true);
-            }}
-            className="px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700 transition-colors"
-          >
-            Add Subscription
-          </button>
-        )}
+        ) : activeTab === "billing" ? (
+          <div className="flex gap-2">
+            <button
+              type="button"
+              onClick={() => {
+                setEditProject(null);
+                setProjectModalOpen(true);
+              }}
+              className="px-4 py-2 text-sm font-medium text-blue-700 bg-blue-50 dark:text-blue-300 dark:bg-blue-900/30 border border-blue-200 dark:border-blue-800 rounded-lg hover:bg-blue-100 dark:hover:bg-blue-900/50 transition-colors"
+            >
+              Add Project
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setEditSubscription(null);
+                setSubscriptionModalOpen(true);
+              }}
+              className="px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700 transition-colors"
+            >
+              Add Subscription
+            </button>
+          </div>
+        ) : null}
       </div>
 
-      <nav aria-label="Settings sections" className="flex overflow-x-auto border-b border-gray-200">
+      <nav aria-label="Settings sections" className="flex overflow-x-auto border-b border-gray-200 dark:border-gray-800">
         <Link
-          href="/settings?tab=providers"
-          id="settings-tab-providers"
-          aria-current={activeTab === "providers" ? "page" : undefined}
-          className={`pb-3 px-4 text-sm font-medium border-b-2 transition-colors ${
-            activeTab === "providers"
-              ? "border-blue-500 text-blue-600"
-              : "border-transparent text-gray-500 hover:text-gray-700"
+          href="/settings?tab=api-keys"
+          id="settings-tab-api-keys"
+          aria-current={activeTab === "api-keys" ? "page" : undefined}
+          className={`pb-3 px-4 text-sm font-medium border-b-2 transition-colors whitespace-nowrap ${
+            activeTab === "api-keys"
+              ? "border-blue-500 text-blue-600 dark:text-blue-400"
+              : "border-transparent text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200"
           }`}
         >
-          Providers
+          API Keys
         </Link>
         <Link
-          href="/settings?tab=projects"
-          id="settings-tab-projects"
-          aria-current={activeTab === "projects" ? "page" : undefined}
-          className={`pb-3 px-4 text-sm font-medium border-b-2 transition-colors ${
-            activeTab === "projects"
-              ? "border-blue-500 text-blue-600"
-              : "border-transparent text-gray-500 hover:text-gray-700"
+          href="/settings?tab=notifications"
+          id="settings-tab-notifications"
+          aria-current={activeTab === "notifications" ? "page" : undefined}
+          className={`pb-3 px-4 text-sm font-medium border-b-2 transition-colors whitespace-nowrap ${
+            activeTab === "notifications"
+              ? "border-blue-500 text-blue-600 dark:text-blue-400"
+              : "border-transparent text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200"
           }`}
         >
-          Projects
+          Notifications
         </Link>
         <Link
-          href="/settings?tab=subscriptions"
-          id="settings-tab-subscriptions"
-          aria-current={activeTab === "subscriptions" ? "page" : undefined}
-          className={`pb-3 px-4 text-sm font-medium border-b-2 transition-colors ${
-            activeTab === "subscriptions"
-              ? "border-blue-500 text-blue-600"
-              : "border-transparent text-gray-500 hover:text-gray-700"
+          href="/settings?tab=billing"
+          id="settings-tab-billing"
+          aria-current={activeTab === "billing" ? "page" : undefined}
+          className={`pb-3 px-4 text-sm font-medium border-b-2 transition-colors whitespace-nowrap ${
+            activeTab === "billing"
+              ? "border-blue-500 text-blue-600 dark:text-blue-400"
+              : "border-transparent text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200"
           }`}
         >
-          Subscriptions
+          Billing & Projects
         </Link>
       </nav>
 
@@ -412,75 +412,142 @@ function SettingsPageContent() {
       )}
 
       <section id={`settings-panel-${activeTab}`} aria-label={`${activeTab} settings`}>
-      {activeTab === "providers" ? (
-        <ProviderTable
-          providers={providers}
-          actionLoading={actionLoading}
-          deleteConfirm={deleteConfirm}
-          onEdit={(provider) => {
-            setEditProvider(provider);
-            setModalOpen(true);
-          }}
-          onDeleteConfirmStart={setDeleteConfirm}
-          onDeleteConfirmCancel={() => setDeleteConfirm(null)}
-          onDelete={handleDelete}
-          onAddProvider={() => {
-            setEditProvider(null);
-            setModalOpen(true);
-          }}
-          onToggleActive={handleToggleActive}
-          onFetchNow={handleFetchNow}
-        />
-      ) : activeTab === "projects" ? (
-        <ProjectTable
-          projects={projects}
-          actionLoading={actionLoading}
-          deleteProjectConfirm={deleteProjectConfirm}
-          onEdit={(project) => {
-            setEditProject(project);
-            setProjectModalOpen(true);
-          }}
-          onDeleteConfirmStart={setDeleteProjectConfirm}
-          onDeleteConfirmCancel={() => setDeleteProjectConfirm(null)}
-          onDelete={handleDeleteProject}
-          onAddProject={() => {
-            setEditProject(null);
-            setProjectModalOpen(true);
-          }}
-        />
+      {activeTab === "api-keys" ? (
+        <div className="space-y-6">
+          <div className="bg-blue-50 dark:bg-blue-900/30 border border-blue-200 dark:border-blue-800 rounded-xl p-5">
+            <h2 className="text-sm font-semibold text-blue-900 dark:text-blue-100 flex items-center gap-2 mb-3">
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+              </svg>
+              How Usage Tracking Works
+            </h2>
+            <div className="grid sm:grid-cols-3 gap-4 text-sm text-blue-800 dark:text-blue-200">
+              <div className="space-y-1">
+                <p className="font-medium text-blue-900 dark:text-blue-100">1. Poll Adapters</p>
+                <p className="text-xs opacity-90">The monitor actively queries provider APIs (e.g. OpenAI) on a schedule. Best for services with billing endpoints.</p>
+              </div>
+              <div className="space-y-1">
+                <p className="font-medium text-blue-900 dark:text-blue-100">2. Pushed Telemetry</p>
+                <p className="text-xs opacity-90">Apps explicitly send usage events to the monitor. Used for &quot;blind&quot; providers (e.g. Anthropic, Robinhood) without billing APIs.</p>
+              </div>
+              <div className="space-y-1">
+                <p className="font-medium text-blue-900 dark:text-blue-100">3. OTLP Metrics</p>
+                <p className="text-xs opacity-90">Standardized metrics streaming. Perfect for tracking natively supported tools like Claude Code via <code className="px-1 py-0.5 rounded bg-blue-100 dark:bg-blue-800 text-[10px]">/v1/metrics</code>.</p>
+              </div>
+            </div>
+          </div>
+          <ProviderTable
+            providers={providers}
+            actionLoading={actionLoading}
+            deleteConfirm={deleteConfirm}
+            onEdit={(provider) => {
+              setEditProvider(provider);
+              setModalOpen(true);
+            }}
+            onDeleteConfirmStart={setDeleteConfirm}
+            onDeleteConfirmCancel={() => setDeleteConfirm(null)}
+            onDelete={handleDelete}
+            onAddProvider={() => {
+              setEditProvider(null);
+              setModalOpen(true);
+            }}
+            onToggleActive={handleToggleActive}
+            onFetchNow={handleFetchNow}
+          />
+        </div>
+      ) : activeTab === "notifications" ? (
+        <div className="bg-white dark:bg-gray-800 rounded-xl border border-gray-200 dark:border-gray-700 p-6 space-y-6">
+          <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100">Notification Preferences</h2>
+          <p className="text-sm text-gray-500 dark:text-gray-400 max-w-2xl">
+            Configure how you want to be alerted about budget overruns, payment failures, and system issues.
+          </p>
+          <div className="space-y-4 max-w-md">
+            <div className="flex items-start gap-3">
+              <div className="flex h-6 items-center">
+                <input
+                  id="email-alerts"
+                  name="email-alerts"
+                  type="checkbox"
+                  defaultChecked
+                  className="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-600 dark:border-gray-600 dark:bg-gray-900 dark:ring-offset-gray-900"
+                />
+              </div>
+              <div className="text-sm leading-6">
+                <label htmlFor="email-alerts" className="font-medium text-gray-900 dark:text-gray-100">Email Alerts</label>
+                <p className="text-gray-500 dark:text-gray-400">Receive critical alerts via email immediately.</p>
+              </div>
+            </div>
+            <div className="flex items-start gap-3">
+              <div className="flex h-6 items-center">
+                <input
+                  id="slack-alerts"
+                  name="slack-alerts"
+                  type="checkbox"
+                  className="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-600 dark:border-gray-600 dark:bg-gray-900 dark:ring-offset-gray-900"
+                />
+              </div>
+              <div className="text-sm leading-6">
+                <label htmlFor="slack-alerts" className="font-medium text-gray-900 dark:text-gray-100">Slack Integration</label>
+                <p className="text-gray-500 dark:text-gray-400">Send notifications to a designated Slack channel.</p>
+              </div>
+            </div>
+          </div>
+          <button type="button" className="px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700 transition-colors">
+            Save Preferences
+          </button>
+        </div>
       ) : (
-        <SubscriptionsPanel
-          subscriptions={subscriptions}
-          onAdd={() => {
-            setEditSubscription(null);
-            setSubscriptionModalOpen(true);
-          }}
-          onEdit={(sub) => {
-            setEditSubscription({
-              id: sub.id,
-              providerId: sub.provider.id,
-              projectId: sub.project?.id ?? null,
-              name: sub.name,
-              description: sub.description,
-              costUsd: sub.costUsd,
-              currency: sub.currency,
-              interval: sub.interval,
-              intervalCount: sub.intervalCount,
-              anchorDay: sub.anchorDay,
-              startDate: sub.startDate,
-              autoRenew: sub.autoRenew,
-              status: sub.status,
-              notes: sub.notes,
-              externalBillingSource: sub.externalBillingSource,
-              externalBillingId: sub.externalBillingId,
-            });
-            setSubscriptionModalOpen(true);
-          }}
-          onDelete={handleDeleteSubscription}
-          deleteConfirm={deleteSubscriptionConfirm}
-          setDeleteConfirm={setDeleteSubscriptionConfirm}
-          actionLoading={actionLoading}
-        />
+        <div className="space-y-8">
+          <SubscriptionsPanel
+            subscriptions={subscriptions}
+            onAdd={() => {
+              setEditSubscription(null);
+              setSubscriptionModalOpen(true);
+            }}
+            onEdit={(sub) => {
+              setEditSubscription({
+                id: sub.id,
+                providerId: sub.provider.id,
+                projectId: sub.project?.id ?? null,
+                name: sub.name,
+                description: sub.description,
+                costUsd: sub.costUsd,
+                currency: sub.currency,
+                interval: sub.interval,
+                intervalCount: sub.intervalCount,
+                anchorDay: sub.anchorDay,
+                startDate: sub.startDate,
+                autoRenew: sub.autoRenew,
+                status: sub.status,
+                notes: sub.notes,
+                externalBillingSource: sub.externalBillingSource,
+                externalBillingId: sub.externalBillingId,
+              });
+              setSubscriptionModalOpen(true);
+            }}
+            onDelete={handleDeleteSubscription}
+            deleteConfirm={deleteSubscriptionConfirm}
+            setDeleteConfirm={setDeleteSubscriptionConfirm}
+            actionLoading={actionLoading}
+          />
+
+          <ProjectTable
+            projects={projects}
+            actionLoading={actionLoading}
+            deleteProjectConfirm={deleteProjectConfirm}
+            onEdit={(project) => {
+              setEditProject(project);
+              setProjectModalOpen(true);
+            }}
+            onDeleteConfirmStart={setDeleteProjectConfirm}
+            onDeleteConfirmCancel={() => setDeleteProjectConfirm(null)}
+            onDelete={handleDeleteProject}
+            onAddProject={() => {
+              setEditProject(null);
+              setProjectModalOpen(true);
+            }}
+          />
+        </div>
       )}
       </section>
 

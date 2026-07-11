@@ -5,6 +5,7 @@ import Link from "next/link";
 import ProviderCard from "@/components/ProviderCard";
 import SentryHealthCard from "@/components/SentryHealthCard";
 import DashboardSummaryCards from "@/components/DashboardSummaryCards";
+import DashboardCharts from "@/components/DashboardCharts";
 import ExternalTelemetryPanel, { type ExternalUsageSummary } from "@/components/ExternalTelemetryPanel";
 import ProjectsPanel, { type ProjectBudgetStatus } from "@/components/ProjectsPanel";
 import type { ExternalBillingRecord } from "@/components/ExternalBillingDetails";
@@ -236,12 +237,22 @@ export default function DashboardPage() {
         totalCredits={totalCredits}
       />
 
-      {usageSummary && <ExternalTelemetryPanel usageSummary={usageSummary} />}
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
+        <div className="lg:col-span-2 space-y-8">
+          {usageSummary && <ExternalTelemetryPanel usageSummary={usageSummary} />}
 
-      <SentryHealthCard />
+          {(projects.length > 0 || (projectSummary?.unassignedSpentUsd ?? 0) > 0) && (
+            <ProjectsPanel projects={projects} summary={projectSummary} />
+          )}
+        </div>
+        <div className="space-y-8">
+          <DashboardCharts providers={providers} />
+          <SentryHealthCard />
+        </div>
+      </div>
 
-      <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
-        <div className="px-6 py-4 border-b border-gray-100 flex items-center justify-between">
+      <div id="attention" className="bg-white dark:bg-gray-800 rounded-xl border border-gray-200 dark:border-gray-700 overflow-hidden">
+        <div className="px-6 py-4 border-b border-gray-100 dark:border-gray-700 flex items-center justify-between">
           <h2 className="text-sm font-semibold text-gray-800">Attention</h2>
           <Link href="/settings" className="text-xs font-medium text-blue-600">
             Manage budgets
@@ -280,10 +291,6 @@ export default function DashboardPage() {
           </div>
         )}
       </div>
-
-      {(projects.length > 0 || (projectSummary?.unassignedSpentUsd ?? 0) > 0) && (
-        <ProjectsPanel projects={projects} summary={projectSummary} />
-      )}
 
       {/* Provider Grid */}
       {providers.length === 0 ? (

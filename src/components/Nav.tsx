@@ -3,6 +3,8 @@
 import { useState } from "react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
+import { useTheme } from "next-themes";
+import { Moon, Sun } from "lucide-react";
 
 export default function Nav() {
   const pathname = usePathname();
@@ -10,6 +12,14 @@ export default function Nav() {
   const [menuOpen, setMenuOpen] = useState(false);
   const [logoutPending, setLogoutPending] = useState(false);
   const [logoutError, setLogoutError] = useState("");
+
+  const { theme, setTheme } = useTheme();
+  const [mounted, setMounted] = useState(false);
+
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setMounted(true);
+  }, []);
 
   const links = [
     { href: "/", label: "Dashboard" },
@@ -37,7 +47,7 @@ export default function Nav() {
   if (pathname === "/login" || pathname.startsWith("/login/")) return null;
 
   return (
-    <nav aria-label="Primary navigation" className="bg-white border-b border-gray-200 sticky top-0 z-50">
+    <nav aria-label="Primary navigation" className="bg-white dark:bg-gray-900 border-b border-gray-200 dark:border-gray-800 sticky top-0 z-50">
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
         <div className="flex items-center justify-between h-16">
           <div className="flex min-w-0 items-center gap-4 lg:gap-8">
@@ -72,8 +82,8 @@ export default function Nav() {
                     aria-current={isActive ? "page" : undefined}
                     className={`px-3 py-2 rounded-md text-sm font-medium transition-colors ${
                       isActive
-                        ? "bg-gray-100 text-gray-900"
-                        : "text-gray-600 hover:text-gray-900 hover:bg-gray-50"
+                        ? "bg-gray-100 text-gray-900 dark:bg-gray-800 dark:text-gray-100"
+                        : "text-gray-600 hover:text-gray-900 hover:bg-gray-50 dark:text-gray-400 dark:hover:text-gray-100 dark:hover:bg-gray-800"
                     }`}
                   >
                     {link.label}
@@ -83,12 +93,22 @@ export default function Nav() {
             </div>
           </div>
           <div className="hidden items-center gap-2 sm:flex">
+            {mounted && (
+              <button
+                type="button"
+                onClick={() => setTheme(theme === "dark" ? "light" : "dark")}
+                className="p-2 rounded-md text-gray-600 hover:text-gray-900 hover:bg-gray-50 dark:text-gray-400 dark:hover:text-gray-100 dark:hover:bg-gray-800 transition-colors"
+                aria-label="Toggle dark mode"
+              >
+                {theme === "dark" ? <Sun size={18} /> : <Moon size={18} />}
+              </button>
+            )}
             {logoutError && <span role="alert" className="max-w-48 text-xs text-red-600">{logoutError}</span>}
             <button
               type="button"
               onClick={handleLogout}
               disabled={logoutPending}
-              className="px-3 py-2 rounded-md text-sm font-medium text-gray-600 hover:text-gray-900 hover:bg-gray-50 transition-colors disabled:opacity-50"
+              className="px-3 py-2 rounded-md text-sm font-medium text-gray-600 hover:text-gray-900 hover:bg-gray-50 dark:text-gray-400 dark:hover:text-gray-100 dark:hover:bg-gray-800 transition-colors disabled:opacity-50"
             >
               {logoutPending ? "Logging out…" : "Log out"}
             </button>
