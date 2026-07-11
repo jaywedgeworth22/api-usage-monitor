@@ -18,6 +18,8 @@ vi.mock("@/lib/prisma", () => ({
   prisma: {
     provider: { findMany: () => findMany(), create: vi.fn() },
     usageSnapshot: { create: (args: unknown) => create(args) },
+    $transaction: (run: (tx: unknown) => unknown) =>
+      run({ usageSnapshot: { create: (args: unknown) => create(args) } }),
   },
 }));
 
@@ -88,5 +90,48 @@ describe("fetchAllDueProviders per-provider timeout budget", () => {
     expect(result.errors).toHaveLength(1);
     expect(result.errors[0].name).toBe("hung");
     expect(result.errors[0].error).toBe("Provider hung timed out after 5000ms");
+    expect(result.errors[0]).toMatchObject({
+      code: "TIMEOUT",
+      status: null,
+      retryable: true,
+    });
+    expect(result.outcomes.map((outcome) => outcome.status)).toEqual([
+      "success",
+      "failure",
+    ]);
+  });
+
+  it("rolls back a late result after a newer attempt supersedes it", async () => {
+    let resolveFirst: ((value: unknown) => void) | undefined;
+    let resolveSecond: ((value: unknown) => void) | undefined;
+    fetchProviderUsage
+      .mockImplementationOnce(
+        () => new Promise((resolve) => { resolveFirst = resolve; })
+      )
+      .mockImplementationOnce(
+        () => new Promise((resolve) => { resolveSecond = resolve; })
+      );
+    const usage = {
+      balance: 1,
+      totalCost: 10,
+      totalRequests: 1,
+      credits: null,
+      rawData: {},
+    };
+    const { recordProviderUsage } = await import("@/lib/usage-recorder");
+    const provider = providerRow("race");
+    const first = recordProviderUsage(provider as never);
+    const second = recordProviderUsage(provider as never);
+
+    resolveSecond?.(usage);
+    await expect(second).resolves.toEqual({ id: "snap" });
+    resolveFirst?.({ ...usage, totalCost: 999 });
+    await expect(first).rejects.toMatchObject({ code: "SUPERSEDED" });
+    expect(create).toHaveBeenCalledTimes(1);
+    expect(create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ totalCost: 10 }),
+      })
+    );
   });
 });

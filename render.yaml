@@ -10,8 +10,14 @@
 services:
   - type: web
     name: api-usage-monitor
-    env: node
+    runtime: node
     plan: starter
+    autoDeployTrigger: checksPass
+    healthCheckPath: /api/ready
+    buildFilter:
+      ignoredPaths:
+        - docs/**
+        - "**/*.md"
     disk:
       name: api-usage-monitor-data
       mountPath: /data
@@ -35,18 +41,26 @@ services:
     # build time (idempotent; cheap no-op if the disk-backed build cache
     # already has the right version). start-with-litestream.sh decides at
     # runtime whether to actually replicate, based on the LITESTREAM_S3_*
-    # envVars below: unset (the default) -> behavior is unchanged from the
-    # plain "node scripts/migrate-safe.mjs && npm start" this replaces; the
-    # four required vars set (BUCKET/ENDPOINT/ACCESS_KEY_ID/SECRET_ACCESS_KEY;
-    # REGION is optional) -> continuously replicate /data/prod.db to the
-    # configured S3-compatible bucket (Cloudflare R2) via litestream.yml,
-    # restoring from the replica first if the disk has no DB yet. See
-    # docs/litestream.md.
-    buildCommand: npm install && npx prisma generate && npm run build && bash scripts/fetch-litestream.sh
+    # envVars below: unset (the default) -> take a bounded verified local
+    # pre-migration backup, migrate, and start without replication; the four
+    # required vars set (BUCKET/ENDPOINT/ACCESS_KEY_ID/SECRET_ACCESS_KEY;
+    # REGION is optional) -> restore if needed, take the same local backup,
+    # migrate, then continuously replicate /data/prod.db to Cloudflare R2 via
+    # litestream.yml. See docs/litestream.md.
+    buildCommand: npm ci && npm run build && bash scripts/fetch-litestream.sh
     startCommand: bash scripts/start-with-litestream.sh
     envVars:
+      # Keep local development, CI, and Render on the same supported runtime.
+      # This value has higher precedence than .node-version on Render.
+      - key: NODE_VERSION
+        value: 24.14.1
       - key: DATABASE_URL
         value: file:/data/prod.db
+      # Keep the newest verified transaction-consistent snapshots beside the
+      # SQLite DB. Startup creates one before every migrate-safe run and fails
+      # closed for an existing DB if backup or integrity verification fails.
+      - key: SQLITE_PRE_MIGRATION_BACKUP_RETENTION
+        value: "3"
       - key: ENCRYPTION_KEY
         generateValue: true
       - key: CRON_SECRET
@@ -73,6 +87,14 @@ services:
       - key: ALERT_SLACK_WEBHOOK_URL
         sync: false
       - key: ALERT_WEBHOOK_URL
+        sync: false
+      - key: ALERT_RESEND_API_KEY
+        sync: false
+      - key: ALERT_EMAIL_FROM
+        sync: false
+      - key: ALERT_EMAIL_TO
+        sync: false
+      - key: ALERT_PAGERDUTY_ROUTING_KEY
         sync: false
       - key: ALERT_MIN_SEVERITY
         value: warning
@@ -106,4 +128,10 @@ services:
       - key: LITESTREAM_S3_ACCESS_KEY_ID
         sync: false
       - key: LITESTREAM_S3_SECRET_ACCESS_KEY
+        sync: false
+      # Set to true after the replica credentials are provisioned and a restore
+      # drill succeeds. Partial/configured-but-unavailable replication already
+      # fails closed regardless of this flag; true additionally forbids an
+      # entirely unconfigured backup path.
+      - key: LITESTREAM_REQUIRED
         sync: false

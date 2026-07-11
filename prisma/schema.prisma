@@ -15,6 +15,11 @@ model Provider {
   category           String?
   apiKey             String?
   config             Json?
+  // Credential-bearing provider configuration (secondary secrets such as
+  // Alpaca's API secret, Langfuse's secret key, xAI management keys, and
+  // custom auth headers). Stored as a versioned AES-256-GCM JSON envelope and
+  // never selected into client-facing DTOs.
+  secretConfig       String?
   isActive           Boolean                     @default(true)
   credits            Float                       @default(0)
   refreshIntervalMin Int                         @default(60)
@@ -27,6 +32,7 @@ model Provider {
   alertNotifications ProviderAlertNotification[]
   allocations        ProviderProjectAllocation[]
   subscriptions      Subscription[]
+  externalBilling    ProviderExternalBilling[]
 }
 
 model ProviderPlan {
@@ -56,17 +62,61 @@ model ProviderPlan {
   updatedAt           DateTime  @updatedAt
 }
 
+// Authoritative, read-only billing/account state synchronized from a
+// provider's official API. These rows are deliberately separate from
+// Subscription: Subscription materializes charges, while this model only
+// mirrors external plan/status/period data and can therefore never create a
+// second charge for spend already reported by an adapter.
+model ProviderExternalBilling {
+  id                 String    @id @default(uuid())
+  providerId         String
+  provider           Provider  @relation(fields: [providerId], references: [id], onDelete: Cascade)
+  source             String
+  externalId         String
+  kind               String
+  planName           String?
+  status             String?
+  amountUsd          Float?
+  currency           String?
+  billingInterval    String?
+  currentPeriodStart DateTime?
+  currentPeriodEnd   DateTime?
+  nextRenewalAt      DateTime?
+  requestLimit       Float?
+  requestLimitWindow String?
+  spendLimitUsd      Float?
+  spendLimitWindow   String?
+  syncedAt           DateTime
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
+
+  @@unique([providerId, source, externalId])
+  @@index([providerId, status])
+}
+
 model UsageSnapshot {
-  id            String   @id @default(uuid())
-  providerId    String
-  provider      Provider @relation(fields: [providerId], references: [id], onDelete: Cascade)
-  fetchedAt     DateTime
-  balance       Float?
-  totalCost     Float?
-  totalRequests Int?
-  credits       Float?
-  rawData       Json?
-  createdAt     DateTime @default(now())
+  id                       String    @id @default(uuid())
+  providerId               String
+  provider                 Provider  @relation(fields: [providerId], references: [id], onDelete: Cascade)
+  fetchedAt                DateTime
+  balance                  Float?
+  totalCost                Float?
+  // Portion of totalCost that the provider explicitly reports as fixed plan
+  // or subscription cost. Budget math dedupes this against local
+  // Subscription/ProviderPlan fixed charges instead of adding both.
+  fixedCostIncludedUsd     Float?
+  // Provider-reported window/provenance for totalCost. Canonical UTC-month
+  // budget math excludes prior-month and incompatible billing-cycle totals.
+  costWindowStart          DateTime?
+  costWindowEnd            DateTime?
+  costScope                String?
+  // True when totalCost may contain fixed charges that the adapter cannot
+  // classify exactly (for example an all-category invoice total).
+  costIncludesUnknownFixed Boolean   @default(false)
+  totalRequests            Int?
+  credits                  Float?
+  rawData                  Json?
+  createdAt                DateTime  @default(now())
 }
 
 model UsageSnapshotDailyRollup {
@@ -185,11 +235,29 @@ model ExternalUsageEventTombstone {
   @@index([prunedAt])
 }
 
+// Durable checkpoint for converting OTLP cumulative Sum points into deltas.
+// `seriesKey` hashes the metric name plus all resource/data-point attributes;
+// raw high-cardinality attributes never need to be stored here. Checkpoint and
+// ExternalUsageEvent writes happen in one transaction so an exporter retry or
+// process restart cannot advance the counter without persisting its delta.
+model OtlpMetricState {
+  seriesKey         String   @id
+  metricName        String
+  startTimeUnixNano String?
+  lastTimeUnixNano  String
+  lastValue         Float
+  lastPointKey      String
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  @@index([updatedAt])
+}
+
 model ProviderAlertNotification {
-  id                  String    @id @default(uuid())
+  id                  String                         @id @default(uuid())
   providerId          String
-  provider            Provider  @relation(fields: [providerId], references: [id], onDelete: Cascade)
-  stateKey            String    @unique
+  provider            Provider                       @relation(fields: [providerId], references: [id], onDelete: Cascade)
+  stateKey            String                         @unique
   alertCode           String
   severity            String
   providerName        String
@@ -198,13 +266,40 @@ model ProviderAlertNotification {
   firstDetectedAt     DateTime
   lastDetectedAt      DateTime
   lastSentAt          DateTime?
-  sendCount           Int       @default(0)
+  sendCount           Int                            @default(0)
   resolvedAt          DateTime?
-  createdAt           DateTime  @default(now())
-  updatedAt           DateTime  @updatedAt
+  createdAt           DateTime                       @default(now())
+  updatedAt           DateTime                       @updatedAt
+  channelDeliveries   ProviderAlertChannelDelivery[]
 
   @@index([providerId, resolvedAt])
   @@index([lastSentAt])
+}
+
+// Per-destination delivery state. A notification can succeed on Slack while
+// email/PagerDuty is temporarily down; keeping these outcomes separately stops
+// the successful channel from being replayed on every maintenance tick. The
+// channelKey is a one-way fingerprint of kind + destination, never a URL,
+// routing key, or API key.
+model ProviderAlertChannelDelivery {
+  id                   String                    @id @default(uuid())
+  notificationId       String
+  notification         ProviderAlertNotification @relation(fields: [notificationId], references: [id], onDelete: Cascade)
+  channelKey           String
+  channelKind          String
+  lastAttemptAt        DateTime?
+  lastSucceededAt      DateTime?
+  attemptCount         Int                       @default(0)
+  successCount         Int                       @default(0)
+  lastResolveAttemptAt DateTime?
+  lastResolvedAt       DateTime?
+  resolveAttemptCount  Int                       @default(0)
+  lastError            String?
+  createdAt            DateTime                  @default(now())
+  updatedAt            DateTime                  @updatedAt
+
+  @@unique([notificationId, channelKey])
+  @@index([notificationId, channelKind])
 }
 
 model Project {
@@ -245,6 +340,13 @@ model Subscription {
   // doesn't cascade-delete the subscription.
   projectId              String?
   project                Project?  @relation(fields: [projectId], references: [id], onDelete: SetNull)
+  // Optional identity link to a read-only ProviderExternalBilling record.
+  // Kept as scalar identity rather than a foreign key because authoritative
+  // provider refreshes may remove/replace stale external rows; the local
+  // subscription must survive that refresh. Budget math only dedupes a
+  // provider-reported fixed fee when this exact identity is present and live.
+  externalBillingSource  String?
+  externalBillingId      String?
   name                   String
   description            String?
   costUsd                Float
@@ -278,6 +380,7 @@ model Subscription {
   updatedAt              DateTime  @updatedAt
 
   @@index([providerId])
+  @@index([providerId, externalBillingSource, externalBillingId])
   @@index([projectId])
   @@index([status, nextRenewalAt])
 }

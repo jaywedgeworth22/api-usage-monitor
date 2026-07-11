@@ -27,6 +27,22 @@ describe("parseSubscriptionCreateInput — status", () => {
   });
 });
 
+describe("subscription currency normalization", () => {
+  it("defaults to USD and accepts case-insensitive USD", () => {
+    expect(parseSubscriptionCreateInput(baseBody).currency).toBe("USD");
+    expect(parseSubscriptionCreateInput({ ...baseBody, currency: "usd" }).currency).toBe("USD");
+  });
+
+  it("rejects non-USD create and update values because costUsd is not FX-converted", () => {
+    expect(() => parseSubscriptionCreateInput({ ...baseBody, currency: "EUR" })).toThrowError(
+      /currency must be USD/
+    );
+    expect(() => parseSubscriptionUpdateInput({ currency: "GBP" })).toThrowError(
+      /currency must be USD/
+    );
+  });
+});
+
 describe("parseSubscriptionCreateInput — knobEnv", () => {
   it("defaults to null when knobEnv is omitted", () => {
     const input = parseSubscriptionCreateInput(baseBody);
@@ -71,9 +87,36 @@ describe("parseSubscriptionUpdateInput — status and knobEnv", () => {
     expect(parseSubscriptionUpdateInput({ status: "considering" }).status).toBe("considering");
   });
 
+  it("validates explicit activation behavior", () => {
+    expect(parseSubscriptionUpdateInput({ activationMode: "resume" }).activationMode).toBe("resume");
+    expect(parseSubscriptionUpdateInput({ activationMode: "repurchase" }).activationMode).toBe("repurchase");
+    expect(() => parseSubscriptionUpdateInput({ activationMode: "guess" })).toThrowError(
+      /activationMode must be repurchase or resume/
+    );
+  });
+
+  it("requires both halves of an external billing identity link", () => {
+    const linked = parseSubscriptionUpdateInput({
+      externalBillingSource: "stripe-subscriptions",
+      externalBillingId: "sub_123",
+    });
+    expect(linked).toMatchObject({
+      externalBillingSource: "stripe-subscriptions",
+      externalBillingId: "sub_123",
+    });
+    expect(() =>
+      parseSubscriptionUpdateInput({ externalBillingSource: "stripe-subscriptions" })
+    ).toThrowError(/must both be set/);
+  });
+
   it("only sets knobEnv when the field is present in the body", () => {
     expect(parseSubscriptionUpdateInput({}).knobEnv).toBeUndefined();
     expect(parseSubscriptionUpdateInput({ knobEnv: null }).knobEnv).toBeNull();
     expect(parseSubscriptionUpdateInput({ knobEnv: { A: "1" } }).knobEnv).toEqual({ A: "1" });
+  });
+
+  it("accepts a provider change and rejects an empty provider id", () => {
+    expect(parseSubscriptionUpdateInput({ providerId: "provider-2" }).providerId).toBe("provider-2");
+    expect(() => parseSubscriptionUpdateInput({ providerId: "" })).toThrowError(/providerId is required/);
   });
 });

@@ -76,6 +76,8 @@ export async function GET(request: NextRequest) {
         autoRenew: sub.autoRenew,
         status: sub.status,
         notes: sub.notes,
+        externalBillingSource: sub.externalBillingSource,
+        externalBillingId: sub.externalBillingId,
         // Effective knobEnv: this subscription's own override if set, else the
         // provider's free-tier ProviderPlan.knobEnv. freeTierKnobEnv is always
         // the provider's free-tier map (may be null), regardless of override,
@@ -124,12 +126,32 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: "projectId does not match a known project" }, { status: 400 });
     }
   }
+  if (input.externalBillingSource && input.externalBillingId) {
+    const externalBilling = await prisma.providerExternalBilling.findUnique({
+      where: {
+        providerId_source_externalId: {
+          providerId: input.providerId,
+          source: input.externalBillingSource,
+          externalId: input.externalBillingId,
+        },
+      },
+      select: { id: true },
+    });
+    if (!externalBilling) {
+      return NextResponse.json(
+        { error: "External billing link does not match this provider" },
+        { status: 400 }
+      );
+    }
+  }
 
   try {
     const subscription = await prisma.subscription.create({
       data: {
         providerId: input.providerId,
         projectId: input.projectId,
+        externalBillingSource: input.externalBillingSource,
+        externalBillingId: input.externalBillingId,
         name: input.name,
         description: input.description,
         costUsd: input.costUsd,

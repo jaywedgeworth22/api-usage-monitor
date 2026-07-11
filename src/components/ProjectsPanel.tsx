@@ -7,6 +7,8 @@ export interface ProjectBudgetStatus {
   description: string | null;
   monthlyBudgetUsd: number | null;
   spentUsd: number;
+  directUsd?: number;
+  allocatedUsd?: number;
   remainingUsd: number | null;
   percentUsed: number | null;
   status: "ok" | "warning" | "exceeded" | "unconfigured";
@@ -14,10 +16,22 @@ export interface ProjectBudgetStatus {
 
 interface ProjectsPanelProps {
   projects: ProjectBudgetStatus[];
+  summary?: {
+    totalSpentUsd: number;
+    unbudgetedSpentUsd: number;
+    unassignedSpentUsd: number;
+  } | null;
 }
 
-export default function ProjectsPanel({ projects }: ProjectsPanelProps) {
-  if (projects.length === 0) {
+function formatUsd(value: number): string {
+  return new Intl.NumberFormat("en-US", {
+    style: "currency",
+    currency: "USD",
+  }).format(value);
+}
+
+export default function ProjectsPanel({ projects, summary }: ProjectsPanelProps) {
+  if (projects.length === 0 && !(summary?.unassignedSpentUsd)) {
     return null;
   }
 
@@ -25,10 +39,19 @@ export default function ProjectsPanel({ projects }: ProjectsPanelProps) {
     <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
       <div className="px-6 py-4 border-b border-gray-100 flex items-center justify-between">
         <h2 className="text-sm font-semibold text-gray-800">Projects</h2>
-        <Link href="/settings" className="text-xs font-medium text-blue-600">
+        <Link href="/settings?tab=projects" className="text-xs font-medium text-blue-600">
           Manage projects
         </Link>
       </div>
+      {(summary?.unassignedSpentUsd ?? 0) > 0 && (
+        <div role="status" className="border-b border-amber-200 bg-amber-50 px-6 py-3 text-xs text-amber-900">
+          {formatUsd(summary!.unassignedSpentUsd)} of provider spend is not assigned to a project.
+          {" "}
+          <Link href="/settings?tab=projects" className="font-semibold underline underline-offset-2">
+            Review allocations
+          </Link>
+        </div>
+      )}
       <div className="divide-y divide-gray-100">
         {projects.map((project) => {
           const usagePercent = project.percentUsed != null ? project.percentUsed * 100 : null;
@@ -43,24 +66,32 @@ export default function ProjectsPanel({ projects }: ProjectsPanelProps) {
                 </div>
                 <div className="text-right shrink-0">
                   <p className="text-sm font-semibold text-gray-900">
-                    {new Intl.NumberFormat("en-US", {
-                      style: "currency",
-                      currency: "USD",
-                    }).format(project.spentUsd)}
+                    {formatUsd(project.spentUsd)}
                   </p>
+                  {(project.directUsd != null || project.allocatedUsd != null) && (
+                    <p className="text-[10px] text-gray-500">
+                      {formatUsd(project.directUsd ?? 0)} direct
+                      {" · "}
+                      {formatUsd(project.allocatedUsd ?? 0)} allocated
+                    </p>
+                  )}
                   {project.monthlyBudgetUsd != null && (
                     <p className="text-xs text-gray-500">
-                      of {new Intl.NumberFormat("en-US", {
-                        style: "currency",
-                        currency: "USD",
-                      }).format(project.monthlyBudgetUsd)}
+                      of {formatUsd(project.monthlyBudgetUsd)}
                     </p>
                   )}
                 </div>
               </div>
               {usagePercent != null && (
                 <div className="mt-3">
-                  <div className="h-2 bg-gray-100 rounded-full overflow-hidden">
+                  <div
+                    role="progressbar"
+                    aria-label={`${project.name} monthly budget used`}
+                    aria-valuemin={0}
+                    aria-valuemax={100}
+                    aria-valuenow={Math.min(usagePercent, 100)}
+                    className="h-2 bg-gray-100 rounded-full overflow-hidden"
+                  >
                     <div
                       className={`h-full ${
                         usagePercent >= 90

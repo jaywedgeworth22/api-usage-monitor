@@ -66,4 +66,14 @@ describe("POST /api/otlp/v1/logs", () => {
     const res = await POST(jsonRequest({ resourceLogs: "not-an-array" }, { authorization: "Bearer test-token-123" }));
     expect(res.status).toBe(400);
   });
+
+  it("rejects oversized log payloads before decoding them", async () => {
+    const res = await POST(
+      jsonRequest(
+        { padding: "x".repeat(1_048_576) },
+        { authorization: "Bearer test-token-123" }
+      )
+    );
+    expect(res.status).toBe(413);
+  });
 });

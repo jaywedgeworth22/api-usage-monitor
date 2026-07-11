@@ -63,6 +63,53 @@ describe("project attribution (integration)", () => {
     ).rejects.toThrow();
   });
 
+  it("backfills attribution when a previously unknown project is created", async () => {
+    const event = {
+      idempotencyKey: "late-project-resolution",
+      sourceApp: "socratic-trade",
+      provider: "openai",
+      projectId: null,
+      billingMode: "actual",
+      metricType: "cost",
+      costUsd: 2,
+      occurredAt,
+      metadata: { project: "Later Project" },
+    };
+    await persistExternalUsageEvents([event]);
+    const project = await prisma.project.create({ data: { name: "Later Project" } });
+
+    await expect(
+      persistExternalUsageEvents([{ ...event, projectId: project.id }])
+    ).resolves.toBeDefined();
+    expect(
+      await prisma.externalUsageEvent.findUniqueOrThrow({
+        where: { idempotencyKey: event.idempotencyKey },
+        select: { projectId: true },
+      })
+    ).toEqual({ projectId: project.id });
+  });
+
+  it("rejects reuse of one idempotency key across two resolved projects", async () => {
+    const first = await prisma.project.create({ data: { name: "First Project" } });
+    const second = await prisma.project.create({ data: { name: "Second Project" } });
+    const event = {
+      idempotencyKey: "project-identity-collision",
+      sourceApp: "socratic-trade",
+      provider: "openai",
+      projectId: first.id,
+      billingMode: "actual",
+      metricType: "cost",
+      costUsd: 2,
+      occurredAt,
+      metadata: { project: "First Project" },
+    };
+    await persistExternalUsageEvents([event]);
+
+    await expect(
+      persistExternalUsageEvents([{ ...event, projectId: second.id }])
+    ).rejects.toMatchObject({ name: "ExternalUsageIdempotencyCollisionError" });
+  });
+
   it("attributes projectId-tagged cost directly and never double-counts under allocation", async () => {
     const provider = await prisma.provider.create({
       data: { name: "anthropic", displayName: "Anthropic", type: "push", refreshIntervalMin: 60 },
@@ -101,6 +148,10 @@ describe("project attribution (integration)", () => {
     expect(proj.directUsd).toBeCloseTo(10);
     expect(proj.allocatedUsd).toBeCloseTo(0);
     expect(proj.spentUsd).toBeCloseTo(10);
+    expect(status.summary).toMatchObject({
+      totalSpentUsd: 14,
+      unassignedSpentUsd: 4,
+    });
 
     // Allocate 100% of the anthropic provider to the project. The provider's
     // month-to-date spend is $14; $10 is already directly attributed, so the
@@ -114,5 +165,9 @@ describe("project attribution (integration)", () => {
     expect(proj.directUsd).toBeCloseTo(10);
     expect(proj.allocatedUsd).toBeCloseTo(4);
     expect(proj.spentUsd).toBeCloseTo(14);
+    expect(status.summary).toMatchObject({
+      totalSpentUsd: 14,
+      unassignedSpentUsd: 0,
+    });
   });
 });

@@ -1,7 +1,7 @@
 # Deployment Guide
 
 ## Prerequisites
-- Render account (free tier works)
+- Render workspace with a Starter web service (persistent disks are not a free-tier feature)
 - Cloudflare account managing `jays.services` zone
 - Git repository pushed to GitHub
 
@@ -15,10 +15,16 @@
      as a separate `fetch-all-usage` cron job now runs in-process inside
      this web service on a 15-minute interval (see
      `src/instrumentation.ts` / `src/lib/usage-recorder.ts`).
-5. Wait for the first deploy to complete. The build's `prisma db push` will
-   create a fresh, EMPTY SQLite database on the new disk (nothing has
-   migrated data into it yet - see "Migrating from the old Postgres +
-   cron setup" below if you're moving from that architecture).
+5. Sync the Blueprint and confirm the service settings match `render.yaml`:
+   Node `24.14.1`, `npm ci` build, `scripts/start-with-litestream.sh` start,
+   `/api/ready` health check, and auto-deploy only after CI checks pass.
+6. Wait for the first deploy. At runtime, the startup wrapper optionally
+   restores a missing database, creates a transaction-consistent SQLite Online
+   Backup API snapshot of any existing database, verifies it with
+   `PRAGMA integrity_check`, and only then runs `scripts/migrate-safe.mjs`.
+   Backup or verification failure stops startup before schema changes. The
+   migration applies additive changes and refuses destructive drift; there is
+   no `--accept-data-loss` startup path.
 
 ## Step 2: Add Custom Domain on Render
 1. Go to the `api-usage-monitor` service in Render Dashboard
@@ -32,21 +38,31 @@
    - Type: CNAME
    - Name: usage
    - Target: api-usage-monitor.onrender.com
-   - Proxy status: **DNS only (gray cloud)** — do NOT use proxied
+   - Proxy status: **Proxied (orange cloud)**
    - TTL: Auto
 3. Wait for DNS propagation (~1-5 minutes)
 
-> **Why gray cloud?** Render's IP ranges conflict with Cloudflare's proxy (Error 1000: "DNS points to prohibited IP"). Render provides its own free SSL certificate, so the gray cloud is secure. Cloudflare still handles DNS resolution but passes traffic directly to Render without proxying.
+Cloudflare terminates the public connection and uses Render as the HTTPS
+origin. Keep Cloudflare SSL/TLS mode at **Full (strict)**. The current live
+hostname is proxied; changing this should be an explicit networking decision,
+not copied from the obsolete gray-cloud setup.
 
 ## Step 4: Verify
-1. Visit https://usage.jays.services
-2. You'll be redirected to `/login`. Go to the `api-usage-monitor` service in Render Dashboard > Environment, copy the auto-generated `DASHBOARD_PASSWORD` value, and use it to log in.
-3. You should see the API Usage Monitor dashboard
-4. Add your first provider via Settings > Add Provider
+1. `curl -fsS https://usage.jays.services/api/health | jq` and confirm the
+   expected `revision`.
+2. `curl -fsS https://usage.jays.services/api/ready | jq` and confirm database,
+   scheduler, startup, and backup checks. A non-ready dependency returns 503.
+3. Visit https://usage.jays.services
+4. You'll be redirected to `/login`. Go to the `api-usage-monitor` service in Render Dashboard > Environment, copy the auto-generated `DASHBOARD_PASSWORD` value, and use it to log in.
+5. Confirm the dashboard, Settings, provider detail, subscription, and budget
+   views load and show the same combined month-to-date spend.
 
 ## Environment Variables
 - `DATABASE_URL` set to a static path on the service's Render disk
   (`file:/data/prod.db`) - not a secret, just a file path
+- `SQLITE_PRE_MIGRATION_BACKUP_RETENTION` (defaults to `3`, valid `1`-`10`;
+  newest verified local snapshots retained under
+  `/data/.pre-migration-backups` before startup schema synchronization)
 - `ENCRYPTION_KEY` (auto-generated 64-char hex)
 - `CRON_SECRET` (auto-generated; the `/api/cron/fetch-all` route still checks
   this, kept as an authenticated manual-trigger/debug endpoint even though
@@ -54,26 +70,41 @@
 - `USAGE_INGEST_TOKEN` (auto-generated; copy this into reporting apps as their usage monitor ingest
   token — this is also the token Claude Code's OTLP exporter authenticates with against
   `POST /api/otlp/v1/metrics`, see AGENTS.md's "Claude Code OTLP ingest" section)
+- `USAGE_READ_TOKEN` (optional distinct read-only token for `/api/budget-status`;
+  falls back to `USAGE_INGEST_TOKEN`)
 - `DASHBOARD_PASSWORD` (auto-generated; after the first deploy, copy this value from Render's Environment tab to log in at `/login`)
 - `SENTRY_READ_TOKEN` (optional; enables the read-only Sentry Health dashboard card, an org-auth
   token or internal integration token with `project:read`/`event:read` scope — never sent to the
   client, absent by default)
 - `SENTRY_ORG` (optional; Sentry org slug for the Health card, defaults to `jays-services`)
-- `ALERT_SLACK_WEBHOOK_URL` / `ALERT_WEBHOOK_URL` (optional; when set, provider
-  budget/balance/stale alerts are delivered outside the dashboard after each polling tick)
+- `ALERT_SLACK_WEBHOOK_URL` / `ALERT_WEBHOOK_URL` / `ALERT_RESEND_API_KEY` +
+  `ALERT_EMAIL_FROM` + `ALERT_EMAIL_TO` / `ALERT_PAGERDUTY_ROUTING_KEY` (optional delivery
+  destinations; Resend needs all three email values)
 - `ALERT_MIN_SEVERITY` (optional; `info`, `warning`, or `critical`; defaults to `warning`)
-- `ALERT_REMINDER_HOURS` (optional; defaults to `24`, used to dedupe repeated open alerts)
+- `ALERT_REMINDER_HOURS` (optional; defaults to `24`, applied independently per destination)
+- `ALERT_DELIVERY_TIMEOUT_MS` / `ALERT_DELIVERY_MAX_ATTEMPTS` /
+  `ALERT_DELIVERY_RETRY_BASE_MS` (optional; defaults `10000` / `3` / `250`; timeout max 60s,
+  attempts max 5, and exponential waits cap at 5s)
 - `USAGE_SNAPSHOT_RAW_RETENTION_DAYS` (optional; defaults to `45`, after which raw snapshots are
   rolled up daily and pruned)
 - `EXTERNAL_USAGE_EVENT_RAW_RETENTION_DAYS` (optional; defaults to `90`; current UTC-month events
   are always retained because `/api/budget-status` reads them directly)
-- `EXTERNAL_USAGE_EVENT_TOMBSTONE_RETENTION_DAYS` (optional; defaults to `180`, keeping old
-  idempotency keys from being reinserted after raw event pruning)
+- `EXTERNAL_USAGE_EVENT_TOMBSTONE_RETENTION_DAYS` (legacy compatibility setting, still reported
+  by maintenance results but no longer used to delete tombstones; rolled-up idempotency keys are
+  retained permanently so late producer retries cannot be counted twice)
+- `ADAPTER_HTTP_TIMEOUT_MS` / `ADAPTER_PROVIDER_TIMEOUT_MS` (optional bounded
+  upstream-request and per-provider polling budgets)
+- `LITESTREAM_S3_*` (optional replica credentials; set all four required values
+  together or none—partial configuration fails startup)
+- `LITESTREAM_REQUIRED` (`false` initially; set `true` only after credentials are
+  installed and a restore drill succeeds; then readiness fails if replication is absent)
 
 ## SSL/TLS
-- Cloudflare handles SSL with "Full (strict)" mode
-- Render also provides its own SSL certificate
-- Both ends are encrypted end-to-end
+- Cloudflare proxy: enabled for `usage.jays.services`
+- Cloudflare mode: **Full (strict)**
+- Render origin certificate: enabled
+- HTTP is redirected to HTTPS; application responses also set HSTS, CSP,
+  framing, MIME-sniffing, referrer, and permissions headers
 
 ## Migrating from the old Postgres + cron setup
 
@@ -84,15 +115,15 @@ you're moving an existing deployment from the old architecture to this one,
 follow these steps IN ORDER - this involves real production data, so don't
 skip the verification step before deleting anything.
 
-1. **Merge and deploy this branch to Render.** Render will read the updated
+1. **Land a fully verified change and sync the Blueprint.** Render will read
    `render.yaml` and provision the new disk for the `api-usage-monitor` web
    service. **Render Blueprint sync does NOT auto-delete resources that were
    removed from `render.yaml`** - the old `databases:` and `cron:` entries
    are gone from the file, but the actual `api-usage-monitor-db` Postgres
    database and `fetch-all-usage` cron job resources keep existing (and keep
    running/billing) in your Render dashboard until you manually delete/suspend
-   them. The build's `prisma db push` creates a fresh, EMPTY SQLite database
-   on the new disk (since nothing has migrated data into it yet).
+   them. The runtime's safe migration wrapper creates/synchronizes a fresh
+   SQLite database on a new disk; it never accepts destructive data loss.
 2. **Immediately suspend the old `fetch-all-usage` cron job** (Render
    dashboard -> select the cron job -> Settings -> Suspend, or delete it
    outright). Do this right after step 1, before doing anything else below.
@@ -140,22 +171,46 @@ error output) and re-run the same command again from the top:
 SOURCE_DATABASE_URL="..." node scripts/migrate-postgres-to-sqlite.mjs
 ```
 
-### Optional follow-up: back up the SQLite file
+### SQLite backup layers
 
-Render disks aren't automatically backed up the way Render's managed
-Postgres is. [Litestream](https://litestream.io/) is set up in this repo to
-continuously replicate `/data/prod.db` to S3-compatible storage (Cloudflare
-R2) for backup/durability - but it's **opt-in and disabled by default**.
-With the `LITESTREAM_S3_*` env vars unset, `render.yaml`'s `startCommand`
-behaves exactly as it did before (no litestream process).
+Every startup with an existing DB runs
+`scripts/backup-sqlite-before-migrate.mjs` before `migrate-safe.mjs`. It opens
+the source read-only, uses SQLite's Online Backup API (safe with WAL), checks
+the destination with `PRAGMA integrity_check`, atomically promotes only a
+verified file, and retains the newest
+`SQLITE_PRE_MIGRATION_BACKUP_RETENTION` snapshots. The default three files live
+under `/data/.pre-migration-backups`. Failure to create, verify, or bound the
+backup stops production startup before migration. These same-disk snapshots
+are schema rollback protection, not protection from disk loss.
+
+Render automatically takes an encrypted disk snapshot every 24 hours and keeps
+snapshots for at least seven days. Render also warns against restoring a disk
+snapshot for a custom database because the filesystem image might not be
+transaction-consistent. Treat those snapshots as last-resort infrastructure
+recovery, not a SQLite logical/PITR backup. [Litestream](https://litestream.io/)
+continuously replicates `/data/prod.db` to Cloudflare R2 with transaction-aware
+restore points. It is opt-in until credentials and a restore drill exist. With
+all replica vars unset and `LITESTREAM_REQUIRED=false`, the wrapper still takes
+the verified local pre-migration snapshot, then runs the safe migration and app
+without Litestream. Partial credentials or a configured replica with no
+verified binary fail closed.
 
 To enable it: create an R2 bucket + token and set the `LITESTREAM_S3_*`
 vars in the Render dashboard's Environment tab (they already exist in
 `render.yaml` with `sync: false` so Render won't prompt for or generate
 them). The four of `LITESTREAM_S3_BUCKET` / `_ENDPOINT` / `_ACCESS_KEY_ID` /
 `_SECRET_ACCESS_KEY` must all be set to enable replication;
-`LITESTREAM_S3_REGION` is optional (an empty region is fine for R2). Full setup, verification, and disaster-recovery restore steps
+`LITESTREAM_S3_REGION` is optional (an empty region is fine for R2). After a
+successful restore drill, set `LITESTREAM_REQUIRED=true`. Full setup,
+verification, and disaster-recovery restore steps
 (including a restore-drill runbook) live in `docs/litestream.md`. Relevant
 files: `scripts/fetch-litestream.sh` (build-time binary download),
 `litestream.yml` (replica config), `scripts/start-with-litestream.sh` (the
 new `startCommand`), `scripts/litestream-restore.sh` (manual restore).
+
+## Release-time data maintenance
+
+Do not add the Claude cumulative-cost repair or subscription seed to automatic
+startup. Both require production-specific review that an idempotency marker
+cannot replace. See `docs/release-maintenance.md` for the evidence and the
+requirements for any future marker-driven task.

@@ -57,6 +57,108 @@ afterEach(() => {
 });
 
 describe("retention integration", () => {
+  it("summarizes every filtered raw event beyond the former 5,000-row cap", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(NOW);
+    const rows = Array.from({ length: 5_050 }, (_, index) => ({
+      idempotencyKey: `summary-page-${index}`,
+      sourceApp: "pagination-test",
+      provider: "openai",
+      billingMode: "actual",
+      metricType: "cost",
+      costUsd: 0.01,
+      occurredAt: new Date("2026-07-03T12:00:00.000Z"),
+    }));
+    for (let offset = 0; offset < rows.length; offset += 400) {
+      await prisma.externalUsageEvent.createMany({ data: rows.slice(offset, offset + 400) });
+    }
+    await prisma.externalUsageEvent.create({
+      data: {
+        idempotencyKey: "filtered-status-row",
+        sourceApp: "pagination-test",
+        provider: "openai",
+        billingMode: "actual",
+        metricType: "quota_sync",
+        costUsd: 999,
+        occurredAt: new Date("2026-07-03T12:00:00.000Z"),
+      },
+    });
+
+    const response = await getUsageEvents(
+      new NextRequest("https://usage.jays.services/api/usage-events?days=30")
+    );
+    const summary = await response.json();
+    expect(summary.eventCount).toBe(5_050);
+    expect(summary.totalCostUsd).toBeCloseTo(50.5);
+  });
+
+  it("returns only the newest requested raw snapshot points in chronological order", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(NOW);
+    const provider = await prisma.provider.create({
+      data: {
+        name: "bounded-snapshots",
+        displayName: "Bounded snapshots",
+        type: "custom",
+        refreshIntervalMin: 60,
+      },
+    });
+    await prisma.usageSnapshot.createMany({
+      data: Array.from({ length: 8 }, (_, index) => ({
+        providerId: provider.id,
+        fetchedAt: new Date(`2026-07-03T${String(index).padStart(2, "0")}:00:00.000Z`),
+        totalCost: index + 1,
+      })),
+    });
+
+    const response = await getSnapshots(
+      new NextRequest(
+        `https://usage.jays.services/api/snapshots?providerId=${provider.id}&days=30&maxPoints=3`
+      )
+    );
+    const snapshots = await response.json();
+
+    expect(snapshots).toHaveLength(3);
+    expect(snapshots.map((snapshot: { totalCost: number }) => snapshot.totalCost)).toEqual([
+      6, 7, 8,
+    ]);
+  });
+
+  it("keeps old rollup tombstones so late producer retries remain idempotent", async () => {
+    await prisma.externalUsageEventTombstone.create({
+      data: {
+        idempotencyKey: "old-but-still-protected",
+        occurredAt: new Date("2025-01-01T00:00:00.000Z"),
+        prunedAt: new Date("2025-01-02T00:00:00.000Z"),
+      },
+    });
+
+    const result = await runDataRetentionMaintenance(NOW);
+
+    expect(result.tombstonesPruned).toBe(0);
+    expect(
+      await prisma.externalUsageEventTombstone.findUnique({
+        where: { idempotencyKey: "old-but-still-protected" },
+      })
+    ).not.toBeNull();
+  });
+
+  it("rejects distinct events that collide on one fallback idempotency key", async () => {
+    const base = {
+      idempotencyKey: "mandated-five-field-collision",
+      sourceApp: "socratic-trade",
+      provider: "openai",
+      billingMode: "actual",
+      metricType: "cost",
+      occurredAt: new Date("2026-07-03T12:00:00.000Z"),
+    };
+    await persistExternalUsageEvents([{ ...base, label: "lane-a", costUsd: 1 }]);
+    await expect(
+      persistExternalUsageEvents([{ ...base, label: "lane-b", costUsd: 2 }])
+    ).rejects.toThrow(/Idempotency key collision/);
+    expect(await prisma.externalUsageEvent.count()).toBe(1);
+  });
+
   it("serves rolled-up historical data without double counting recent raw rows", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(NOW);

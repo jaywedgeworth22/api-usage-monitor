@@ -13,6 +13,8 @@ Tracks API usage and cost across providers via **poller snapshots**, **pushed te
 | `GET` `POST` | `/api/subscriptions` | List / create recurring subscriptions (fixed fee + renewal cycle) |
 | `PUT` `DELETE` | `/api/subscriptions/:id` | Update / delete a subscription |
 | `GET` | `/api/sentry-health` | Per-project unresolved-issue counts from Sentry (dashboard-gated) |
+| `GET` | `/api/health` | Public process liveness plus version and deployed revision |
+| `GET` | `/api/ready` | Public SQLite, scheduler, startup-entrypoint, and backup readiness |
 
 ## Per-project attribution & subscriptions
 
@@ -27,19 +29,26 @@ Tracks API usage and cost across providers via **poller snapshots**, **pushed te
 ## Quick start
 
 ```bash
-npm install
+npm ci
 cp .env.example .env          # fill in required values
-npx prisma migrate dev
-npm run dev
+npx prisma db push             # this repo intentionally has no migrations directory
+npm run dev -- --turbopack
 ```
+
+The webpack `next dev` path is affected by an upstream instrumentation-bundling
+bug in this project. Turbopack is required for local development; production
+`next build` / `next start` are unaffected.
 
 ## Verify
 
 ```bash
-npm run lint   # tsc --noEmit
-npm test       # vitest run
-npm run build  # next build
+npm run verify
 ```
+
+`verify` runs lint, TypeScript, unit/integration tests, the real SQLite safe-
+migration reproduction, transaction-consistent pre-migration backup and
+retention tests, startup/backup configuration tests, and a production Next.js
+build. CI uses the same pinned Node version from `.node-version`.
 
 ## Tech stack
 
@@ -52,3 +61,7 @@ npm run build  # next build
 
 - **[AGENTS.md](AGENTS.md)** — agent-facing guide (schema, auth, ingest flows, env vars)
 - **[DEPLOY.md](DEPLOY.md)** — Render deployment instructions
+- **[docs/litestream.md](docs/litestream.md)** — backup and restore runbook
+- **[docs/release-maintenance.md](docs/release-maintenance.md)** — why one-time
+  data repairs/seeds remain explicit and what safe marker automation requires
+- **[docs/direct-billing-integrations.md](docs/direct-billing-integrations.md)** — provider billing/API connection matrix (when present)

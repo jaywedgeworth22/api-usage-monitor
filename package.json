@@ -3,6 +3,9 @@
   "homepage": "https://usage.jays.services",
   "version": "0.1.0",
   "private": true,
+  "engines": {
+    "node": ">=24.14.0 <25"
+  },
   "scripts": {
     "dev": "next dev",
     "build": "next build",
@@ -10,10 +13,17 @@
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
     "postinstall": "prisma generate",
-    "db:migrate": "prisma migrate dev",
     "db:push": "prisma db push",
     "db:studio": "prisma studio",
-    "test": "vitest run"
+    "repair:claude-cost": "node scripts/repair-claude-cumulative-cost.mjs",
+    "audit:subscription-currency": "node scripts/audit-subscription-currency.mjs",
+    "migrate:provider-secrets": "node scripts/migrate-provider-config-secrets.mjs",
+    "audit:provider-duplicates": "node scripts/audit-provider-duplicates.mjs",
+    "test": "vitest run",
+    "test:migrate-safe": "node scripts/test-migrate-safe-repro.mjs",
+    "test:sqlite-backup": "node scripts/test-sqlite-pre-migration-backup.mjs",
+    "test:startup-config": "node scripts/test-startup-config.mjs",
+    "verify": "npm run lint && npm run typecheck && npm test && npm run test:migrate-safe && npm run test:sqlite-backup && npm run test:startup-config && npm run build"
   },
   "dependencies": {
     "@prisma/client": "^6.0.0",
@@ -21,7 +31,8 @@
     "protobufjs": "^8.6.6",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
-    "recharts": "^2.15.0",
+    "react-is": "^19.0.0",
+    "recharts": "^3.9.2",
     "uuid": "^11.0.0"
   },
   "devDependencies": {

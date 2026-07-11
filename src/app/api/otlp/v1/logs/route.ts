@@ -3,6 +3,7 @@ import { isUsageIngestAuthorized } from "@/lib/ingest-auth";
 import { createRateLimiter, getClientIp } from "@/lib/rate-limit";
 import { decodeLogsJson } from "@/lib/otlp/json-decode";
 import { decodeLogsProtobuf } from "@/lib/otlp/protobuf-decode";
+import { readBoundedBody } from "@/lib/otlp/validation";
 
 // OTLP-HTTP logs ingest: POST /api/otlp/v1/logs
 //
@@ -52,11 +53,11 @@ export async function POST(request: NextRequest) {
 
   let logRecordCount = 0;
   try {
+    const bytes = await readBoundedBody(request);
     if (contentType === "" || contentType === "application/json") {
-      const parsed = decodeLogsJson(await request.json());
+      const parsed = decodeLogsJson(JSON.parse(new TextDecoder().decode(bytes)));
       logRecordCount = countLogRecords(parsed.resourceLogs);
     } else if (contentType === "application/x-protobuf" || contentType === "application/protobuf") {
-      const bytes = new Uint8Array(await request.arrayBuffer());
       const parsed = decodeLogsProtobuf(bytes);
       logRecordCount = countLogRecords(parsed.resourceLogs);
     } else {
@@ -68,9 +69,10 @@ export async function POST(request: NextRequest) {
       );
     }
   } catch (error) {
+    const message = error instanceof Error ? error.message : "Invalid OTLP payload";
     return NextResponse.json(
-      { error: error instanceof Error ? error.message : "Invalid OTLP payload" },
-      { status: 400 }
+      { error: message },
+      { status: message.includes("exceeds") ? 413 : 400 }
     );
   }
 

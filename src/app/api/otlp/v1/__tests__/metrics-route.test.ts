@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
+import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from "vitest";
 import fs from "fs";
 import os from "os";
 import path from "path";
@@ -35,6 +35,8 @@ afterAll(async () => {
 });
 
 beforeEach(async () => {
+  vi.unstubAllEnvs();
+  await prisma.otlpMetricState.deleteMany();
   await prisma.externalUsageEvent.deleteMany({ where: { sourceApp: "claude-code" } });
   await prisma.provider.deleteMany({ where: { name: { in: ["anthropic", "Anthropic"] } } });
 });
@@ -159,6 +161,163 @@ describe("POST /api/otlp/v1/metrics", () => {
     expect(rows).toHaveLength(1);
   });
 
+  it("converts cumulative sums to deltas durably", async () => {
+    const first = await POST(
+      jsonRequest(samplePayload, { authorization: "Bearer test-token-123" })
+    );
+    expect(first.status).toBe(202);
+
+    const secondPayload = structuredClone(samplePayload);
+    const secondPoint = secondPayload.resourceMetrics[0].scopeMetrics[0].metrics[0].sum.dataPoints[0];
+    secondPoint.timeUnixNano = "1751500120000000000";
+    secondPoint.asDouble = 0.05;
+    const second = await POST(
+      jsonRequest(secondPayload, { authorization: "Bearer test-token-123" })
+    );
+    expect(second.status).toBe(202);
+
+    const rows = await prisma.externalUsageEvent.findMany({
+      where: { sourceApp: "claude-code" },
+      orderBy: { occurredAt: "asc" },
+    });
+    expect(rows.map((row) => row.costUsd)).toEqual([0.0231, 0.0269]);
+    expect(rows.reduce((sum, row) => sum + (row.costUsd ?? 0), 0)).toBeCloseTo(0.05);
+    expect(await prisma.otlpMetricState.count()).toBe(1);
+  });
+
+  it("bounds cumulative checkpoint cardinality without deleting replay protection", async () => {
+    vi.stubEnv("OTLP_MAX_CUMULATIVE_SERIES", "1");
+    const first = await POST(
+      jsonRequest(samplePayload, { authorization: "Bearer test-token-123" })
+    );
+    expect(first.status).toBe(202);
+
+    const secondSeries = structuredClone(samplePayload);
+    secondSeries.resourceMetrics[0].resource.attributes.push({
+      key: "session.id",
+      value: { stringValue: "a-different-series" },
+    });
+    const second = await POST(
+      jsonRequest(secondSeries, { authorization: "Bearer test-token-123" })
+    );
+    expect(second.status).toBe(503);
+    expect(second.headers.get("retry-after")).toBe("900");
+    expect(await second.json()).toMatchObject({ limit: 1 });
+    expect(await prisma.otlpMetricState.count()).toBe(1);
+    expect(
+      await prisma.externalUsageEvent.count({ where: { sourceApp: "claude-code" } })
+    ).toBe(1);
+  });
+
+  it("ignores out-of-order cumulative points and handles a counter reset", async () => {
+    await POST(jsonRequest(samplePayload, { authorization: "Bearer test-token-123" }));
+    const later = structuredClone(samplePayload);
+    later.resourceMetrics[0].scopeMetrics[0].metrics[0].sum.dataPoints[0].timeUnixNano =
+      "1751500120000000000";
+    later.resourceMetrics[0].scopeMetrics[0].metrics[0].sum.dataPoints[0].asDouble = 0.05;
+    await POST(jsonRequest(later, { authorization: "Bearer test-token-123" }));
+
+    const stale = structuredClone(samplePayload);
+    stale.resourceMetrics[0].scopeMetrics[0].metrics[0].sum.dataPoints[0].timeUnixNano =
+      "1751500090000000000";
+    stale.resourceMetrics[0].scopeMetrics[0].metrics[0].sum.dataPoints[0].asDouble = 0.04;
+    const staleResponse = await POST(
+      jsonRequest(stale, { authorization: "Bearer test-token-123" })
+    );
+    expect((await staleResponse.json()).ignoredOutOfOrder).toBe(1);
+
+    const reset = structuredClone(samplePayload);
+    const resetPoint = reset.resourceMetrics[0].scopeMetrics[0].metrics[0].sum.dataPoints[0];
+    resetPoint.startTimeUnixNano = "1751500180000000000";
+    resetPoint.timeUnixNano = "1751500180000000000";
+    resetPoint.asDouble = 0.01;
+    await POST(jsonRequest(reset, { authorization: "Bearer test-token-123" }));
+
+    const rows = await prisma.externalUsageEvent.findMany({
+      where: { sourceApp: "claude-code" },
+      orderBy: { occurredAt: "asc" },
+    });
+    expect(rows).toHaveLength(3);
+    expect(rows.reduce((sum, row) => sum + (row.costUsd ?? 0), 0)).toBeCloseTo(0.06);
+    expect(rows[2].metadata).toMatchObject({ otlpCounterReset: true });
+  });
+
+  it("persists delta temporality as reported without cumulative state", async () => {
+    const delta = structuredClone(samplePayload);
+    delta.resourceMetrics[0].scopeMetrics[0].metrics[0].sum.aggregationTemporality = 1;
+    delta.resourceMetrics[0].scopeMetrics[0].metrics[0].sum.dataPoints[0].asDouble = 0.4;
+    await POST(jsonRequest(delta, { authorization: "Bearer test-token-123" }));
+    const next = structuredClone(delta);
+    next.resourceMetrics[0].scopeMetrics[0].metrics[0].sum.dataPoints[0].timeUnixNano =
+      "1751500120000000000";
+    next.resourceMetrics[0].scopeMetrics[0].metrics[0].sum.dataPoints[0].asDouble = 0.5;
+    await POST(jsonRequest(next, { authorization: "Bearer test-token-123" }));
+
+    const aggregate = await prisma.externalUsageEvent.aggregate({
+      where: { sourceApp: "claude-code" },
+      _sum: { costUsd: true },
+    });
+    expect(aggregate._sum.costUsd).toBeCloseTo(0.9);
+    expect(await prisma.otlpMetricState.count()).toBe(0);
+  });
+
+  it("uses an explicit metadata allowlist", async () => {
+    const payload = structuredClone(samplePayload);
+    payload.resourceMetrics[0].resource.attributes.push(
+      { key: "user.email", value: { stringValue: "private@example.com" } },
+      { key: "project", value: { stringValue: "socratic-trade" } }
+    );
+    payload.resourceMetrics[0].scopeMetrics[0].metrics[0].sum.dataPoints[0].attributes.push({
+      key: "session.id",
+      value: { stringValue: "secret-session" },
+    });
+    await POST(jsonRequest(payload, { authorization: "Bearer test-token-123" }));
+    const row = await prisma.externalUsageEvent.findFirstOrThrow({
+      where: { sourceApp: "claude-code" },
+    });
+    expect(row.metadata).toMatchObject({ model: "claude-sonnet-5", project: "socratic-trade" });
+    expect(row.metadata).not.toMatchObject({ "user.email": expect.anything() });
+    expect(row.metadata).not.toMatchObject({ "session.id": expect.anything() });
+  });
+
+  it("rejects oversized attribute values during bounded validation", async () => {
+    const payload = structuredClone(samplePayload);
+    payload.resourceMetrics[0].resource.attributes.push({
+      key: "service.version",
+      value: { stringValue: "x".repeat(1_025) },
+    });
+    const response = await POST(
+      jsonRequest(payload, { authorization: "Bearer test-token-123" })
+    );
+    expect(response.status).toBe(400);
+  });
+
+  it("rejects mapped points without a stable event timestamp", async () => {
+    const payload = structuredClone(samplePayload);
+    delete (payload.resourceMetrics[0].scopeMetrics[0].metrics[0].sum.dataPoints[0] as {
+      timeUnixNano?: string;
+    }).timeUnixNano;
+    const response = await POST(
+      jsonRequest(payload, { authorization: "Bearer test-token-123" })
+    );
+    expect(response.status).toBe(400);
+  });
+
+  it("rejects an oversized chunked body before decoding it", async () => {
+    ipCounter += 1;
+    const request = new NextRequest("https://usage.jays.services/api/otlp/v1/metrics", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: "Bearer test-token-123",
+        "x-forwarded-for": `10.0.0.${ipCounter}`,
+      },
+      body: JSON.stringify({ padding: "x".repeat(1_048_576) }),
+    });
+    const response = await POST(request);
+    expect(response.status).toBe(413);
+  });
+
   it("tolerates unknown metric names without a 500 and does not persist them", async () => {
     const payload = {
       resourceMetrics: [
@@ -168,7 +327,10 @@ describe("POST /api/otlp/v1/metrics", () => {
               metrics: [
                 {
                   name: "claude_code.brand_new_metric.count",
-                  sum: { dataPoints: [{ timeUnixNano: "1751500060000000000", asInt: "3" }] },
+                  sum: {
+                    aggregationTemporality: 1,
+                    dataPoints: [{ timeUnixNano: "1751500060000000000", asInt: "3" }],
+                  },
                 },
               ],
             },
@@ -198,6 +360,29 @@ describe("POST /api/otlp/v1/metrics", () => {
     expect(res.status).toBe(415);
     const body = await res.json();
     expect(body.error).toMatch(/http\/json|http\/protobuf/);
+  });
+
+  it("rejects unspecified temporality and negative monotonic sums", async () => {
+    const unspecified = structuredClone(samplePayload);
+    unspecified.resourceMetrics[0].scopeMetrics[0].metrics[0].sum.aggregationTemporality = 0;
+    expect(
+      (
+        await POST(
+          jsonRequest(unspecified, { authorization: "Bearer test-token-123" })
+        )
+      ).status
+    ).toBe(400);
+
+    const negative = structuredClone(samplePayload);
+    negative.resourceMetrics[0].scopeMetrics[0].metrics[0].sum.isMonotonic = false;
+    negative.resourceMetrics[0].scopeMetrics[0].metrics[0].sum.dataPoints[0].asDouble = -1;
+    expect(
+      (
+        await POST(
+          jsonRequest(negative, { authorization: "Bearer test-token-123" })
+        )
+      ).status
+    ).toBe(400);
   });
 
   it("decodes a valid application/x-protobuf body", async () => {

@@ -8,13 +8,11 @@
 # scripts/start-with-litestream.sh. Safe to run even when replication is
 # never enabled; it just leaves an unused binary in ./bin.
 #
-# DEPLOY-SAFE: this runs in every build's buildCommand, but a download or
-# checksum failure only WARNS and exits 0 (without installing) — it never
-# fails the build. So a transient GitHub outage / rate-limit / removed asset
-# cannot block an ordinary app deploy, even though the feature is off by
-# default. If replication was configured, a failed fetch means bin/litestream
-# is absent, so start-with-litestream.sh simply runs without replication that
-# deploy and the next deploy re-attempts the fetch.
+# This runs in every build's buildCommand. A download or checksum failure
+# leaves the binary absent. That is deploy-safe while replication is disabled;
+# if replica credentials are configured (or LITESTREAM_REQUIRED=true), the
+# startup wrapper deliberately fails closed instead of silently dropping the
+# backup path.
 #
 # Pinned version: v0.5.13 (newest 0.5.x at the time this script was written,
 # verified against the GitHub Releases API: `api.github.com/repos/
@@ -94,10 +92,8 @@ if ! curl -fsSL --retry 3 --retry-connrefused -o "${TARBALL}" "${LITESTREAM_URL}
   echo "[fetch-litestream] WARNING: failed to download ${LITESTREAM_URL}" >&2
   echo "[fetch-litestream] Check network access and that v${LITESTREAM_VERSION} still has a" >&2
   echo "[fetch-litestream] ${LITESTREAM_ASSET} asset at https://github.com/benbjohnson/litestream/releases" >&2
-  echo "[fetch-litestream] Continuing WITHOUT installing litestream so a transient GitHub" >&2
-  echo "[fetch-litestream] outage can't block this deploy. Replication stays OFF this deploy" >&2
-  echo "[fetch-litestream] (start-with-litestream.sh only replicates when bin/litestream exists);" >&2
-  echo "[fetch-litestream] the next deploy re-attempts the fetch." >&2
+  echo "[fetch-litestream] Continuing without installing it. Startup remains available only" >&2
+  echo "[fetch-litestream] when replication is unconfigured; configured/required backup fails closed." >&2
   exit 0
 fi
 
@@ -107,8 +103,8 @@ if [[ "${ACTUAL_SHA256}" != "${LITESTREAM_SHA256}" ]]; then
   echo "[fetch-litestream]   expected: ${LITESTREAM_SHA256}" >&2
   echo "[fetch-litestream]   actual:   ${ACTUAL_SHA256}" >&2
   echo "[fetch-litestream] Refusing to install a binary that doesn't match the pinned checksum." >&2
-  echo "[fetch-litestream] Continuing WITHOUT installing it (replication stays OFF this deploy)" >&2
-  echo "[fetch-litestream] rather than blocking the deploy or shipping an unverified binary." >&2
+  echo "[fetch-litestream] Continuing without installing it; configured/required backup will" >&2
+  echo "[fetch-litestream] fail closed at startup rather than run without replication." >&2
   exit 0
 fi
 log "sha256 verified: ${ACTUAL_SHA256}"

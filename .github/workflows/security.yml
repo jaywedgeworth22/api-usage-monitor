@@ -35,7 +35,7 @@ jobs:
                 ;;
             esac
           fi
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           fetch-depth: 0
       - name: Clean stale gitleaks installer temp files
@@ -46,6 +46,6 @@ jobs:
           tmp_root="${tmp_root%/}"
           rm -f "$tmp_root/gitleaks.tmp"
           rm -rf "$tmp_root/gitleaks-8.24.3"
-      - uses: gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e
+      - uses: gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e # v3.0.0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

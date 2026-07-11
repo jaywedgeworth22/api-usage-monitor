@@ -224,6 +224,268 @@ describe("materializeDueSubscriptions + project attribution (integration)", () =
     const status = await computeBudgetStatus(NOW);
     const prov = status.providers.find((p) => p.id === provider.id)!;
     expect(prov.spentUsd).toBeCloseTo(110);
+    expect(prov.fixedAccruedUsd).toBeCloseTo(30);
+    // The $30 subscription is a discrete fixed charge; only the $80 metered
+    // portion is extrapolated over the remainder of July.
+    expect(prov.projectedEomUsd).toBeCloseTo(190);
+  });
+
+  it("dedupes a provider-reported fixed fee against its local manual subscription", async () => {
+    const provider = await prisma.provider.create({
+      data: {
+        name: "cloudflare",
+        displayName: "Cloudflare",
+        type: "builtin",
+        refreshIntervalMin: 60,
+        plan: { create: { billingMode: "actual", monthlyBudgetUsd: 200 } },
+      },
+    });
+    await prisma.usageSnapshot.create({
+      data: {
+        providerId: provider.id,
+        fetchedAt: NOW,
+        totalCost: 35,
+        fixedCostIncludedUsd: 30,
+      },
+    });
+    await prisma.providerExternalBilling.create({
+      data: {
+        providerId: provider.id,
+        source: "cloudflare-subscriptions",
+        externalId: "pro-plan",
+        kind: "subscription",
+        planName: "Pro",
+        status: "active",
+        amountUsd: 30,
+        currency: "USD",
+        billingInterval: "monthly",
+        currentPeriodStart: new Date("2026-07-01T00:00:00Z"),
+        syncedAt: NOW,
+      },
+    });
+    await createSubscription(provider.id, {
+      externalBillingSource: "cloudflare-subscriptions",
+      externalBillingId: "pro-plan",
+    });
+    await materializeDueSubscriptions(NOW);
+
+    const status = await computeBudgetStatus(NOW);
+    const prov = status.providers.find((p) => p.id === provider.id)!;
+    expect(prov.snapshotFixedCostIncludedUsd).toBe(30);
+    expect(prov.subscriptionMonthToDateUsd).toBe(30);
+    expect(prov.linkedFixedDedupeUsd).toBe(30);
+    expect(prov.fixedCostConflict).toBe(false);
+    expect(prov.fixedAccruedUsd).toBe(30);
+    expect(prov.spentUsd).toBe(35);
+  });
+
+  it("never dedupes equal-priced fixed costs without an explicit billing identity link", async () => {
+    const provider = await prisma.provider.create({
+      data: { name: "same-price", displayName: "Same Price", type: "builtin" },
+    });
+    await prisma.usageSnapshot.create({
+      data: {
+        providerId: provider.id,
+        fetchedAt: NOW,
+        totalCost: 35,
+        fixedCostIncludedUsd: 30,
+      },
+    });
+    await prisma.providerExternalBilling.create({
+      data: {
+        providerId: provider.id,
+        source: "provider-plans",
+        externalId: "plan-a",
+        kind: "subscription",
+        status: "active",
+        amountUsd: 30,
+        currency: "USD",
+        billingInterval: "monthly",
+        currentPeriodStart: new Date("2026-07-01T00:00:00Z"),
+        syncedAt: NOW,
+      },
+    });
+    await createSubscription(provider.id);
+    await materializeDueSubscriptions(NOW);
+
+    const status = await computeBudgetStatus(NOW);
+    const result = status.providers.find((item) => item.id === provider.id)!;
+    expect(result.linkedFixedDedupeUsd).toBe(0);
+    expect(result.fixedCostConflict).toBe(true);
+    expect(result.spentUsd).toBe(65);
+  });
+
+  it("carries forward the latest compatible MTD cost through a partial snapshot", async () => {
+    const provider = await prisma.provider.create({
+      data: { name: "partial-cost", displayName: "Partial Cost", type: "builtin" },
+    });
+    await prisma.usageSnapshot.createMany({
+      data: [
+        {
+          providerId: provider.id,
+          fetchedAt: new Date("2026-07-10T00:00:00Z"),
+          totalCost: 50,
+          costWindowStart: new Date("2026-07-01T00:00:00Z"),
+          costScope: "calendar_month_to_date",
+        },
+        {
+          providerId: provider.id,
+          fetchedAt: NOW,
+          totalCost: null,
+          balance: 12,
+        },
+      ],
+    });
+
+    const status = await computeBudgetStatus(NOW);
+    const result = status.providers.find((item) => item.id === provider.id)!;
+    expect(result.snapshotCostUsd).toBe(50);
+    expect(result.snapshotCostFetchedAt).toBe("2026-07-10T00:00:00.000Z");
+    expect(result.spentUsd).toBe(50);
+  });
+
+  it("excludes a prior-month provider cost window after UTC month rollover", async () => {
+    const provider = await prisma.provider.create({
+      data: { name: "rolled-cost", displayName: "Rolled Cost", type: "builtin" },
+    });
+    await prisma.usageSnapshot.create({
+      data: {
+        providerId: provider.id,
+        fetchedAt: NOW,
+        totalCost: 90,
+        costWindowStart: new Date("2026-06-01T00:00:00Z"),
+        costWindowEnd: new Date("2026-07-01T00:00:00Z"),
+        costScope: "calendar_month_to_date",
+      },
+    });
+
+    const status = await computeBudgetStatus(NOW);
+    const result = status.providers.find((item) => item.id === provider.id)!;
+    expect(result.snapshotCostUsd).toBeNull();
+    expect(result.spentUsd).toBe(0);
+  });
+
+  it("keeps pushed spend visible when provider polling is inactive", async () => {
+    const provider = await prisma.provider.create({
+      data: {
+        name: "inactive-push",
+        displayName: "Inactive Push",
+        type: "push",
+        isActive: false,
+      },
+    });
+    await prisma.externalUsageEvent.create({
+      data: {
+        idempotencyKey: "inactive-push-cost",
+        sourceApp: "producer",
+        provider: "inactive-push",
+        billingMode: "actual",
+        metricType: "cost",
+        costUsd: 7,
+        occurredAt: NOW,
+      },
+    });
+
+    const status = await computeBudgetStatus(NOW);
+    expect(status.providers.find((item) => item.id === provider.id)?.spentUsd).toBe(7);
+  });
+
+  it("adds known subscription renewals through month-end without linearizing fixed cost", async () => {
+    const provider = await prisma.provider.create({
+      data: { name: "weekly-plan", displayName: "Weekly Plan", type: "builtin" },
+    });
+    await createSubscription(provider.id, {
+      costUsd: 10,
+      interval: "weekly",
+      currentPeriodStart: new Date("2026-07-11T00:00:00Z"),
+      nextRenewalAt: new Date("2026-07-18T00:00:00Z"),
+      lastChargedPeriodStart: new Date("2026-07-11T00:00:00Z"),
+    });
+    await prisma.externalUsageEvent.create({
+      data: {
+        idempotencyKey: "weekly-existing-charge",
+        sourceApp: "subscription",
+        provider: "weekly-plan",
+        billingMode: "manual",
+        metricType: "subscription",
+        costUsd: 20,
+        occurredAt: new Date("2026-07-11T00:00:00Z"),
+        metadata: { subscriptionId: "unrelated-aggregate" },
+      },
+    });
+
+    const status = await computeBudgetStatus(NOW);
+    const result = status.providers.find((item) => item.id === provider.id)!;
+    expect(result.forecastedSubscriptionRenewalsUsd).toBe(20);
+    expect(result.spentUsd).toBe(20);
+    expect(result.projectedEomUsd).toBe(40);
+  });
+
+  it("assigns name-keyed pushed and subscription spend to one duplicate provider row", async () => {
+    const canonical = await prisma.provider.create({
+      data: {
+        name: "anthropic",
+        displayName: "Anthropic budget owner",
+        type: "push",
+        plan: { create: { billingMode: "actual", monthlyBudgetUsd: 100 } },
+      },
+    });
+    await prisma.provider.create({
+      data: { name: "Anthropic", displayName: "Legacy duplicate", type: "push" },
+    });
+    await prisma.externalUsageEvent.createMany({
+      data: [
+        {
+          idempotencyKey: "duplicate-name-usage",
+          sourceApp: "claude-code",
+          provider: "ANTHROPIC",
+          billingMode: "actual",
+          metricType: "cost",
+          costUsd: 5,
+          occurredAt: NOW,
+        },
+        {
+          idempotencyKey: "duplicate-name-subscription",
+          sourceApp: "subscription",
+          provider: "anthropic",
+          billingMode: "actual",
+          metricType: "subscription",
+          costUsd: 30,
+          occurredAt: NOW,
+        },
+      ],
+    });
+
+    const status = await computeBudgetStatus(NOW);
+    expect(status.providers.reduce((sum, provider) => sum + provider.pushedMonthToDateUsd, 0)).toBe(35);
+    expect(status.providers.find((provider) => provider.id === canonical.id)?.spentUsd).toBe(35);
+  });
+
+  it("includes unbudgeted spend in summary totals without distorting budget utilization", async () => {
+    await prisma.provider.create({
+      data: { name: "anthropic", displayName: "Anthropic", type: "push" },
+    });
+    await prisma.externalUsageEvent.create({
+      data: {
+        idempotencyKey: "unbudgeted-provider-cost",
+        sourceApp: "claude-code",
+        provider: "anthropic",
+        billingMode: "actual",
+        metricType: "cost",
+        costUsd: 17,
+        occurredAt: NOW,
+      },
+    });
+
+    const status = await computeBudgetStatus(NOW);
+    expect(status.summary).toMatchObject({
+      totalBudgetUsd: 0,
+      budgetedSpentUsd: 0,
+      unbudgetedSpentUsd: 17,
+      totalSpentUsd: 17,
+      remainingUsd: 0,
+      percentUsed: null,
+    });
   });
 
   it("does not re-charge already-charged periods when the schedule is edited", async () => {
@@ -372,6 +634,33 @@ describe("materializeDueSubscriptions + project attribution (integration)", () =
     const events = await prisma.externalUsageEvent.findMany();
     expect(events).toHaveLength(1);
     expect(events[0].occurredAt.toISOString()).toBe("2026-07-10T00:00:00.000Z");
+  });
+
+  it("can resume a paid-through paused term without posting an immediate repurchase", async () => {
+    const provider = await prisma.provider.create({
+      data: { name: "resume-plan", displayName: "Resume Plan", type: "builtin" },
+    });
+    const subscription = await createSubscription(provider.id, {
+      status: "paused",
+      currentPeriodStart: new Date("2026-07-01T00:00:00Z"),
+      nextRenewalAt: new Date("2026-08-01T00:00:00Z"),
+      lastChargedPeriodStart: new Date("2026-07-01T00:00:00Z"),
+    });
+
+    const req = new Request(`http://test/api/subscriptions/${subscription.id}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ status: "active", activationMode: "resume" }),
+    });
+    const res = await putSubscription(req, { params: Promise.resolve({ id: subscription.id }) });
+    expect(res.status).toBe(200);
+    const updated = await res.json();
+    expect(updated.currentPeriodStart).toBe("2026-07-01T00:00:00.000Z");
+    expect(updated.nextRenewalAt).toBe("2026-08-01T00:00:00.000Z");
+    expect(updated.lastChargedPeriodStart).toBe("2026-07-01T00:00:00.000Z");
+
+    const result = await materializeDueSubscriptions(NOW);
+    expect(result.eventsWritten).toBe(0);
   });
 
   it("does not reset the cycle for a PUT that leaves an already-active row active", async () => {

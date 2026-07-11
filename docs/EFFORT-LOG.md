@@ -125,6 +125,27 @@ Protocol: /Users/jay/apps/EFFORT-LOG-PROTOCOL.md (canonical). Live board:
 - **UI refactoring for Dashboard and Settings + API Type Safety (AG, S) — 2026-07-11.** Refactor monolithic page components (Dashboard, Settings) into discrete UI components and replace 'any' casting with PrismaClientKnownRequestError for P2002 checks.
 
 ## In Progress
+- **Alert-delivery channel reliability (CODEX, owner-directed 2026-07-11).** Branch
+  `codex-alert-delivery-reliability`, isolated worktree
+  `/Users/jay/apps/api-usage-monitor-alert-delivery`, based on app-wide hardening commit `2dd8ad8`.
+  Persist per-channel attempt/success state so one failed channel cannot resend successful channels;
+  add bounded per-channel HTTP timeout/retry; use stable PagerDuty dedup keys and resolution events.
+  Implemented locally at `a8f213a` and integrated into parent branch
+  `codex-app-wide-hardening` at `78c2f01`: per-channel state, bounded timeout/retry, PagerDuty
+  trigger/resolve deduplication, schema, migration harness, tests, and docs. Parent full gate is
+  green (45 files/251 tests plus production build). Landing through the parent PR; no production
+  write, merge, or deploy yet.
+- **App-wide hardening + direct billing integrations (CODEX, owner-directed 2026-07-11).** Branch
+  `codex-app-wide-hardening`. Implementing the 2026-07-11 audit backlog across telemetry/spend,
+  subscriptions, security, adapter failure semantics, accessible/responsive UI, readiness/deploy/
+  backup/CI, plus official-API-backed provider billing and subscription integrations. Multi-agent
+  isolated sublanes; no production writes or merges without an explicit landing decision.
+  **OPEN PR #91 at `1fa5b87`.** All lanes are integrated; serialized Node 24
+  `npm run verify` passes (ESLint, TypeScript, 45 files/251 tests, migration safety, startup checks,
+  production build), and authenticated desktop/390px mobile browser QA passed on a temporary DB.
+  Separate Socratic producer retry/idempotency changes are in OPEN PR #1412 with Node 24 lint,
+  325 files/3,614 tests, and production build green. No production writes, merge, or deploy
+  performed.
 - **Subscription->knob linkage phase 1 (CLAUDE, sonnet subagent, owner-directed 2026-07-10,
   background agent in an isolated worktree off main) — mirrored from the live board, OPEN PR #83
   (`claude/subscription-knob-linkage`), opened 2026-07-10. NOT merged.** Goal: the monitor becomes the source of truth for which market-data plan is active

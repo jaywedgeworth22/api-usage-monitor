@@ -82,7 +82,10 @@ async function main() {
     console.error("");
     console.error("To proceed:");
     console.error(
-      "  1. Back up the production database: Render Shell → cp /data/prod.db /data/prod.db.backup"
+      "  1. Confirm startup logged a verified .pre-migration-backups/*.backup.db snapshot."
+    );
+    console.error(
+      "     Do not use raw cp on a live SQLite database; use the verified Online Backup API snapshot."
     );
     console.error("  2. Review the data-loss warning above carefully.");
     console.error(

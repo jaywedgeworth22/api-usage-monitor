@@ -38,6 +38,7 @@ describe("middleware matcher — /api/budget-status exclusion (regression for th
       "/api/otlp",
       "/api/otlp/v1/metrics",
       "/api/health",
+      "/api/ready",
       "/api/cron",
       "/api/auth/login",
     ]) {
@@ -53,6 +54,7 @@ describe("middleware matcher — /api/budget-status exclusion (regression for th
       "/api/budget-status-report", // not the excluded segment
       "/api/ingestor", // prefix of api/ingest, must stay gated
       "/api/healthz", // prefix of api/health, must stay gated
+      "/api/readiness", // prefix of api/ready, must stay gated
     ]) {
       expect(isSessionGated(p)).toBe(true);
     }

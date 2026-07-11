@@ -10,6 +10,7 @@ CREATE TABLE "Provider" (
   "type" TEXT NOT NULL DEFAULT 'builtin',
   "apiKey" TEXT,
   "config" JSONB,
+  "secretConfig" TEXT,
   "isActive" BOOLEAN NOT NULL DEFAULT true,
   "credits" REAL NOT NULL DEFAULT 0,
   "refreshIntervalMin" INTEGER NOT NULL DEFAULT 60,
@@ -59,10 +60,36 @@ CREATE TABLE "ProviderPlan" (
   CONSTRAINT "ProviderPlan_providerId_fkey" FOREIGN KEY ("providerId") REFERENCES "Provider" ("id") ON DELETE CASCADE ON UPDATE CASCADE
 );
 
+CREATE TABLE "ProviderExternalBilling" (
+  "id" TEXT NOT NULL PRIMARY KEY,
+  "providerId" TEXT NOT NULL,
+  "source" TEXT NOT NULL,
+  "externalId" TEXT NOT NULL,
+  "kind" TEXT NOT NULL,
+  "planName" TEXT,
+  "status" TEXT,
+  "amountUsd" REAL,
+  "currency" TEXT,
+  "billingInterval" TEXT,
+  "currentPeriodStart" DATETIME,
+  "currentPeriodEnd" DATETIME,
+  "nextRenewalAt" DATETIME,
+  "requestLimit" REAL,
+  "requestLimitWindow" TEXT,
+  "spendLimitUsd" REAL,
+  "spendLimitWindow" TEXT,
+  "syncedAt" DATETIME NOT NULL,
+  "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  "updatedAt" DATETIME NOT NULL,
+  CONSTRAINT "ProviderExternalBilling_providerId_fkey" FOREIGN KEY ("providerId") REFERENCES "Provider" ("id") ON DELETE CASCADE ON UPDATE CASCADE
+);
+
 CREATE TABLE "Subscription" (
   "id" TEXT NOT NULL PRIMARY KEY,
   "providerId" TEXT NOT NULL,
   "projectId" TEXT,
+  "externalBillingSource" TEXT,
+  "externalBillingId" TEXT,
   "name" TEXT NOT NULL,
   "description" TEXT,
   "costUsd" REAL NOT NULL,
@@ -91,6 +118,11 @@ CREATE TABLE "UsageSnapshot" (
   "fetchedAt" DATETIME NOT NULL,
   "balance" REAL,
   "totalCost" REAL,
+  "fixedCostIncludedUsd" REAL,
+  "costWindowStart" DATETIME,
+  "costWindowEnd" DATETIME,
+  "costScope" TEXT,
+  "costIncludesUnknownFixed" BOOLEAN NOT NULL DEFAULT false,
   "totalRequests" INTEGER,
   "credits" REAL,
   "rawData" JSONB,
@@ -181,6 +213,17 @@ CREATE TABLE "ExternalUsageEventTombstone" (
   "prunedAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
+CREATE TABLE "OtlpMetricState" (
+  "seriesKey" TEXT NOT NULL PRIMARY KEY,
+  "metricName" TEXT NOT NULL,
+  "startTimeUnixNano" TEXT,
+  "lastTimeUnixNano" TEXT NOT NULL,
+  "lastValue" REAL NOT NULL,
+  "lastPointKey" TEXT NOT NULL,
+  "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  "updatedAt" DATETIME NOT NULL
+);
+
 CREATE TABLE "ProviderAlertNotification" (
   "id" TEXT NOT NULL PRIMARY KEY,
   "providerId" TEXT NOT NULL,
@@ -200,7 +243,27 @@ CREATE TABLE "ProviderAlertNotification" (
   CONSTRAINT "ProviderAlertNotification_providerId_fkey" FOREIGN KEY ("providerId") REFERENCES "Provider" ("id") ON DELETE CASCADE ON UPDATE CASCADE
 );
 
+CREATE TABLE "ProviderAlertChannelDelivery" (
+  "id" TEXT NOT NULL PRIMARY KEY,
+  "notificationId" TEXT NOT NULL,
+  "channelKey" TEXT NOT NULL,
+  "channelKind" TEXT NOT NULL,
+  "lastAttemptAt" DATETIME,
+  "lastSucceededAt" DATETIME,
+  "attemptCount" INTEGER NOT NULL DEFAULT 0,
+  "successCount" INTEGER NOT NULL DEFAULT 0,
+  "lastResolveAttemptAt" DATETIME,
+  "lastResolvedAt" DATETIME,
+  "resolveAttemptCount" INTEGER NOT NULL DEFAULT 0,
+  "lastError" TEXT,
+  "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  "updatedAt" DATETIME NOT NULL,
+  CONSTRAINT "ProviderAlertChannelDelivery_notificationId_fkey" FOREIGN KEY ("notificationId") REFERENCES "ProviderAlertNotification" ("id") ON DELETE CASCADE ON UPDATE CASCADE
+);
+
 CREATE UNIQUE INDEX "ProviderPlan_providerId_key" ON "ProviderPlan"("providerId");
+CREATE UNIQUE INDEX "ProviderExternalBilling_providerId_source_externalId_key" ON "ProviderExternalBilling"("providerId", "source", "externalId");
+CREATE INDEX "ProviderExternalBilling_providerId_status_idx" ON "ProviderExternalBilling"("providerId", "status");
 CREATE UNIQUE INDEX "Project_name_key" ON "Project"("name");
 CREATE UNIQUE INDEX "Project_nameKey_key" ON "Project"("nameKey");
 CREATE UNIQUE INDEX "ProviderProjectAllocation_providerId_projectId_key" ON "ProviderProjectAllocation"("providerId", "projectId");
@@ -216,13 +279,17 @@ CREATE INDEX "ExternalUsageEventDailyRollup_provider_day_idx" ON "ExternalUsageE
 CREATE INDEX "ExternalUsageEventDailyRollup_projectId_day_idx" ON "ExternalUsageEventDailyRollup"("projectId", "day");
 CREATE UNIQUE INDEX "ExternalUsageEventDailyRollup_day_groupKey_key" ON "ExternalUsageEventDailyRollup"("day", "groupKey");
 CREATE INDEX "Subscription_providerId_idx" ON "Subscription"("providerId");
+CREATE INDEX "Subscription_providerId_externalBillingSource_externalBillingId_idx" ON "Subscription"("providerId", "externalBillingSource", "externalBillingId");
 CREATE INDEX "Subscription_projectId_idx" ON "Subscription"("projectId");
 CREATE INDEX "Subscription_status_nextRenewalAt_idx" ON "Subscription"("status", "nextRenewalAt");
 CREATE INDEX "ExternalUsageEventTombstone_occurredAt_idx" ON "ExternalUsageEventTombstone"("occurredAt");
 CREATE INDEX "ExternalUsageEventTombstone_prunedAt_idx" ON "ExternalUsageEventTombstone"("prunedAt");
+CREATE INDEX "OtlpMetricState_updatedAt_idx" ON "OtlpMetricState"("updatedAt");
 CREATE UNIQUE INDEX "ProviderAlertNotification_stateKey_key" ON "ProviderAlertNotification"("stateKey");
 CREATE INDEX "ProviderAlertNotification_providerId_resolvedAt_idx" ON "ProviderAlertNotification"("providerId", "resolvedAt");
 CREATE INDEX "ProviderAlertNotification_lastSentAt_idx" ON "ProviderAlertNotification"("lastSentAt");
+CREATE UNIQUE INDEX "ProviderAlertChannelDelivery_notificationId_channelKey_key" ON "ProviderAlertChannelDelivery"("notificationId", "channelKey");
+CREATE INDEX "ProviderAlertChannelDelivery_notificationId_channelKind_idx" ON "ProviderAlertChannelDelivery"("notificationId", "channelKind");
 `;
 
 export function setupPrismaSqliteTestDb(dbPath: string): void {

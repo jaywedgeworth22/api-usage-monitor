@@ -38,8 +38,51 @@ export async function PUT(request: Request, { params }: { params: Promise<{ id: 
       return NextResponse.json({ error: "projectId does not match a known project" }, { status: 400 });
     }
   }
+  if (update.providerId !== undefined) {
+    const provider = await prisma.provider.findUnique({ where: { id: update.providerId } });
+    if (!provider) {
+      return NextResponse.json(
+        { error: "providerId does not match a known provider" },
+        { status: 400 }
+      );
+    }
+  }
+
+  const effectiveProviderId = update.providerId ?? existing.providerId;
+  const externalBillingLinkSupplied =
+    update.externalBillingSource !== undefined ||
+    update.externalBillingId !== undefined;
+  if (update.externalBillingSource && update.externalBillingId) {
+    const externalBilling = await prisma.providerExternalBilling.findUnique({
+      where: {
+        providerId_source_externalId: {
+          providerId: effectiveProviderId,
+          source: update.externalBillingSource,
+          externalId: update.externalBillingId,
+        },
+      },
+      select: { id: true },
+    });
+    if (!externalBilling) {
+      return NextResponse.json(
+        { error: "External billing link does not match this provider" },
+        { status: 400 }
+      );
+    }
+  }
 
   const data: Prisma.SubscriptionUpdateInput = {};
+  if (update.providerId !== undefined) {
+    data.provider = { connect: { id: update.providerId } };
+    if (!externalBillingLinkSupplied && update.providerId !== existing.providerId) {
+      data.externalBillingSource = null;
+      data.externalBillingId = null;
+    }
+  }
+  if (externalBillingLinkSupplied) {
+    data.externalBillingSource = update.externalBillingSource;
+    data.externalBillingId = update.externalBillingId;
+  }
   if (update.name !== undefined) data.name = update.name;
   if (update.description !== undefined) data.description = update.description;
   if (update.costUsd !== undefined) data.costUsd = update.costUsd;
@@ -100,15 +143,51 @@ export async function PUT(request: Request, { params }: { params: Promise<{ id: 
   const isActivating = update.status === "active" && existing.status !== "active";
 
   if (isActivating) {
-    const activationStartDate = update.startDate ?? new Date();
-    const cycle = initialCycle({ startDate: activationStartDate, interval, intervalCount, anchorDay });
-    data.interval = interval;
-    data.intervalCount = intervalCount;
-    data.anchorDay = anchorDay;
-    data.startDate = activationStartDate;
-    data.currentPeriodStart = cycle.currentPeriodStart;
-    data.nextRenewalAt = cycle.nextRenewalAt;
-    data.lastChargedPeriodStart = null;
+    if (update.activationMode === "resume") {
+      if (
+        !["paused", "canceled"].includes(existing.status) ||
+        !existing.lastChargedPeriodStart
+      ) {
+        return NextResponse.json(
+          { error: "Only a previously charged paused or canceled subscription can resume its paid-through term" },
+          { status: 400 }
+        );
+      }
+      if (scheduleChanged) {
+        return NextResponse.json(
+          { error: "Resume keeps the existing schedule; choose repurchase to change billing dates" },
+          { status: 400 }
+        );
+      }
+      const now = new Date();
+      let currentPeriodStart = existing.currentPeriodStart;
+      let nextRenewalAt = existing.nextRenewalAt;
+      let guard = 0;
+      while (nextRenewalAt <= now && guard < 1_000) {
+        currentPeriodStart = nextRenewalAt;
+        nextRenewalAt = advancePeriod(
+          currentPeriodStart,
+          interval,
+          intervalCount
+        );
+        guard += 1;
+      }
+      // The resumed term is treated as already paid; no immediate synthetic
+      // repurchase is emitted. Charging resumes at the next renewal.
+      data.currentPeriodStart = currentPeriodStart;
+      data.nextRenewalAt = nextRenewalAt;
+      data.lastChargedPeriodStart = currentPeriodStart;
+    } else {
+      const activationStartDate = update.startDate ?? new Date();
+      const cycle = initialCycle({ startDate: activationStartDate, interval, intervalCount, anchorDay });
+      data.interval = interval;
+      data.intervalCount = intervalCount;
+      data.anchorDay = anchorDay;
+      data.startDate = activationStartDate;
+      data.currentPeriodStart = cycle.currentPeriodStart;
+      data.nextRenewalAt = cycle.nextRenewalAt;
+      data.lastChargedPeriodStart = null;
+    }
   } else if (scheduleChanged) {
     // paidThrough = end of the last already-charged period under the OLD
     // schedule. Flooring the new cycle at this instant is what prevents a

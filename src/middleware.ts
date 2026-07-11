@@ -28,7 +28,7 @@ export const config = {
     // [id]` PUT/DELETE routes are NOT matched by this exclusion (they don't
     // end the string right after the collection segment) and so stay fully
     // session-gated by this middleware, as they always were.
-    "/((?!_next/static|_next/image|favicon\\.ico|login(?:/|$)|api/auth/login(?:/|$)|api/cron(?:/|$)|api/ingest(?:/|$)|api/otlp(?:/|$)|api/budget-status(?:/|$)|api/subscriptions/?$|api/health(?:/|$)).*)",
+    "/((?!_next/static|_next/image|favicon\\.ico|login(?:/|$)|api/auth/login(?:/|$)|api/cron(?:/|$)|api/ingest(?:/|$)|api/otlp(?:/|$)|api/budget-status(?:/|$)|api/subscriptions/?$|api/health(?:/|$)|api/ready(?:/|$)).*)",
   ],
 };
 

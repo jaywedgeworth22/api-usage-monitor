@@ -12,6 +12,8 @@ import {
 export interface SubscriptionCreateInput {
   providerId: string;
   projectId: string | null;
+  externalBillingSource: string | null;
+  externalBillingId: string | null;
   name: string;
   description: string | null;
   costUsd: number;
@@ -35,7 +37,11 @@ export interface SubscriptionCreateInput {
 // startDate) are surfaced separately so the route can recompute the cycle only
 // when one actually changes.
 export interface SubscriptionUpdateInput {
+  providerId?: string;
   projectId?: string | null;
+  externalBillingSource?: string | null;
+  externalBillingId?: string | null;
+  activationMode?: "repurchase" | "resume";
   name?: string;
   description?: string | null;
   costUsd?: number;
@@ -120,6 +126,41 @@ function parseStatus(value: unknown): SubscriptionStatus {
   return value;
 }
 
+function parseCurrency(value: unknown): "USD" {
+  const currency = (cleanNullableString(value, "currency", 8) ?? "USD").toUpperCase();
+  if (currency !== "USD") {
+    throw new Error("currency must be USD until authoritative FX conversion is configured");
+  }
+  return "USD";
+}
+
+function parseExternalBillingLink(record: Record<string, unknown>): {
+  supplied: boolean;
+  source: string | null;
+  externalId: string | null;
+} {
+  const supplied =
+    record.externalBillingSource !== undefined ||
+    record.externalBillingId !== undefined;
+  if (!supplied) return { supplied: false, source: null, externalId: null };
+  const source = cleanNullableString(
+    record.externalBillingSource,
+    "externalBillingSource",
+    200
+  );
+  const externalId = cleanNullableString(
+    record.externalBillingId,
+    "externalBillingId",
+    300
+  );
+  if (Boolean(source) !== Boolean(externalId)) {
+    throw new Error(
+      "externalBillingSource and externalBillingId must both be set or both be null"
+    );
+  }
+  return { supplied: true, source, externalId };
+}
+
 // A flat map of env-var knob name -> string value (e.g.
 // {"PROVIDER_QUOTA_TIINGO_PER_HOUR": "10000"}). Every value must be a string
 // so it round-trips directly into an env var — no numbers/booleans/nesting.
@@ -155,6 +196,7 @@ export function parseSubscriptionCreateInput(
     record.projectId === undefined || record.projectId === null || record.projectId === ""
       ? null
       : cleanString(record.projectId, "projectId");
+  const externalBilling = parseExternalBillingLink(record);
 
   const { currentPeriodStart, nextRenewalAt } = initialCycle({
     startDate,
@@ -166,10 +208,12 @@ export function parseSubscriptionCreateInput(
   return {
     providerId,
     projectId,
+    externalBillingSource: externalBilling.source,
+    externalBillingId: externalBilling.externalId,
     name,
     description: cleanNullableString(record.description, "description"),
     costUsd,
-    currency: (cleanNullableString(record.currency, "currency", 8) ?? "USD").toUpperCase(),
+    currency: parseCurrency(record.currency),
     interval,
     intervalCount,
     anchorDay,
@@ -187,11 +231,25 @@ export function parseSubscriptionUpdateInput(body: unknown): SubscriptionUpdateI
   const record = asRecord(body);
   const update: SubscriptionUpdateInput = {};
 
+  if (record.providerId !== undefined) {
+    update.providerId = cleanString(record.providerId, "providerId");
+  }
   if (record.projectId !== undefined) {
     update.projectId =
       record.projectId === null || record.projectId === ""
         ? null
         : cleanString(record.projectId, "projectId");
+  }
+  const externalBilling = parseExternalBillingLink(record);
+  if (externalBilling.supplied) {
+    update.externalBillingSource = externalBilling.source;
+    update.externalBillingId = externalBilling.externalId;
+  }
+  if (record.activationMode !== undefined) {
+    if (record.activationMode !== "repurchase" && record.activationMode !== "resume") {
+      throw new Error("activationMode must be repurchase or resume");
+    }
+    update.activationMode = record.activationMode;
   }
   if (record.name !== undefined) update.name = cleanString(record.name, "name");
   if (record.description !== undefined) {
@@ -199,7 +257,7 @@ export function parseSubscriptionUpdateInput(body: unknown): SubscriptionUpdateI
   }
   if (record.costUsd !== undefined) update.costUsd = requireNonNegativeNumber(record.costUsd, "costUsd");
   if (record.currency !== undefined) {
-    update.currency = (cleanNullableString(record.currency, "currency", 8) ?? "USD").toUpperCase();
+    update.currency = parseCurrency(record.currency);
   }
   if (record.autoRenew !== undefined) update.autoRenew = Boolean(record.autoRenew);
   if (record.status !== undefined) update.status = parseStatus(record.status);
