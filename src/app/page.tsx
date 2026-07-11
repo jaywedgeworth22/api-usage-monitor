@@ -4,6 +4,9 @@ import { useState, useEffect, useCallback } from "react";
 import Link from "next/link";
 import ProviderCard from "@/components/ProviderCard";
 import SentryHealthCard from "@/components/SentryHealthCard";
+import DashboardSummaryCards from "@/components/DashboardSummaryCards";
+import ExternalTelemetryPanel, { type ExternalUsageSummary } from "@/components/ExternalTelemetryPanel";
+import ProjectsPanel, { type ProjectBudgetStatus } from "@/components/ProjectsPanel";
 
 interface Provider {
   id: string;
@@ -28,41 +31,6 @@ interface Provider {
     credits: number | null;
     fetchedAt: string;
   } | null;
-}
-
-interface ExternalUsageGroup {
-  sourceApp: string;
-  environment: string | null;
-  provider: string;
-  service: string | null;
-  projectId: string | null;
-  projectName?: string | null;
-  eventCount: number;
-  totalCostUsd: number;
-  totalRequests: number;
-  totalQuantity: number;
-  limit: number | null;
-  limitWindow: string | null;
-  latestAt: string;
-}
-
-export interface ProjectBudgetStatus {
-  id: string;
-  name: string;
-  description: string | null;
-  monthlyBudgetUsd: number | null;
-  spentUsd: number;
-  remainingUsd: number | null;
-  percentUsed: number | null;
-  status: "ok" | "warning" | "exceeded" | "unconfigured";
-}
-
-interface ExternalUsageSummary {
-  days: number;
-  totalCostUsd: number;
-  totalRequests: number;
-  eventCount: number;
-  groups: ExternalUsageGroup[];
 }
 
 export default function DashboardPage() {
@@ -123,8 +91,6 @@ export default function DashboardPage() {
     (sum, p) => sum + (p.projectedEomUsd || 0),
     0
   );
-  const externalCost = usageSummary?.totalCostUsd ?? 0;
-  const externalRequests = usageSummary?.totalRequests ?? 0;
   const totalCredits = providers.reduce(
     (sum, p) => sum + (p.latestSnapshot?.credits || 0),
     0
@@ -180,157 +146,17 @@ export default function DashboardPage() {
         <h1 className="text-2xl font-bold text-gray-900">Dashboard</h1>
       </div>
 
-      {/* Summary Cards */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-        <div className="bg-white rounded-xl border border-gray-200 p-6">
-          <p className="text-sm text-gray-500 mb-1">Total Balance</p>
-          <p className="text-3xl font-bold text-gray-900">
-            {new Intl.NumberFormat("en-US", {
-              style: "currency",
-              currency: "USD",
-            }).format(totalBalance)}
-          </p>
-        </div>
-        <div className="bg-white rounded-xl border border-gray-200 p-6">
-          <p className="text-sm text-gray-500 mb-1">Projected Monthly Spend</p>
-          <p className="text-3xl font-bold text-gray-900">
-            {new Intl.NumberFormat("en-US", {
-              style: "currency",
-              currency: "USD",
-            }).format(totalProjectedMonthlyCost)}
-          </p>
-        </div>
-        <div className="bg-white rounded-xl border border-gray-200 p-6">
-          <p className="text-sm text-gray-500 mb-1">Usage Cost This Month</p>
-          <p className="text-3xl font-bold text-amber-600">
-            {new Intl.NumberFormat("en-US", {
-              style: "currency",
-              currency: "USD",
-            }).format(totalCost)}
-          </p>
-        </div>
-        <div className="bg-white rounded-xl border border-gray-200 p-6">
-          <p className="text-sm text-gray-500 mb-1">Open Alerts</p>
-          <p
-            className={`text-3xl font-bold ${
-              criticalCount > 0 ? "text-red-600" : "text-amber-600"
-            }`}
-          >
-            {attentionItems.length}
-          </p>
-          {criticalCount > 0 && (
-            <p className="text-xs text-red-500 mt-1">{criticalCount} critical</p>
-          )}
-        </div>
-        {hasAnyCredits && (
-          <div className="bg-white rounded-xl border border-gray-200 p-6">
-            <p className="text-sm text-gray-500 mb-1">Total Credits</p>
-            <p className="text-3xl font-bold text-purple-600">
-              {new Intl.NumberFormat("en-US").format(totalCredits)}
-            </p>
-          </div>
-        )}
-      </div>
+      <DashboardSummaryCards
+        totalBalance={totalBalance}
+        totalProjectedMonthlyCost={totalProjectedMonthlyCost}
+        totalCost={totalCost}
+        attentionItemsCount={attentionItems.length}
+        criticalCount={criticalCount}
+        hasAnyCredits={hasAnyCredits}
+        totalCredits={totalCredits}
+      />
 
-      {usageSummary && (
-        <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
-          <div className="px-6 py-4 border-b border-gray-100 flex items-center justify-between gap-4">
-            <div>
-              <h2 className="text-sm font-semibold text-gray-800">
-                External App Telemetry
-              </h2>
-              <p className="text-xs text-gray-500 mt-0.5">
-                Last {usageSummary.days} days from sibling app reports
-              </p>
-            </div>
-            <div className="text-right shrink-0">
-              <p className="text-sm font-semibold text-gray-900">
-                {new Intl.NumberFormat("en-US", {
-                  style: "currency",
-                  currency: "USD",
-                }).format(externalCost)}
-              </p>
-              <p className="text-xs text-gray-500">
-                {new Intl.NumberFormat("en-US").format(externalRequests)} requests
-              </p>
-            </div>
-          </div>
-          {usageSummary.groups.length === 0 ? (
-            <div className="px-6 py-5 text-sm text-gray-500">
-              No app telemetry received yet.
-            </div>
-          ) : (
-            <div className="divide-y divide-gray-100">
-              {usageSummary.groups.slice(0, 8).map((group) => {
-                const usagePercent =
-                  group.limit && group.totalQuantity
-                    ? Math.min((group.totalQuantity / group.limit) * 100, 999)
-                    : null;
-                return (
-                  <div
-                    key={`${group.sourceApp}-${group.environment ?? ""}-${group.provider}-${group.service ?? ""}-${group.projectId ?? ""}`}
-                    className="px-6 py-4"
-                  >
-                    <div className="flex items-start justify-between gap-4">
-                      <div>
-                        <p className="text-sm font-medium text-gray-900">
-                          {group.sourceApp}
-                          {group.environment ? ` / ${group.environment}` : ""}
-                        </p>
-                        <p className="text-xs text-gray-500 mt-0.5">
-                          {group.provider}
-                          {group.service ? ` - ${group.service}` : ""}
-                        </p>
-                        {group.projectName && (
-                          <span className="inline-flex mt-1 px-1.5 py-0.5 text-[10px] font-medium rounded bg-blue-50 text-blue-700 border border-blue-100">
-                            {group.projectName}
-                          </span>
-                        )}
-                      </div>
-                      <div className="text-right">
-                        <p className="text-sm font-semibold text-gray-900">
-                          {new Intl.NumberFormat("en-US").format(
-                            group.totalRequests || group.totalQuantity
-                          )}
-                        </p>
-                        <p className="text-xs text-gray-500">
-                          {group.totalCostUsd
-                            ? new Intl.NumberFormat("en-US", {
-                                style: "currency",
-                                currency: "USD",
-                              }).format(group.totalCostUsd)
-                            : `${group.eventCount} events`}
-                        </p>
-                      </div>
-                    </div>
-                    {usagePercent != null && (
-                      <div className="mt-3">
-                        <div className="h-2 bg-gray-100 rounded-full overflow-hidden">
-                          <div
-                            className={`h-full ${
-                              usagePercent >= 90
-                                ? "bg-red-500"
-                                : usagePercent >= 70
-                                  ? "bg-amber-500"
-                                  : "bg-emerald-500"
-                            }`}
-                            style={{ width: `${Math.min(usagePercent, 100)}%` }}
-                          />
-                        </div>
-                        <p className="text-xs text-gray-500 mt-1">
-                          {usagePercent.toFixed(1)}% of{" "}
-                          {new Intl.NumberFormat("en-US").format(group.limit ?? 0)}
-                          {group.limitWindow ? ` per ${group.limitWindow}` : ""}
-                        </p>
-                      </div>
-                    )}
-                  </div>
-                );
-              })}
-            </div>
-          )}
-        </div>
-      )}
+      {usageSummary && <ExternalTelemetryPanel usageSummary={usageSummary} />}
 
       <SentryHealthCard />
 
@@ -375,67 +201,7 @@ export default function DashboardPage() {
         )}
       </div>
 
-
-      {/* Projects Section */}
-      {projects.length > 0 && (
-        <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
-          <div className="px-6 py-4 border-b border-gray-100 flex items-center justify-between">
-            <h2 className="text-sm font-semibold text-gray-800">Projects</h2>
-            <Link href="/settings" className="text-xs font-medium text-blue-600">
-              Manage projects
-            </Link>
-          </div>
-          <div className="divide-y divide-gray-100">
-            {projects.map((project) => {
-              const usagePercent = project.percentUsed != null ? project.percentUsed * 100 : null;
-              return (
-                <div key={project.id} className="px-6 py-4">
-                  <div className="flex items-start justify-between gap-4">
-                    <div>
-                      <p className="text-sm font-medium text-gray-900">{project.name}</p>
-                      {project.description && (
-                        <p className="text-xs text-gray-500 mt-0.5">{project.description}</p>
-                      )}
-                    </div>
-                    <div className="text-right shrink-0">
-                      <p className="text-sm font-semibold text-gray-900">
-                        {new Intl.NumberFormat("en-US", {
-                          style: "currency",
-                          currency: "USD",
-                        }).format(project.spentUsd)}
-                      </p>
-                      {project.monthlyBudgetUsd != null && (
-                        <p className="text-xs text-gray-500">
-                          of {new Intl.NumberFormat("en-US", {
-                            style: "currency",
-                            currency: "USD",
-                          }).format(project.monthlyBudgetUsd)}
-                        </p>
-                      )}
-                    </div>
-                  </div>
-                  {usagePercent != null && (
-                    <div className="mt-3">
-                      <div className="h-2 bg-gray-100 rounded-full overflow-hidden">
-                        <div
-                          className={`h-full ${
-                            usagePercent >= 90
-                              ? "bg-red-500"
-                              : usagePercent >= 70
-                                ? "bg-amber-500"
-                                : "bg-emerald-500"
-                          }`}
-                          style={{ width: `${Math.min(usagePercent, 100)}%` }}
-                        />
-                      </div>
-                    </div>
-                  )}
-                </div>
-              );
-            })}
-          </div>
-        </div>
-      )}
+      {projects.length > 0 && <ProjectsPanel projects={projects} />}
 
       {/* Provider Grid */}
       {providers.length === 0 ? (
@@ -447,10 +213,10 @@ export default function DashboardPage() {
             viewBox="0 0 24 24"
           >
             <path
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              strokeWidth={1.5}
-              d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4"
+               strokeLinecap="round"
+               strokeLinejoin="round"
+               strokeWidth={1.5}
+               d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4"
             />
           </svg>
           <p className="text-gray-500 text-lg">No providers configured yet</p>

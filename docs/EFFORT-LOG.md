@@ -122,6 +122,7 @@ Protocol: /Users/jay/apps/EFFORT-LOG-PROTOCOL.md (canonical). Live board:
   **In Progress** below referencing PR #42; will move back to Completed only when #42 actually
   merges. Issues #22-#26 stay open until then — do not let the issues-sync workflow close them
   prematurely off this stale row.
+- **UI refactoring for Dashboard and Settings + API Type Safety (AG, S) — 2026-07-11.** Refactor monolithic page components (Dashboard, Settings) into discrete UI components and replace 'any' casting with PrismaClientKnownRequestError for P2002 checks.
 
 ## In Progress
 - **Subscription->knob linkage phase 1 (CLAUDE, sonnet subagent, owner-directed 2026-07-10,

@@ -79,7 +79,7 @@ export async function PUT(
     });
     return NextResponse.json(project);
   } catch (error) {
-    if (typeof error === 'object' && error !== null && 'code' in error && (error as any).code === 'P2002') {
+    if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002") {
       return NextResponse.json({ error: "Project with this name already exists" }, { status: 409 });
     }
     return NextResponse.json({ error: "Failed to update project" }, { status: 500 });

@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { computeProjectBudgetStatus } from "@/lib/budget-status";
 
@@ -53,7 +54,7 @@ export async function POST(request: Request) {
 
     return NextResponse.json(project);
   } catch (error) {
-    if (typeof error === "object" && error !== null && "code" in error && (error as { code?: unknown }).code === "P2002") {
+    if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002") {
       return NextResponse.json(
         { error: "Project name already exists (names are case-insensitive)" },
         { status: 409 }
