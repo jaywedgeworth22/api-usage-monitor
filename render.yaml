@@ -14,7 +14,6 @@ services:
     plan: starter
     autoDeployTrigger: checksPass
     healthCheckPath: /api/ready
-    maxShutdownDelaySeconds: 60
     buildFilter:
       ignoredPaths:
         - docs/**

@@ -167,12 +167,16 @@ SOURCE_DATABASE_URL="..." node scripts/migrate-postgres-to-sqlite.mjs
 
 ### Optional follow-up: back up the SQLite file
 
-Render disks aren't automatically backed up like managed Postgres.
-[Litestream](https://litestream.io/) can continuously replicate
-`/data/prod.db` to Cloudflare R2. It is opt-in until credentials and a restore
-drill exist. With all replica vars unset and `LITESTREAM_REQUIRED=false`, the
-wrapper runs the safe migration and app without Litestream. Partial credentials
-or a configured replica with no verified binary fail closed.
+Render automatically takes an encrypted disk snapshot every 24 hours and keeps
+snapshots for at least seven days. Render also warns against restoring a disk
+snapshot for a custom database because the filesystem image might not be
+transaction-consistent. Treat those snapshots as last-resort infrastructure
+recovery, not a SQLite logical/PITR backup. [Litestream](https://litestream.io/)
+continuously replicates `/data/prod.db` to Cloudflare R2 with transaction-aware
+restore points. It is opt-in until credentials and a restore drill exist. With
+all replica vars unset and `LITESTREAM_REQUIRED=false`, the wrapper runs the safe
+migration and app without Litestream. Partial credentials or a configured
+replica with no verified binary fail closed.
 
 To enable it: create an R2 bucket + token and set the `LITESTREAM_S3_*`
 vars in the Render dashboard's Environment tab (they already exist in

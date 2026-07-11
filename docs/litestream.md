@@ -5,6 +5,12 @@ writes to `/data/prod.db` (the Render disk backing this app) to a Cloudflare R2 
 as LTX files. Adapted from the sibling Socratic.Trade app's PM2/macOS setup
 (`docs/litestream.md` there) for Render's single-web-service, build-then-run model.
 
+Render's encrypted daily disk snapshots are retained for at least seven days, but
+Render explicitly warns against using a disk snapshot to restore a custom database:
+the filesystem image might not be transaction-consistent. Litestream is the
+SQLite-aware backup/PITR layer; Render snapshots remain last-resort infrastructure
+recovery.
+
 **Opt-in, with fail-closed configuration.** With `LITESTREAM_S3_*` unset and
 `LITESTREAM_REQUIRED=false` (the initial default), `render.yaml`'s
 `startCommand` runs exactly as it did before this was added: `migrate-safe.mjs` then
