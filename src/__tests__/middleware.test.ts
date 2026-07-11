@@ -58,3 +58,24 @@ describe("middleware matcher — /api/budget-status exclusion (regression for th
     }
   });
 });
+
+describe("middleware matcher — /api/subscriptions collection-only exclusion (subscription->knob linkage phase 1)", () => {
+  it("does NOT session-gate the exact collection path, so the route's own auth (session cookie OR token) governs", () => {
+    expect(isSessionGated("/api/subscriptions")).toBe(false);
+    expect(isSessionGated("/api/subscriptions/")).toBe(false);
+  });
+
+  it("STILL session-gates the [id] sub-route — this is deliberately narrower than the budget-status exclusion", () => {
+    // Regression for the "tightly scoped to the collection route ONLY" requirement:
+    // PUT/DELETE /api/subscriptions/:id must stay fully session-gated by the
+    // middleware (the route itself has no independent auth check), unlike
+    // api/budget-status's `(?:/|$)` which deliberately excludes sub-paths too.
+    expect(isSessionGated("/api/subscriptions/abc123")).toBe(true);
+    expect(isSessionGated("/api/subscriptions/abc123/")).toBe(true);
+  });
+
+  it("still session-gates prefix-collision paths (anchoring holds)", () => {
+    expect(isSessionGated("/api/subscriptions-foo")).toBe(true);
+    expect(isSessionGated("/api/subscriptionsfoo")).toBe(true);
+  });
+});

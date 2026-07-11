@@ -36,6 +36,11 @@ are persisted and upsert-deduped on `ExternalUsageEvent.idempotencyKey`.
   Returns per-provider month-to-date spend (poll snapshot + pushed cost, combined via
   `max()` to avoid double-counting) vs `ProviderPlan.monthlyBudgetUsd`. Logic in
   `src/lib/budget-status.ts`, reusing `buildProviderAlertState` from `src/lib/provider-alerts.ts`.
+- `GET /api/subscriptions` — dashboard session cookie OR the same Bearer/`x-usage-ingest-token`
+  scheme as budget-status (`isUsageReadAuthorized` in `src/lib/ingest-auth.ts`). This is the ONE
+  collection route the dashboard-session middleware excludes for GET (see "Subscriptions" below);
+  `POST /api/subscriptions` and both `PUT`/`DELETE /api/subscriptions/:id` stay
+  session-cookie-only.
 
 Push-primary providers (Anthropic, Voyage, Robinhood) have blind poll adapters — their usage/cost
 arrives only via `ExternalUsageEvent`. For them to appear in `/api/budget-status` with a budget,
@@ -118,6 +123,20 @@ usage — no special-casing. Idempotent by `(subscriptionId, periodStart)` hash 
   (`src/lib/usage-maintenance.ts`), before retention and alert delivery.
 - A recurring fee should be modeled EITHER as `ProviderPlan.fixedMonthlyCostUsd` (a flat read-time
   add) OR as a `Subscription` (materialized events) — not both, or it double-counts.
+- **Status is `active | paused | canceled | considering`** (subscription -> knob linkage phase 1,
+  2026-07-10). `considering` models a candidate paid tier that isn't purchased yet; it never
+  generates charges — `materializeDueSubscriptions` filters `status: "active"` at the DB query
+  level, so `considering` is excluded identically to `paused`/`canceled` (regression-tested).
+- **`knobEnv Json?` on both `ProviderPlan` and `Subscription`** is a flat env-var-knob-name ->
+  string-value map (e.g. `PROVIDER_QUOTA_TIINGO_PER_HOUR`, `PROVIDER_RATE_LIMIT_ALPHA_VANTAGE_*`) —
+  `ProviderPlan.knobEnv` is the provider's FREE-TIER baseline; `Subscription.knobEnv` overrides it
+  while that subscription is active/considering. `GET /api/subscriptions` returns both the
+  effective value (`knobEnv`: the subscription's own override, else the provider's free tier) and
+  `freeTierKnobEnv` (always the provider's free-tier map) per row, so a consumer can diff "what I'd
+  get free" vs "what this plan implies." `scripts/seed-provider-subscriptions.mjs` is the standalone
+  idempotent one-time seed for the real data (massive/fmp/tiingo/fmp-Premium subscriptions +
+  tiingo/twelvedata/alphavantage/finnhub free-tier maps) — see
+  `docs/rollouts/2026-07-10-subscription-knob-linkage.md`.
 
 ## Sentry Health card
 

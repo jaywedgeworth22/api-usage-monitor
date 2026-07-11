@@ -124,6 +124,42 @@ Protocol: /Users/jay/apps/EFFORT-LOG-PROTOCOL.md (canonical). Live board:
   prematurely off this stale row.
 
 ## In Progress
+- **Subscription->knob linkage phase 1 (CLAUDE, sonnet subagent, owner-directed 2026-07-10,
+  background agent in an isolated worktree off main) — mirrored from the live board, OPEN PR #83
+  (`claude/subscription-knob-linkage`), opened 2026-07-10. NOT merged.** Goal: the monitor becomes the source of truth for which market-data plan is active
+  per provider AND what rate-limit env knobs that plan implies for Socratic.Trade (Infisical
+  `PROVIDER_QUOTA_*`/`PROVIDER_RATE_LIMIT_*`/`TIINGO_DROP_NEWS`). Shipped: `knobEnv Json?` on both
+  `ProviderPlan` (free-tier baseline) and `Subscription` (per-plan override); new `considering`
+  subscription status (never charged — regression-tested); `GET /api/subscriptions` accepts a
+  bearer/`x-usage-ingest-token` (`USAGE_READ_TOKEN`||`USAGE_INGEST_TOKEN`, mirrors budget-status) OR
+  the dashboard session cookie, via a narrowly-scoped `api/subscriptions/?$` middleware exclusion
+  (collection route only — `[id]` stays session-gated); `POST` gained its own explicit session check
+  (previously relied entirely on the now-narrowed middleware gate — see the PR's "Auth deviation"
+  note); each list element now carries `knobEnv` (effective) + `freeTierKnobEnv`; standalone
+  idempotent `scripts/seed-provider-subscriptions.mjs` for massive/fmp/tiingo/fmp-Premium
+  subscriptions + tiingo/twelvedata/alphavantage/finnhub free-tier maps (not yet run against prod —
+  blocked on the migrate-safe.mjs bug below). Full gate green (lint/tsc/141 tests/build). See
+  `docs/rollouts/2026-07-10-subscription-knob-linkage.md` for full detail.
+  **2026-07-10 update (CLAUDE): addressed both P2 review findings on PR #83 (still open, not
+  merged).** (1) `PUT /api/subscriptions/:id` now re-anchors the billing cycle to the activation
+  moment (or an explicit caller-supplied `startDate`) whenever status transitions INTO `active`
+  from `considering`/`paused`/`canceled`, and clears `lastChargedPeriodStart` — fixes
+  `materializeDueSubscriptions` backfilling charges for every period since a `considering` row was
+  *created*, not since it was actually purchased; already-active rows are untouched. (2)
+  `GET /api/subscriptions`'s effective `knobEnv` now falls back to the provider's free-tier baseline
+  for `paused`/`canceled` rows instead of returning a stale paid override — the override applies
+  only while `active`/`considering`, per the documented contract. +5 regression tests (146 total).
+  Full gate re-verified green (lint/tsc/146 tests/build). See the "2026-07-10 update" section of the
+  rollout note above for detail.
+  **Also discovered (pre-existing, unrelated, NOT fixed in this PR): `scripts/migrate-safe.mjs`'s
+  `prisma db push --dry-run` step is broken — `--dry-run` is not a valid flag on the pinned Prisma
+  6.19.3, confirmed via `npx prisma db push --help` and reproduced locally (crashes with "unknown or
+  unexpected option: --dry-run" against any existing DB). Since `start-with-litestream.sh` runs this
+  unconditionally on every deploy once the disk already has a DB, this blocks the next Render
+  autodeploy of this app (schema-touching or not) until fixed — flagged as a spawned follow-up task,
+  not addressed here (out of this PR's approved scope).** Follow-up (separate row, Socratic.Trade
+  side): Mac launchd sync script monitor->Infisical. Phase 2 (unclaimed): UI usage-vs-plan-limit
+  comparison.
 - **Restore shared 5-field usage-telemetry idempotency (CURSOR, S) — started 2026-07-09.**
   Branch `cursor/shared-dep-adoption-9577`. Reverted server fallback `deriveIdempotencyKey` from
   a drifted 12-field basis to the shared 5-field contract; ported the 7 shared hash vectors into

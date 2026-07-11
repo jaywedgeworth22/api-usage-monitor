@@ -1,8 +1,14 @@
 import { NextResponse } from "next/server";
-import type { Prisma } from "@prisma/client";
+import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { parseSubscriptionUpdateInput } from "@/lib/subscription-input";
-import { advancePeriod, rescheduleCycle, isSubscriptionInterval, type SubscriptionInterval } from "@/lib/subscriptions";
+import {
+  advancePeriod,
+  initialCycle,
+  rescheduleCycle,
+  isSubscriptionInterval,
+  type SubscriptionInterval,
+} from "@/lib/subscriptions";
 
 function sameCalendarDay(a: Date, b: Date): boolean {
   return a.toISOString().slice(0, 10) === b.toISOString().slice(0, 10);
@@ -51,6 +57,9 @@ export async function PUT(request: Request, { params }: { params: Promise<{ id: 
     // tell when a subscription stopped generating charges.
     data.canceledAt = update.status === "canceled" ? new Date() : null;
   }
+  if (update.knobEnv !== undefined) {
+    data.knobEnv = update.knobEnv === null ? Prisma.JsonNull : (update.knobEnv as Prisma.InputJsonObject);
+  }
 
   // Recompute the cycle only when the schedule ACTUALLY changes (by value — not
   // mere field presence, since the UI re-sends every field on any edit). When it
@@ -74,7 +83,33 @@ export async function PUT(request: Request, { params }: { params: Promise<{ id: 
     anchorDay !== existing.anchorDay ||
     !sameCalendarDay(startDate, existing.startDate);
 
-  if (scheduleChanged) {
+  // Activation (status transitioning INTO "active" from considering/paused/
+  // canceled) resets the billing cycle to the activation moment instead of
+  // reusing whatever schedule the row happened to carry. Without this, a
+  // `considering` row created months ago keeps its original
+  // currentPeriodStart, and materializeDueSubscriptions (which walks forward
+  // charging every elapsed period since currentPeriodStart) backfills a
+  // charge for every period since the row was CREATED — including time
+  // before the plan was actually purchased. Re-anchoring to now (or an
+  // explicit startDate/purchase-date the caller supplies in the same PUT)
+  // and clearing the watermark means the very next materializer run charges
+  // only the current, post-activation period — never before. This
+  // intentionally discards any prior lastChargedPeriodStart: activation
+  // starts a fresh cycle, not a continuation of never-billed history. A row
+  // that was already "active" is untouched (isActivating is false).
+  const isActivating = update.status === "active" && existing.status !== "active";
+
+  if (isActivating) {
+    const activationStartDate = update.startDate ?? new Date();
+    const cycle = initialCycle({ startDate: activationStartDate, interval, intervalCount, anchorDay });
+    data.interval = interval;
+    data.intervalCount = intervalCount;
+    data.anchorDay = anchorDay;
+    data.startDate = activationStartDate;
+    data.currentPeriodStart = cycle.currentPeriodStart;
+    data.nextRenewalAt = cycle.nextRenewalAt;
+    data.lastChargedPeriodStart = null;
+  } else if (scheduleChanged) {
     // paidThrough = end of the last already-charged period under the OLD
     // schedule. Flooring the new cycle at this instant is what prevents a
     // re-anchored period from overlapping billed time.
