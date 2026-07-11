@@ -140,11 +140,12 @@ Protocol: /Users/jay/apps/EFFORT-LOG-PROTOCOL.md (canonical). Live board:
   subscriptions, security, adapter failure semantics, accessible/responsive UI, readiness/deploy/
   backup/CI, plus official-API-backed provider billing and subscription integrations. Multi-agent
   isolated sublanes; no production writes or merges without an explicit landing decision.
-  **DONE-local at `2c38df4`; PR/push pending.** All lanes are integrated; serialized Node 24
+  **OPEN PR #91 at `1fa5b87`.** All lanes are integrated; serialized Node 24
   `npm run verify` passes (ESLint, TypeScript, 45 files/251 tests, migration safety, startup checks,
   production build), and authenticated desktop/390px mobile browser QA passed on a temporary DB.
-  Separate Socratic producer retry/idempotency branch is locally green. No production writes,
-  merge, or deploy performed.
+  Separate Socratic producer retry/idempotency changes are in OPEN PR #1412 with Node 24 lint,
+  325 files/3,614 tests, and production build green. No production writes, merge, or deploy
+  performed.
 - **Subscription->knob linkage phase 1 (CLAUDE, sonnet subagent, owner-directed 2026-07-10,
   background agent in an isolated worktree off main) — mirrored from the live board, OPEN PR #83
   (`claude/subscription-knob-linkage`), opened 2026-07-10. NOT merged.** Goal: the monitor becomes the source of truth for which market-data plan is active
