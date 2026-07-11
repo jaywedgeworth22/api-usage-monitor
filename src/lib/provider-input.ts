@@ -197,10 +197,11 @@ function parseAllocationsInput(value: unknown): { projectId: string; percentage:
   const allocations = value.map((a, index) => {
     if (!a || typeof a !== "object") throw new Error(`allocations[${index}] must be an object`);
     
-    const projectId = cleanOptionalString((a as any).projectId);
+    const obj = a as Record<string, unknown>;
+    const projectId = cleanOptionalString(obj.projectId);
     if (!projectId) throw new Error(`allocations[${index}].projectId must be a non-empty string`);
     
-    const percentage = typeof (a as any).percentage === "number" ? (a as any).percentage : Number((a as any).percentage);
+    const percentage = typeof obj.percentage === "number" ? obj.percentage : Number(obj.percentage);
     if (!Number.isFinite(percentage) || percentage < 0 || percentage > 100) {
       throw new Error(`allocations[${index}].percentage must be a number between 0 and 100`);
     }
