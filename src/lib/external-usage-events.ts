@@ -108,7 +108,7 @@ export async function persistExternalUsageEvents(
   events: ExternalUsageEventInput[]
 ): Promise<PersistExternalUsageEventsResult> {
   if (events.length === 0) {
-    return { attempted: 0, persisted: 0, skippedPrunedDuplicates: 0 };
+    return { attempted: 0, persisted: 0, skippedPrunedDuplicates: 0, newEvents: [] };
   }
 
   const idempotencyKeys = events.map((event) => event.idempotencyKey);
