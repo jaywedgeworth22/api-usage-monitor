@@ -79,11 +79,20 @@ describe("openai adapter", () => {
 
     expect(result.totalCost).toBe(123.45);
     expect(result.totalRequests).toBe(9);
+    expect(result.costScope).toBe("calendar_month_to_date");
+    expect(new Date(result.costWindowStart!).toISOString()).toBe("2026-07-01T00:00:00.000Z");
     expect(result.rawData).toMatchObject({
       costSource: "organization_costs",
+      organizationCosts: {
+        available: true,
+        totalCostUsd: 123.45,
+        pageCount: 2,
+      },
+      dailyUsage: { costUsd: 1.25, requests: 9 },
       costsApiKeyRequirement: expect.stringContaining("Admin API key"),
       costsCredentialSource: "secretConfig.adminApiKey",
     });
+    expect(JSON.stringify(result.rawData)).not.toContain("organization.costs.result");
     const costUrls = fetchMock.mock.calls
       .map(([input]) => String(input))
       .filter((url) => url.includes("/v1/organization/costs?"));
@@ -128,7 +137,7 @@ describe("openai adapter", () => {
     expect(result.totalCost).toBe(0);
   });
 
-  it("falls back to the daily cost only when the month range is unavailable", async () => {
+  it("keeps today's cost diagnostic-only when no month-to-date source is available", async () => {
     vi.stubGlobal(
       "fetch",
       vi.fn((input: string | URL | Request) => {
@@ -150,8 +159,11 @@ describe("openai adapter", () => {
 
     const result = await fetchUsage("test-key");
 
-    expect(result.totalCost).toBe(2.75);
+    expect(result.totalCost).toBeNull();
     expect(result.totalRequests).toBe(4);
+    expect(result.rawData).toMatchObject({
+      dailyUsage: { costUsd: 2.75, requests: 4 },
+    });
   });
 
   it("accepts the legacy month range as the sole successful response for a non-admin key", async () => {
