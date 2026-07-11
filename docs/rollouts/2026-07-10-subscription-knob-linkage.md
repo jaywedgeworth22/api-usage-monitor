@@ -169,3 +169,76 @@ that lists every provider's effective knobEnv regardless of whether a Subscripti
   endpoint and writes the effective `knobEnv` into Infisical.
 - Run `scripts/seed-provider-subscriptions.mjs` against prod once this PR is merged and deployed
   (blocked on the migrate-safe.mjs fix above).
+
+## 2026-07-10 update — two P2 code-review findings addressed (PR #83)
+
+Two P2 findings from the PR's review bots, both fixed in-branch (not merged/deployed yet — PR
+still open).
+
+### Finding 1 — reset candidate billing cycle on activation (comment 3562134614)
+`PUT /api/subscriptions/:id` (`src/app/api/subscriptions/[id]/route.ts`) previously only
+recomputed the billing cycle when the schedule fields (interval/intervalCount/anchorDay/startDate)
+actually changed by value. A pure status flip — `considering` (or `paused`/`canceled`) -> `active`
+— left `currentPeriodStart` untouched. Since `materializeDueSubscriptions`
+(`src/lib/subscription-materializer.ts`) walks forward from `currentPeriodStart`, charging every
+elapsed period up to `now`, activating a `considering` row created months earlier would backfill a
+charge for every period since the row was **created** — including time before the plan was
+actually purchased.
+
+Fix: added an `isActivating` branch (`update.status === "active" && existing.status !== "active"`)
+that runs *before* the existing schedule-changed branch. It re-anchors the cycle via
+`initialCycle({ startDate: activationStartDate, interval, intervalCount, anchorDay })` — the same
+pure period-math helper `POST /api/subscriptions` already uses for brand-new subscriptions — where
+`activationStartDate` is `update.startDate` if the caller supplied one (an explicit purchase date),
+else `new Date()` (the activation moment). Sets `currentPeriodStart`/`nextRenewalAt` from that
+cycle and clears `lastChargedPeriodStart` to `null`, so the next materializer run charges only the
+current (post-activation) period. Deliberately discards any prior `lastChargedPeriodStart`
+watermark — activation is a fresh cycle, not a continuation of already-billed or never-billed
+history. A row already `active` is untouched (`isActivating` is `false`), matching "do not change
+behavior for a row that was already active."
+
+Regression tests added to `src/lib/__tests__/subscription-materializer.test.ts`:
+- a `considering` row created in January, activated in July via an explicit `startDate` in the PUT
+  body, materializes exactly ONE charge (the current period) — not the six that elapsed since
+  January.
+- same re-anchor behavior for a `paused` row (not just `considering`).
+- an already-`active` row that receives a PUT re-affirming `status: "active"` keeps its existing
+  `currentPeriodStart`/`lastChargedPeriodStart` unchanged (no regression for the already-active
+  case).
+
+### Finding 2 — fall back to free-tier knobs for inactive rows (comment 3562134616)
+`GET /api/subscriptions` (`src/app/api/subscriptions/route.ts`) computed the effective `knobEnv` as
+`sub.knobEnv ?? freeTierKnobEnv` unconditionally — so a `paused`/`canceled` row's stale paid
+override was still reported as the effective value, even though the contract (see `AGENTS.md`
+"Subscriptions") is that a subscription's `knobEnv` overrides the provider baseline only while
+`active`/`considering`.
+
+Fix: gated the override on status — `knobOverrideApplies = sub.status === "active" || sub.status
+=== "considering"`; when false, `knobEnv` falls back to `freeTierKnobEnv` unconditionally.
+`freeTierKnobEnv` itself is untouched (always the provider baseline, regardless of status).
+
+Regression tests added to `src/app/api/subscriptions/__tests__/route.test.ts`:
+- a `canceled` subscription with its own paid `knobEnv` returns the provider's free-tier map as the
+  effective `knobEnv`, not the stale paid override (`freeTierKnobEnv` unaffected).
+- `active` and `considering` rows still apply their own `knobEnv` override (unaffected by the fix).
+
+### Files (this update)
+- `src/app/api/subscriptions/[id]/route.ts`
+- `src/app/api/subscriptions/route.ts`
+- `src/lib/__tests__/subscription-materializer.test.ts`
+- `src/app/api/subscriptions/__tests__/route.test.ts`
+- `docs/EFFORT-LOG.md`
+- `docs/rollouts/2026-07-10-subscription-knob-linkage.md` (this file)
+
+### Verification
+```
+export PATH="/opt/homebrew/opt/node@24/bin:$PATH"   # node26 default ABI-breaks better-sqlite3
+npx prisma generate
+npm run lint       # eslint . — clean
+npx tsc --noEmit   # clean
+npm test           # 20 files / 146 tests passed (141 -> 146, +5 new regression tests)
+npm run build      # next build — clean
+```
+
+Not addressed here (unchanged, still open): the `scripts/migrate-safe.mjs` `--dry-run` bug flagged
+above — explicitly out of scope for this review-comment pass too, per the task instructions.

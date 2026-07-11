@@ -125,6 +125,17 @@ Protocol: /Users/jay/apps/EFFORT-LOG-PROTOCOL.md (canonical). Live board:
   subscriptions + tiingo/twelvedata/alphavantage/finnhub free-tier maps (not yet run against prod —
   blocked on the migrate-safe.mjs bug below). Full gate green (lint/tsc/141 tests/build). See
   `docs/rollouts/2026-07-10-subscription-knob-linkage.md` for full detail.
+  **2026-07-10 update (CLAUDE): addressed both P2 review findings on PR #83 (still open, not
+  merged).** (1) `PUT /api/subscriptions/:id` now re-anchors the billing cycle to the activation
+  moment (or an explicit caller-supplied `startDate`) whenever status transitions INTO `active`
+  from `considering`/`paused`/`canceled`, and clears `lastChargedPeriodStart` — fixes
+  `materializeDueSubscriptions` backfilling charges for every period since a `considering` row was
+  *created*, not since it was actually purchased; already-active rows are untouched. (2)
+  `GET /api/subscriptions`'s effective `knobEnv` now falls back to the provider's free-tier baseline
+  for `paused`/`canceled` rows instead of returning a stale paid override — the override applies
+  only while `active`/`considering`, per the documented contract. +5 regression tests (146 total).
+  Full gate re-verified green (lint/tsc/146 tests/build). See the "2026-07-10 update" section of the
+  rollout note above for detail.
   **Also discovered (pre-existing, unrelated, NOT fixed in this PR): `scripts/migrate-safe.mjs`'s
   `prisma db push --dry-run` step is broken — `--dry-run` is not a valid flag on the pinned Prisma
   6.19.3, confirmed via `npx prisma db push --help` and reproduced locally (crashes with "unknown or

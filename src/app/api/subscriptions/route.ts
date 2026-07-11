@@ -50,7 +50,16 @@ export async function GET(request: NextRequest) {
         ? sub.interval
         : "monthly";
       const freeTierKnobEnv = (sub.provider.plan?.knobEnv as Record<string, string> | null) ?? null;
-      const knobEnv = (sub.knobEnv as Record<string, string> | null) ?? freeTierKnobEnv;
+      // A subscription's own knobEnv overrides the provider's free-tier
+      // baseline ONLY while the subscription is active|considering — a
+      // paused/canceled row's override is stale and must not be reported as
+      // effective (it would tell a consumer to apply paid-tier knobs for a
+      // plan that isn't currently in force). freeTierKnobEnv below stays the
+      // provider baseline unconditionally, regardless of status.
+      const knobOverrideApplies = sub.status === "active" || sub.status === "considering";
+      const knobEnv = knobOverrideApplies
+        ? ((sub.knobEnv as Record<string, string> | null) ?? freeTierKnobEnv)
+        : freeTierKnobEnv;
       return {
         id: sub.id,
         name: sub.name,

@@ -290,4 +290,114 @@ describe("materializeDueSubscriptions + project attribution (integration)", () =
     await materializeDueSubscriptions(NOW);
     expect(await prisma.externalUsageEvent.count()).toBe(1);
   });
+
+  it("resets the billing cycle on activation — a 'considering' row does not backfill pre-activation periods", async () => {
+    // Regression for a P2 review finding on the subscription->knob linkage
+    // PR: a candidate ("considering") plan created months ago used to keep
+    // its original currentPeriodStart when flipped to "active", so
+    // materializeDueSubscriptions (which walks forward charging every
+    // elapsed period since currentPeriodStart) backfilled a charge for
+    // every period between creation and activation — including time before
+    // the plan was actually purchased. The PUT handler must re-anchor the
+    // cycle to the activation moment (here an explicit startDate the PUT
+    // supplies, matching "if the code already accepts a startDate/purchase
+    // -date input, honor that instead") so only the current, post-activation
+    // period is ever charged.
+    const provider = await prisma.provider.create({
+      data: { name: "fmp", displayName: "FMP", type: "builtin", refreshIntervalMin: 60 },
+    });
+    // Row "created" back in January, sitting as "considering" — six monthly
+    // periods have elapsed by the time NOW (2026-07-15) rolls around.
+    const subscription = await createSubscription(provider.id, {
+      status: "considering",
+      startDate: new Date("2026-01-01T00:00:00Z"),
+      currentPeriodStart: new Date("2026-01-01T00:00:00Z"),
+      nextRenewalAt: new Date("2026-02-01T00:00:00Z"),
+    });
+
+    // Sanity: while considering, materializing never touches it (existing
+    // behavior, unaffected by this fix).
+    const before = await materializeDueSubscriptions(NOW);
+    expect(before.examined).toBe(0);
+    expect(await prisma.externalUsageEvent.count()).toBe(0);
+
+    const req = new Request(`http://test/api/subscriptions/${subscription.id}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ status: "active", startDate: "2026-07-10T00:00:00.000Z" }),
+    });
+    const res = await putSubscription(req, { params: Promise.resolve({ id: subscription.id }) });
+    expect(res.status).toBe(200);
+    const updated = await res.json();
+    expect(updated.status).toBe("active");
+    // Re-anchored to the activation date, not the original January startDate.
+    expect(updated.currentPeriodStart).toBe("2026-07-10T00:00:00.000Z");
+    expect(updated.lastChargedPeriodStart).toBeNull();
+
+    const result = await materializeDueSubscriptions(NOW);
+    expect(result.charged).toBe(1);
+    expect(result.eventsWritten).toBe(1);
+
+    // Exactly ONE charge — the current (post-activation) period — never the
+    // six periods that elapsed between the original January startDate and
+    // activation.
+    const events = await prisma.externalUsageEvent.findMany();
+    expect(events).toHaveLength(1);
+    expect(events[0].occurredAt.toISOString()).toBe("2026-07-10T00:00:00.000Z");
+  });
+
+  it("resets the billing cycle on activation for a 'paused' row too (not just 'considering')", async () => {
+    const provider = await prisma.provider.create({
+      data: { name: "twelvedata", displayName: "Twelve Data", type: "builtin", refreshIntervalMin: 60 },
+    });
+    const subscription = await createSubscription(provider.id, {
+      status: "paused",
+      startDate: new Date("2026-03-01T00:00:00Z"),
+      currentPeriodStart: new Date("2026-03-01T00:00:00Z"),
+      nextRenewalAt: new Date("2026-04-01T00:00:00Z"),
+      lastChargedPeriodStart: new Date("2026-03-01T00:00:00Z"),
+    });
+
+    const req = new Request(`http://test/api/subscriptions/${subscription.id}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ status: "active", startDate: "2026-07-10T00:00:00.000Z" }),
+    });
+    const res = await putSubscription(req, { params: Promise.resolve({ id: subscription.id }) });
+    expect(res.status).toBe(200);
+
+    const result = await materializeDueSubscriptions(NOW);
+    expect(result.charged).toBe(1);
+
+    const events = await prisma.externalUsageEvent.findMany();
+    expect(events).toHaveLength(1);
+    expect(events[0].occurredAt.toISOString()).toBe("2026-07-10T00:00:00.000Z");
+  });
+
+  it("does not reset the cycle for a PUT that leaves an already-active row active", async () => {
+    // "Do NOT change behavior for a row that was already active" — a PUT
+    // that re-sends status: "active" on an already-active row must not
+    // re-anchor currentPeriodStart or clear the watermark.
+    const provider = await prisma.provider.create({
+      data: { name: "alphavantage", displayName: "Alpha Vantage", type: "builtin", refreshIntervalMin: 60 },
+    });
+    const subscription = await createSubscription(provider.id, {
+      status: "active",
+      startDate: new Date("2026-05-01T00:00:00Z"),
+      currentPeriodStart: new Date("2026-07-01T00:00:00Z"),
+      nextRenewalAt: new Date("2026-08-01T00:00:00Z"),
+      lastChargedPeriodStart: new Date("2026-07-01T00:00:00Z"),
+    });
+
+    const req = new Request(`http://test/api/subscriptions/${subscription.id}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ status: "active", notes: "still active" }),
+    });
+    const res = await putSubscription(req, { params: Promise.resolve({ id: subscription.id }) });
+    expect(res.status).toBe(200);
+    const updated = await res.json();
+    expect(updated.currentPeriodStart).toBe("2026-07-01T00:00:00.000Z");
+    expect(updated.lastChargedPeriodStart).toBe("2026-07-01T00:00:00.000Z");
+  });
 });

@@ -201,6 +201,88 @@ describe("GET /api/subscriptions — knobEnv / freeTierKnobEnv", () => {
     const body = await res.json();
     expect(Array.isArray(body)).toBe(true);
   });
+
+  it("falls back to the free-tier knobEnv for a canceled subscription — its paid override is not effective", async () => {
+    // Regression for a P2 review finding: the effective knobEnv contract is
+    // "a subscription's knobEnv overrides the provider baseline ONLY while
+    // active|considering." A paused/canceled row's own knobEnv is stale and
+    // must never be reported as effective — only the provider's free-tier
+    // baseline should. freeTierKnobEnv stays the provider baseline either way.
+    const provider = await prisma.provider.create({
+      data: {
+        name: "fmp",
+        displayName: "FMP",
+        type: "builtin",
+        refreshIntervalMin: 60,
+        plan: { create: { knobEnv: { PROVIDER_RATE_LIMIT_FMP_PER_MIN: "5" } } },
+      },
+    });
+    await prisma.subscription.create({
+      data: {
+        providerId: provider.id,
+        name: "Premium (canceled)",
+        costUsd: 59,
+        status: "canceled",
+        startDate: new Date("2026-06-01T00:00:00Z"),
+        currentPeriodStart: new Date("2026-06-01T00:00:00Z"),
+        nextRenewalAt: new Date("2026-07-01T00:00:00Z"),
+        knobEnv: { PROVIDER_RATE_LIMIT_FMP_PER_MIN: "750" },
+      },
+    });
+
+    const res = await GET(getRequest({ "x-usage-ingest-token": READ_TOKEN }));
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body).toHaveLength(1);
+    expect(body[0].status).toBe("canceled");
+    // Effective knobEnv is the FREE-TIER baseline, not the stale paid override.
+    expect(body[0].knobEnv).toEqual({ PROVIDER_RATE_LIMIT_FMP_PER_MIN: "5" });
+    // freeTierKnobEnv is always the provider baseline, unaffected by status.
+    expect(body[0].freeTierKnobEnv).toEqual({ PROVIDER_RATE_LIMIT_FMP_PER_MIN: "5" });
+  });
+
+  it("still applies the paid override for 'active' and 'considering' rows (unaffected by the fix above)", async () => {
+    const provider = await prisma.provider.create({
+      data: {
+        name: "massive",
+        displayName: "Massive",
+        type: "builtin",
+        refreshIntervalMin: 60,
+        plan: { create: { knobEnv: { PROVIDER_QUOTA_MASSIVE_PER_DAY: "100" } } },
+      },
+    });
+    await prisma.subscription.create({
+      data: {
+        providerId: provider.id,
+        name: "Active plan",
+        costUsd: 29,
+        status: "active",
+        startDate: new Date("2026-07-01T00:00:00Z"),
+        currentPeriodStart: new Date("2026-07-01T00:00:00Z"),
+        nextRenewalAt: new Date("2026-08-01T00:00:00Z"),
+        knobEnv: { PROVIDER_QUOTA_MASSIVE_PER_DAY: "5000" },
+      },
+    });
+    await prisma.subscription.create({
+      data: {
+        providerId: provider.id,
+        name: "Candidate plan",
+        costUsd: 79,
+        status: "considering",
+        startDate: new Date("2026-07-01T00:00:00Z"),
+        currentPeriodStart: new Date("2026-07-01T00:00:00Z"),
+        nextRenewalAt: new Date("2026-08-01T00:00:00Z"),
+        knobEnv: { PROVIDER_QUOTA_MASSIVE_PER_DAY: "20000" },
+      },
+    });
+
+    const res = await GET(getRequest({ "x-usage-ingest-token": READ_TOKEN }));
+    const body = await res.json();
+    const active = body.find((s: { name: string }) => s.name === "Active plan");
+    const considering = body.find((s: { name: string }) => s.name === "Candidate plan");
+    expect(active.knobEnv).toEqual({ PROVIDER_QUOTA_MASSIVE_PER_DAY: "5000" });
+    expect(considering.knobEnv).toEqual({ PROVIDER_QUOTA_MASSIVE_PER_DAY: "20000" });
+  });
 });
 
 describe("POST /api/subscriptions — stays session-cookie-only", () => {
