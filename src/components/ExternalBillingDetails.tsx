@@ -40,7 +40,9 @@ function formatCurrency(amount: number, currency: string | null): string {
 }
 
 function formatDate(value: string | null): string {
-  return value ? new Date(value).toLocaleDateString() : "--";
+  return value
+    ? new Date(value).toLocaleDateString(undefined, { timeZone: "UTC" })
+    : "--";
 }
 
 function statusClass(status: string): string {

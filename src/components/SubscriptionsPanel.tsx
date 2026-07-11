@@ -144,7 +144,9 @@ export default function SubscriptionsPanel({
               </td>
               <td data-label="Next renewal" className="px-6 py-4 text-gray-500 text-xs hidden lg:table-cell">
                 {sub.status === "active" && sub.autoRenew
-                  ? new Date(sub.nextRenewalAt).toLocaleDateString()
+                  ? new Date(sub.nextRenewalAt).toLocaleDateString(undefined, {
+                      timeZone: "UTC",
+                    })
                   : "Not scheduled"}
               </td>
               <td data-label="Status" className="px-6 py-4">

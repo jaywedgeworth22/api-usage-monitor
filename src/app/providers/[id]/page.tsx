@@ -299,7 +299,9 @@ export default function ProviderDetailPage() {
             <p className="text-xs text-gray-500 mb-1">Renewal</p>
             <p className="font-medium text-gray-900">
               {provider.plan?.renewalDate
-                ? new Date(provider.plan.renewalDate).toLocaleDateString()
+                ? new Date(provider.plan.renewalDate).toLocaleDateString(undefined, {
+                    timeZone: "UTC",
+                  })
                 : "--"}
             </p>
           </div>
