@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import BalanceBadge from "./BalanceBadge";
-import type { ExternalBillingRecord } from "./ExternalBillingDetails";
+import { isExternalBillingStale, type ExternalBillingRecord } from "./ExternalBillingDetails";
 
 interface ProviderCardProps {
   id: string;
@@ -178,6 +178,7 @@ export default function ProviderCard({
           <span className="font-semibold">Provider-reported:</span>{" "}
           {connectedBilling.planName || connectedBilling.kind}
           {connectedBilling.status ? ` · ${connectedBilling.status}` : ""}
+          {isExternalBillingStale(connectedBilling) ? " · stale" : ""}
         </div>
       )}
 

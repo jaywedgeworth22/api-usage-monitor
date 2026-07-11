@@ -3,6 +3,7 @@ import { prisma } from "@/lib/prisma";
 import {
   getBackupRuntimeStatus,
   getRuntimeIdentity,
+  getSchedulerReadiness,
   getSchedulerRuntimeStatus,
   getStartupRuntimeStatus,
 } from "@/lib/runtime-health";
@@ -44,7 +45,8 @@ export async function GET() {
     Promise.resolve(getBackupRuntimeStatus()),
     Promise.resolve(getStartupRuntimeStatus()),
   ]);
-  const schedulerReady = scheduler.startedAt !== null;
+  const schedulerReadiness = getSchedulerReadiness();
+  const schedulerReady = schedulerReadiness.ok;
   const backupReady = !backup.required || backup.active;
   const startupReady = !startup.required || startup.active;
   const ok = database.ok && schedulerReady && backupReady && startupReady;
@@ -59,6 +61,9 @@ export async function GET() {
         database,
         scheduler: {
           ok: schedulerReady,
+          readinessReason: schedulerReadiness.reason,
+          staleAfterMs: schedulerReadiness.staleAfterMs,
+          failureThreshold: schedulerReadiness.failureThreshold,
           ...scheduler,
         },
         backup: {

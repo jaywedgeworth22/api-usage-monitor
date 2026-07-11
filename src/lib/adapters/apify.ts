@@ -62,6 +62,10 @@ export async function fetchUsage(apiKey: string): Promise<UsageResult> {
   return {
     balance,
     totalCost: currentBill,
+    fixedCostIncludedUsd:
+      currentBill != null && monthlyBasePrice != null
+        ? Math.min(currentBill, Math.max(0, monthlyBasePrice))
+        : null,
     totalRequests: null,
     credits: balance,
     rawData: {

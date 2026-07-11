@@ -1,11 +1,14 @@
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { computeProjectBudgetStatus } from "@/lib/budget-status";
 
-export async function GET() {
+export async function GET(request: NextRequest) {
   try {
     const status = await computeProjectBudgetStatus();
+    if (request.nextUrl.searchParams.get("includeSummary") === "1") {
+      return NextResponse.json({ projects: status.projects, summary: status.summary });
+    }
     return NextResponse.json(status.projects);
   } catch (error) {
     console.error("Failed to fetch projects:", error);

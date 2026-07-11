@@ -471,6 +471,8 @@ function SettingsPageContent() {
               autoRenew: sub.autoRenew,
               status: sub.status,
               notes: sub.notes,
+              externalBillingSource: sub.externalBillingSource,
+              externalBillingId: sub.externalBillingId,
             });
             setSubscriptionModalOpen(true);
           }}
@@ -515,6 +517,7 @@ function SettingsPageContent() {
           id: p.id,
           name: p.name,
           displayName: p.displayName,
+          externalBilling: p.externalBilling,
         }))}
         projects={projects
           .filter((p): p is Project & { id: string } => Boolean(p.id))

@@ -5,6 +5,7 @@ import type {
   OtlpNumberDataPoint,
   OtlpResourceMetrics,
 } from "./types";
+import { dataPointValue } from "./types";
 
 export const MAX_OTLP_BODY_BYTES = 1_048_576;
 const MAX_RESOURCE_METRICS = 64;
@@ -157,29 +158,59 @@ export function validateMetricsRequest(request: OtlpExportMetricsServiceRequest)
           throw new Error(`metrics[${metricIndex}].sum.isMonotonic must be boolean`);
         }
         const temporality = typedMetric.sum?.aggregationTemporality;
+        const isKnownClaudeMetric = [
+          "claude_code.token.usage",
+          "claude_code.cost.usage",
+          "claude_code.session.count",
+          "claude_code.lines_of_code.count",
+          "claude_code.commit.count",
+          "claude_code.pull_request.count",
+          "claude_code.active_time.total",
+          "claude_code.code_edit_tool.decision",
+        ].includes(typedMetric.name);
+        if (isKnownClaudeMetric && !typedMetric.sum) {
+          throw new Error(`metrics[${metricIndex}] must encode known Claude counters as Sum`);
+        }
+        if (isKnownClaudeMetric && typedMetric.sum?.isMonotonic === false) {
+          throw new Error(`metrics[${metricIndex}].sum.isMonotonic must be true for known Claude counters`);
+        }
         if (
-          temporality !== undefined &&
+          typedMetric.sum &&
           ![
-            0,
             1,
             2,
-            "AGGREGATION_TEMPORALITY_UNSPECIFIED",
             "AGGREGATION_TEMPORALITY_DELTA",
             "AGGREGATION_TEMPORALITY_CUMULATIVE",
-            "UNSPECIFIED",
             "DELTA",
             "CUMULATIVE",
           ].includes(temporality as never)
         ) {
-          throw new Error(`metrics[${metricIndex}].sum.aggregationTemporality is invalid`);
+          throw new Error(
+            `metrics[${metricIndex}].sum.aggregationTemporality must be DELTA or CUMULATIVE`
+          );
         }
         const rawPoints = typedMetric.sum?.dataPoints ?? typedMetric.gauge?.dataPoints ?? [];
         const points = requireArray(rawPoints, `metrics[${metricIndex}].dataPoints`);
         pointCount += points.length;
         if (pointCount > MAX_DATA_POINTS) throw new Error("OTLP payload contains too many data points");
-        points.forEach((point, pointIndex) =>
-          validatePoint(point as OtlpNumberDataPoint, `metrics[${metricIndex}].dataPoints[${pointIndex}]`)
-        );
+        points.forEach((point, pointIndex) => {
+          const typedPoint = point as OtlpNumberDataPoint;
+          validatePoint(
+            typedPoint,
+            `metrics[${metricIndex}].dataPoints[${pointIndex}]`
+          );
+          const value = dataPointValue(typedPoint);
+          if (
+            typedMetric.sum &&
+            (isKnownClaudeMetric || typedMetric.sum.isMonotonic !== false) &&
+            value != null &&
+            value < 0
+          ) {
+            throw new Error(
+              `metrics[${metricIndex}].dataPoints[${pointIndex}] is negative for a monotonic sum`
+            );
+          }
+        });
       });
     });
   });

@@ -89,6 +89,11 @@ export async function GET() {
         select: {
           balance: true,
           totalCost: true,
+          fixedCostIncludedUsd: true,
+          costWindowStart: true,
+          costWindowEnd: true,
+          costScope: true,
+          costIncludesUnknownFixed: true,
           totalRequests: true,
           credits: true,
           fetchedAt: true,
@@ -132,8 +137,20 @@ export async function GET() {
       estimatedMonthlyCostUsd: alertState.estimatedMonthlyCostUsd,
       spentUsd: canonicalBudget?.spentUsd ?? latestSnapshot?.totalCost ?? 0,
       snapshotCostUsd: canonicalBudget?.snapshotCostUsd ?? latestSnapshot?.totalCost ?? null,
+      snapshotCostFetchedAt: canonicalBudget?.snapshotCostFetchedAt ?? null,
+      snapshotFixedCostIncludedUsd:
+        canonicalBudget?.snapshotFixedCostIncludedUsd ?? 0,
+      snapshotCostIncludesUnknownFixed:
+        canonicalBudget?.snapshotCostIncludesUnknownFixed ?? false,
       pushedMonthToDateUsd: canonicalBudget?.pushedMonthToDateUsd ?? 0,
+      subscriptionMonthToDateUsd:
+        canonicalBudget?.subscriptionMonthToDateUsd ?? 0,
       fixedMonthlyCostUsd: canonicalBudget?.fixedMonthlyCostUsd ?? 0,
+      fixedAccruedUsd: canonicalBudget?.fixedAccruedUsd ?? 0,
+      linkedFixedDedupeUsd: canonicalBudget?.linkedFixedDedupeUsd ?? 0,
+      fixedCostConflict: canonicalBudget?.fixedCostConflict ?? false,
+      forecastedSubscriptionRenewalsUsd:
+        canonicalBudget?.forecastedSubscriptionRenewalsUsd ?? 0,
       projectedEomUsd: canonicalBudget?.projectedEomUsd ?? alertState.projectedEomUsd,
       billingMode: alertState.billingMode,
       duplicateNameWarning:

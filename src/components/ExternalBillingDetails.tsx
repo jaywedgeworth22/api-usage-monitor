@@ -17,6 +17,16 @@ export interface ExternalBillingRecord {
   syncedAt: string;
 }
 
+const EXTERNAL_BILLING_STALE_AFTER_MS = 24 * 60 * 60 * 1_000;
+
+export function isExternalBillingStale(
+  record: Pick<ExternalBillingRecord, "syncedAt">,
+  now = Date.now()
+): boolean {
+  const syncedAt = Date.parse(record.syncedAt);
+  return !Number.isFinite(syncedAt) || now - syncedAt > EXTERNAL_BILLING_STALE_AFTER_MS;
+}
+
 function formatCurrency(amount: number, currency: string | null): string {
   try {
     return new Intl.NumberFormat("en-US", {
@@ -71,11 +81,18 @@ export default function ExternalBillingDetails({
                 <p className="font-medium text-gray-900">{record.planName || record.kind}</p>
                 <p className="text-xs text-gray-500">{record.source} · {record.kind}</p>
               </div>
-              {record.status && (
-                <span className={`rounded-full px-2 py-1 text-xs font-medium ${statusClass(record.status)}`}>
-                  {record.status}
-                </span>
-              )}
+              <div className="flex flex-wrap items-center gap-2">
+                {isExternalBillingStale(record) && (
+                  <span className="rounded-full bg-amber-50 px-2 py-1 text-xs font-medium text-amber-800">
+                    stale sync
+                  </span>
+                )}
+                {record.status && (
+                  <span className={`rounded-full px-2 py-1 text-xs font-medium ${statusClass(record.status)}`}>
+                    {record.status}
+                  </span>
+                )}
+              </div>
             </div>
             <dl className="grid grid-cols-2 gap-x-4 gap-y-3 text-sm sm:grid-cols-3 lg:grid-cols-6">
               <div>

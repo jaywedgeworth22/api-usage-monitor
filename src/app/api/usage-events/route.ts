@@ -40,7 +40,7 @@ export async function GET(request: NextRequest) {
     days,
     totalCostUsd: groups.reduce((sum, group) => sum + group.totalCostUsd, 0),
     totalRequests: groups.reduce((sum, group) => sum + group.totalRequests, 0),
-    eventCount: summary.eventCount,
+    eventCount: groups.reduce((sum, group) => sum + group.eventCount, 0),
     groups,
   });
 }

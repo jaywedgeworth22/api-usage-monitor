@@ -36,6 +36,15 @@ interface Provider {
   } | null;
 }
 
+interface ProjectBudgetResponse {
+  projects: ProjectBudgetStatus[];
+  summary: {
+    totalSpentUsd: number;
+    unbudgetedSpentUsd: number;
+    unassignedSpentUsd: number;
+  };
+}
+
 async function fetchJson<T>(url: string, label: string): Promise<T> {
   const response = await fetch(url, { cache: "no-store" });
   if (!response.ok) {
@@ -49,6 +58,7 @@ export default function DashboardPage() {
   const [providers, setProviders] = useState<Provider[]>([]);
   const [usageSummary, setUsageSummary] = useState<ExternalUsageSummary | null>(null);
   const [projects, setProjects] = useState<ProjectBudgetStatus[]>([]);
+  const [projectSummary, setProjectSummary] = useState<ProjectBudgetResponse["summary"] | null>(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState("");
@@ -67,7 +77,7 @@ export default function DashboardPage() {
       const [providersResult, usageResult, projectsResult] = await Promise.allSettled([
         fetchJson<Provider[]>("/api/providers", "providers"),
         fetchJson<ExternalUsageSummary>("/api/usage-events?days=30", "app telemetry"),
-        fetchJson<ProjectBudgetStatus[]>("/api/projects", "projects"),
+        fetchJson<ProjectBudgetResponse>("/api/projects?includeSummary=1", "projects"),
       ]);
 
       const nextWarnings: string[] = [];
@@ -87,7 +97,8 @@ export default function DashboardPage() {
       }
 
       if (projectsResult.status === "fulfilled") {
-        setProjects(projectsResult.value);
+        setProjects(projectsResult.value.projects);
+        setProjectSummary(projectsResult.value.summary);
       } else {
         nextWarnings.push("Project budgets are temporarily unavailable.");
       }
@@ -269,7 +280,9 @@ export default function DashboardPage() {
         )}
       </div>
 
-      {projects.length > 0 && <ProjectsPanel projects={projects} />}
+      {(projects.length > 0 || (projectSummary?.unassignedSpentUsd ?? 0) > 0) && (
+        <ProjectsPanel projects={projects} summary={projectSummary} />
+      )}
 
       {/* Provider Grid */}
       {providers.length === 0 ? (

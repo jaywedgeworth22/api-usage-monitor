@@ -5,6 +5,12 @@ import net from "node:net";
 export interface UsageResult {
   balance: number | null;
   totalCost: number | null;
+  /** Fixed plan/subscription dollars already included in totalCost. */
+  fixedCostIncludedUsd?: number | null;
+  costWindowStart?: Date | string | null;
+  costWindowEnd?: Date | string | null;
+  costScope?: "calendar_month_to_date" | "billing_cycle_to_date" | "daily" | "unknown";
+  costIncludesUnknownFixed?: boolean;
   totalRequests: number | null;
   credits: number | null;
   rawData: unknown;
@@ -47,6 +53,7 @@ export type AdapterErrorCode =
   | "HTTP_ERROR"
   | "INVALID_RESPONSE"
   | "RESPONSE_TOO_LARGE"
+  | "SUPERSEDED"
   | "TIMEOUT"
   | "TRANSPORT_ERROR"
   | "UNSAFE_OUTBOUND_URL"

@@ -6,7 +6,7 @@ Last verified: 2026-07-11. Links below are provider-owned documentation.
 
 Adapters return two independent channels:
 
-- `totalCost` is only actual month-to-date/provider-reported spend that may enter budget math.
+- `totalCost` is only actual month-to-date/provider-reported spend that may enter budget math. When it includes a fixed plan fee, the adapter also reports `fixedCostIncludedUsd`; canonical budget math takes the maximum of that amount, a local materialized Subscription, and `ProviderPlan.fixedMonthlyCostUsd` so migration from manual to direct data cannot double-charge the same fixed lane.
 - `externalBilling` is authoritative plan, status, billing-period, renewal, price, and limit metadata from an official API. It is idempotently reconciled into `ProviderExternalBilling` by `(providerId, source, externalId)`.
 
 External billing rows are deliberately **not** copied into local `Subscription` rows. A local Subscription materializes a charge event; doing that for an account whose adapter already reports the same invoice/period cost would charge it twice. The direct rows are read-only state for Settings/provider detail. An operator may choose to replace a manual Subscription after comparing the external record, but that remains an explicit action.

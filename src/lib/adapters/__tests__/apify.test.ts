@@ -44,6 +44,7 @@ describe("apify adapter", () => {
     const result = await fetchUsage("token");
 
     expect(result.totalCost).toBe(49);
+    expect(result.fixedCostIncludedUsd).toBe(49);
     expect(result.balance).toBe(29);
     expect(result.externalBilling?.records[0]).toMatchObject({
       planName: "Personal",

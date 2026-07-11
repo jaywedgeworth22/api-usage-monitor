@@ -302,7 +302,10 @@ describe("POST /api/otlp/v1/metrics", () => {
               metrics: [
                 {
                   name: "claude_code.brand_new_metric.count",
-                  sum: { dataPoints: [{ timeUnixNano: "1751500060000000000", asInt: "3" }] },
+                  sum: {
+                    aggregationTemporality: 1,
+                    dataPoints: [{ timeUnixNano: "1751500060000000000", asInt: "3" }],
+                  },
                 },
               ],
             },
@@ -332,6 +335,29 @@ describe("POST /api/otlp/v1/metrics", () => {
     expect(res.status).toBe(415);
     const body = await res.json();
     expect(body.error).toMatch(/http\/json|http\/protobuf/);
+  });
+
+  it("rejects unspecified temporality and negative monotonic sums", async () => {
+    const unspecified = structuredClone(samplePayload);
+    unspecified.resourceMetrics[0].scopeMetrics[0].metrics[0].sum.aggregationTemporality = 0;
+    expect(
+      (
+        await POST(
+          jsonRequest(unspecified, { authorization: "Bearer test-token-123" })
+        )
+      ).status
+    ).toBe(400);
+
+    const negative = structuredClone(samplePayload);
+    negative.resourceMetrics[0].scopeMetrics[0].metrics[0].sum.isMonotonic = false;
+    negative.resourceMetrics[0].scopeMetrics[0].metrics[0].sum.dataPoints[0].asDouble = -1;
+    expect(
+      (
+        await POST(
+          jsonRequest(negative, { authorization: "Bearer test-token-123" })
+        )
+      ).status
+    ).toBe(400);
   });
 
   it("decodes a valid application/x-protobuf body", async () => {

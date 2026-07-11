@@ -87,6 +87,28 @@ describe("parseSubscriptionUpdateInput — status and knobEnv", () => {
     expect(parseSubscriptionUpdateInput({ status: "considering" }).status).toBe("considering");
   });
 
+  it("validates explicit activation behavior", () => {
+    expect(parseSubscriptionUpdateInput({ activationMode: "resume" }).activationMode).toBe("resume");
+    expect(parseSubscriptionUpdateInput({ activationMode: "repurchase" }).activationMode).toBe("repurchase");
+    expect(() => parseSubscriptionUpdateInput({ activationMode: "guess" })).toThrowError(
+      /activationMode must be repurchase or resume/
+    );
+  });
+
+  it("requires both halves of an external billing identity link", () => {
+    const linked = parseSubscriptionUpdateInput({
+      externalBillingSource: "stripe-subscriptions",
+      externalBillingId: "sub_123",
+    });
+    expect(linked).toMatchObject({
+      externalBillingSource: "stripe-subscriptions",
+      externalBillingId: "sub_123",
+    });
+    expect(() =>
+      parseSubscriptionUpdateInput({ externalBillingSource: "stripe-subscriptions" })
+    ).toThrowError(/must both be set/);
+  });
+
   it("only sets knobEnv when the field is present in the body", () => {
     expect(parseSubscriptionUpdateInput({}).knobEnv).toBeUndefined();
     expect(parseSubscriptionUpdateInput({ knobEnv: null }).knobEnv).toBeNull();

@@ -88,6 +88,8 @@ CREATE TABLE "Subscription" (
   "id" TEXT NOT NULL PRIMARY KEY,
   "providerId" TEXT NOT NULL,
   "projectId" TEXT,
+  "externalBillingSource" TEXT,
+  "externalBillingId" TEXT,
   "name" TEXT NOT NULL,
   "description" TEXT,
   "costUsd" REAL NOT NULL,
@@ -116,6 +118,11 @@ CREATE TABLE "UsageSnapshot" (
   "fetchedAt" DATETIME NOT NULL,
   "balance" REAL,
   "totalCost" REAL,
+  "fixedCostIncludedUsd" REAL,
+  "costWindowStart" DATETIME,
+  "costWindowEnd" DATETIME,
+  "costScope" TEXT,
+  "costIncludesUnknownFixed" BOOLEAN NOT NULL DEFAULT false,
   "totalRequests" INTEGER,
   "credits" REAL,
   "rawData" JSONB,
@@ -254,6 +261,7 @@ CREATE INDEX "ExternalUsageEventDailyRollup_provider_day_idx" ON "ExternalUsageE
 CREATE INDEX "ExternalUsageEventDailyRollup_projectId_day_idx" ON "ExternalUsageEventDailyRollup"("projectId", "day");
 CREATE UNIQUE INDEX "ExternalUsageEventDailyRollup_day_groupKey_key" ON "ExternalUsageEventDailyRollup"("day", "groupKey");
 CREATE INDEX "Subscription_providerId_idx" ON "Subscription"("providerId");
+CREATE INDEX "Subscription_providerId_externalBillingSource_externalBillingId_idx" ON "Subscription"("providerId", "externalBillingSource", "externalBillingId");
 CREATE INDEX "Subscription_projectId_idx" ON "Subscription"("projectId");
 CREATE INDEX "Subscription_status_nextRenewalAt_idx" ON "Subscription"("status", "nextRenewalAt");
 CREATE INDEX "ExternalUsageEventTombstone_occurredAt_idx" ON "ExternalUsageEventTombstone"("occurredAt");

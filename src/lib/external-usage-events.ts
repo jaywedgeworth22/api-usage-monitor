@@ -143,7 +143,11 @@ function comparableEvent(event: ExternalUsageEventInput | ExistingExternalUsageE
     environment: value.environment ?? null,
     provider: value.provider,
     service: value.service ?? null,
-    projectId: value.projectId ?? null,
+    // projectId is resolved server-side and may legitimately change from null
+    // to a real id when the operator creates a matching Project after ingest.
+    // The raw project name remains in metadata, so a different project still
+    // collides while the same event can be attribution-backfilled without
+    // changing its mandated idempotency key.
     label: value.label ?? null,
     keyRef: value.keyRef ?? null,
     billingMode: value.billingMode,
@@ -229,8 +233,21 @@ export async function persistExternalUsageEventsInTransaction(
   for (const event of activeEvents) {
     const existing = existingByKey.get(event.idempotencyKey);
     if (existing) {
+      if (
+        existing.projectId &&
+        event.projectId &&
+        existing.projectId !== event.projectId
+      ) {
+        throw new ExternalUsageIdempotencyCollisionError(event.idempotencyKey);
+      }
       if (!sameEvent(existing, event)) {
         throw new ExternalUsageIdempotencyCollisionError(event.idempotencyKey);
+      }
+      if (!existing.projectId && event.projectId) {
+        await tx.externalUsageEvent.update({
+          where: { id: existing.id },
+          data: { projectId: event.projectId },
+        });
       }
       continue;
     }

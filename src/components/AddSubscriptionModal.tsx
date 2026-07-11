@@ -4,11 +4,13 @@
 import { useEffect, useState } from "react";
 import ModalDialog from "@/components/ModalDialog";
 import { startDateForStatusTransition, toDateInputValue } from "@/lib/subscription-form";
+import type { ExternalBillingRecord } from "@/components/ExternalBillingDetails";
 
 export interface SubscriptionProviderOption {
   id: string;
   name: string;
   displayName: string;
+  externalBilling?: ExternalBillingRecord[];
 }
 
 export interface SubscriptionProjectOption {
@@ -31,6 +33,9 @@ export interface SubscriptionFormValue {
   autoRenew: boolean;
   status: string;
   notes: string | null;
+  externalBillingSource?: string | null;
+  externalBillingId?: string | null;
+  activationMode?: "repurchase" | "resume";
 }
 
 interface AddSubscriptionModalProps {
@@ -79,6 +84,8 @@ export default function AddSubscriptionModal({
   const [status, setStatus] = useState("considering");
   const [notes, setNotes] = useState("");
   const [activationDateReset, setActivationDateReset] = useState(false);
+  const [externalBillingKey, setExternalBillingKey] = useState("");
+  const [activationMode, setActivationMode] = useState<"repurchase" | "resume">("repurchase");
 
   useEffect(() => {
     if (!open) return;
@@ -96,6 +103,12 @@ export default function AddSubscriptionModal({
     setAutoRenew(editSubscription?.autoRenew ?? true);
     setStatus(editSubscription?.status || "considering");
     setNotes(editSubscription?.notes || "");
+    setExternalBillingKey(
+      editSubscription?.externalBillingSource && editSubscription.externalBillingId
+        ? `${encodeURIComponent(editSubscription.externalBillingSource)}|${encodeURIComponent(editSubscription.externalBillingId)}`
+        : ""
+    );
+    setActivationMode("repurchase");
     setActivationDateReset(false);
   }, [editSubscription, open, providers]);
 
@@ -120,6 +133,9 @@ export default function AddSubscriptionModal({
       }
       if (!startDate) throw new Error("A start date is required");
 
+      const [encodedSource, encodedId] = externalBillingKey.split("|");
+      const externalBillingSource = encodedSource ? decodeURIComponent(encodedSource) : null;
+      const externalBillingId = encodedId ? decodeURIComponent(encodedId) : null;
       await onSave({
         id: editSubscription?.id,
         providerId,
@@ -135,6 +151,9 @@ export default function AddSubscriptionModal({
         autoRenew,
         status,
         notes: notes.trim() || null,
+        externalBillingSource,
+        externalBillingId,
+        activationMode,
       });
       onClose();
     } catch (err) {
@@ -163,6 +182,13 @@ export default function AddSubscriptionModal({
 
   const selectedStatus = STATUS_OPTIONS.find((option) => option.value === status);
   const isActivating = status === "active" && editSubscription?.status !== "active";
+  const canResumeExistingTerm =
+    isActivating &&
+    (editSubscription?.status === "paused" || editSubscription?.status === "canceled");
+  const billingRecords =
+    providers.find((provider) => provider.id === providerId)?.externalBilling?.filter(
+      (record) => record.externalId && ["plan", "subscription", "service_plan"].includes(record.kind)
+    ) ?? [];
 
   return (
     <ModalDialog
@@ -203,7 +229,10 @@ export default function AddSubscriptionModal({
             <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
               <div>
                 <label htmlFor="subscription-provider" className={labelClass}>Provider</label>
-                <select id="subscription-provider" value={providerId} onChange={(e) => setProviderId(e.target.value)} className={inputClass}>
+                <select id="subscription-provider" value={providerId} onChange={(e) => {
+                  setProviderId(e.target.value);
+                  setExternalBillingKey("");
+                }} className={inputClass}>
                   {providers.length === 0 && <option value="">No providers</option>}
                   {providers.map((p) => (
                     <option key={p.id} value={p.id}>
@@ -224,6 +253,34 @@ export default function AddSubscriptionModal({
                 </select>
               </div>
             </div>
+
+            {billingRecords.length > 0 && (
+              <div>
+                <label htmlFor="subscription-external-billing" className={labelClass}>
+                  Provider billing record (optional)
+                </label>
+                <select
+                  id="subscription-external-billing"
+                  value={externalBillingKey}
+                  onChange={(event) => setExternalBillingKey(event.target.value)}
+                  className={inputClass}
+                >
+                  <option value="">Not linked — count as a separate manual cost</option>
+                  {billingRecords.map((record) => {
+                    const value = `${encodeURIComponent(record.source)}|${encodeURIComponent(record.externalId!)}`;
+                    const amount = record.amountUsd == null ? "" : ` · $${record.amountUsd.toFixed(2)}`;
+                    return (
+                      <option key={value} value={value}>
+                        {record.planName || record.externalId}{amount} · {record.source}
+                      </option>
+                    );
+                  })}
+                </select>
+                <p className="mt-1 text-xs text-gray-500">
+                  Linking the exact provider record lets the budget engine dedupe the same fixed charge safely.
+                </p>
+              </div>
+            )}
 
             <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
               <div>
@@ -326,6 +383,32 @@ export default function AddSubscriptionModal({
                   <p className="mt-1 text-xs text-gray-500">{selectedStatus?.help}</p>
               </div>
             </div>
+
+            {canResumeExistingTerm && (
+              <fieldset className="rounded-lg border border-gray-200 p-3">
+                <legend className="px-1 text-sm font-medium text-gray-700">Reactivation billing</legend>
+                <label className="mt-1 flex items-start gap-2 text-sm text-gray-700">
+                  <input
+                    type="radio"
+                    name="activation-mode"
+                    value="repurchase"
+                    checked={activationMode === "repurchase"}
+                    onChange={() => setActivationMode("repurchase")}
+                  />
+                  <span><strong>Repurchase now</strong> — start a new paid term and post a charge now.</span>
+                </label>
+                <label className="mt-2 flex items-start gap-2 text-sm text-gray-700">
+                  <input
+                    type="radio"
+                    name="activation-mode"
+                    value="resume"
+                    checked={activationMode === "resume"}
+                    onChange={() => setActivationMode("resume")}
+                  />
+                  <span><strong>Resume paid-through term</strong> — keep the existing cadence and wait until its next renewal to charge.</span>
+                </label>
+              </fieldset>
+            )}
 
             <label className="flex items-center gap-2 text-sm text-gray-700">
               <input

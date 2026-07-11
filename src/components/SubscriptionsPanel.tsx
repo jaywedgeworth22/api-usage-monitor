@@ -16,6 +16,8 @@ export interface SubscriptionRow {
   autoRenew: boolean;
   status: string;
   notes: string | null;
+  externalBillingSource: string | null;
+  externalBillingId: string | null;
   // Effective knobEnv (this subscription's own override if set, else the
   // provider's free-tier ProviderPlan.knobEnv) and the provider's free-tier
   // map on its own (always present when the provider has one, regardless of
@@ -114,6 +116,11 @@ export default function SubscriptionsPanel({
                 <p className="font-medium text-gray-900">{sub.name}</p>
                 {sub.description && <p className="mt-0.5 max-w-xs text-xs text-gray-500">{sub.description}</p>}
                 {!sub.autoRenew && <p className="text-[10px] text-gray-400">does not auto-renew</p>}
+                {sub.externalBillingSource && sub.externalBillingId && (
+                  <p className="mt-1 text-[10px] font-medium text-blue-700">
+                    Linked to {sub.externalBillingSource}
+                  </p>
+                )}
               </td>
               <td data-label="Provider" className="px-6 py-4 text-gray-500 hidden sm:table-cell">{sub.provider.displayName}</td>
               <td data-label="Project" className="px-6 py-4 hidden md:table-cell">

@@ -7,6 +7,7 @@ export interface ProviderAlert {
   code:
     | "budget_exceeded"
     | "budget_warning"
+    | "fixed_cost_conflict"
     | "balance_low"
     | "credits_low"
     | "request_limit"

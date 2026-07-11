@@ -1,4 +1,5 @@
 import { type Provider } from "@/app/settings/page";
+import { isExternalBillingStale } from "@/components/ExternalBillingDetails";
 
 interface ProviderTableProps {
   providers: Provider[];
@@ -193,6 +194,7 @@ export default function ProviderTable({
                       <p className="mt-1 text-[10px] font-medium text-blue-700">
                         Connected: {connectedBilling.planName || connectedBilling.kind}
                         {connectedBilling.status ? ` · ${connectedBilling.status}` : ""}
+                        {isExternalBillingStale(connectedBilling) ? " · stale" : ""}
                       </p>
                     )}
                   </div>

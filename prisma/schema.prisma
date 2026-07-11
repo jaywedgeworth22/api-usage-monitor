@@ -68,9 +68,9 @@ model ProviderPlan {
 // mirrors external plan/status/period data and can therefore never create a
 // second charge for spend already reported by an adapter.
 model ProviderExternalBilling {
-  id                 String   @id @default(uuid())
+  id                 String    @id @default(uuid())
   providerId         String
-  provider           Provider @relation(fields: [providerId], references: [id], onDelete: Cascade)
+  provider           Provider  @relation(fields: [providerId], references: [id], onDelete: Cascade)
   source             String
   externalId         String
   kind               String
@@ -87,24 +87,36 @@ model ProviderExternalBilling {
   spendLimitUsd      Float?
   spendLimitWindow   String?
   syncedAt           DateTime
-  createdAt          DateTime @default(now())
-  updatedAt          DateTime @updatedAt
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
 
   @@unique([providerId, source, externalId])
   @@index([providerId, status])
 }
 
 model UsageSnapshot {
-  id            String   @id @default(uuid())
-  providerId    String
-  provider      Provider @relation(fields: [providerId], references: [id], onDelete: Cascade)
-  fetchedAt     DateTime
-  balance       Float?
-  totalCost     Float?
-  totalRequests Int?
-  credits       Float?
-  rawData       Json?
-  createdAt     DateTime @default(now())
+  id                       String    @id @default(uuid())
+  providerId               String
+  provider                 Provider  @relation(fields: [providerId], references: [id], onDelete: Cascade)
+  fetchedAt                DateTime
+  balance                  Float?
+  totalCost                Float?
+  // Portion of totalCost that the provider explicitly reports as fixed plan
+  // or subscription cost. Budget math dedupes this against local
+  // Subscription/ProviderPlan fixed charges instead of adding both.
+  fixedCostIncludedUsd     Float?
+  // Provider-reported window/provenance for totalCost. Canonical UTC-month
+  // budget math excludes prior-month and incompatible billing-cycle totals.
+  costWindowStart          DateTime?
+  costWindowEnd            DateTime?
+  costScope                String?
+  // True when totalCost may contain fixed charges that the adapter cannot
+  // classify exactly (for example an all-category invoice total).
+  costIncludesUnknownFixed Boolean   @default(false)
+  totalRequests            Int?
+  credits                  Float?
+  rawData                  Json?
+  createdAt                DateTime  @default(now())
 }
 
 model UsageSnapshotDailyRollup {
@@ -301,6 +313,13 @@ model Subscription {
   // doesn't cascade-delete the subscription.
   projectId              String?
   project                Project?  @relation(fields: [projectId], references: [id], onDelete: SetNull)
+  // Optional identity link to a read-only ProviderExternalBilling record.
+  // Kept as scalar identity rather than a foreign key because authoritative
+  // provider refreshes may remove/replace stale external rows; the local
+  // subscription must survive that refresh. Budget math only dedupes a
+  // provider-reported fixed fee when this exact identity is present and live.
+  externalBillingSource  String?
+  externalBillingId      String?
   name                   String
   description            String?
   costUsd                Float
@@ -334,6 +353,7 @@ model Subscription {
   updatedAt              DateTime  @updatedAt
 
   @@index([providerId])
+  @@index([providerId, externalBillingSource, externalBillingId])
   @@index([projectId])
   @@index([status, nextRenewalAt])
 }

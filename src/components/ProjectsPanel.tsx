@@ -16,10 +16,22 @@ export interface ProjectBudgetStatus {
 
 interface ProjectsPanelProps {
   projects: ProjectBudgetStatus[];
+  summary?: {
+    totalSpentUsd: number;
+    unbudgetedSpentUsd: number;
+    unassignedSpentUsd: number;
+  } | null;
 }
 
-export default function ProjectsPanel({ projects }: ProjectsPanelProps) {
-  if (projects.length === 0) {
+function formatUsd(value: number): string {
+  return new Intl.NumberFormat("en-US", {
+    style: "currency",
+    currency: "USD",
+  }).format(value);
+}
+
+export default function ProjectsPanel({ projects, summary }: ProjectsPanelProps) {
+  if (projects.length === 0 && !(summary?.unassignedSpentUsd)) {
     return null;
   }
 
@@ -31,6 +43,15 @@ export default function ProjectsPanel({ projects }: ProjectsPanelProps) {
           Manage projects
         </Link>
       </div>
+      {(summary?.unassignedSpentUsd ?? 0) > 0 && (
+        <div role="status" className="border-b border-amber-200 bg-amber-50 px-6 py-3 text-xs text-amber-900">
+          {formatUsd(summary!.unassignedSpentUsd)} of provider spend is not assigned to a project.
+          {" "}
+          <Link href="/settings?tab=projects" className="font-semibold underline underline-offset-2">
+            Review allocations
+          </Link>
+        </div>
+      )}
       <div className="divide-y divide-gray-100">
         {projects.map((project) => {
           const usagePercent = project.percentUsed != null ? project.percentUsed * 100 : null;
@@ -45,24 +66,18 @@ export default function ProjectsPanel({ projects }: ProjectsPanelProps) {
                 </div>
                 <div className="text-right shrink-0">
                   <p className="text-sm font-semibold text-gray-900">
-                    {new Intl.NumberFormat("en-US", {
-                      style: "currency",
-                      currency: "USD",
-                    }).format(project.spentUsd)}
+                    {formatUsd(project.spentUsd)}
                   </p>
                   {(project.directUsd != null || project.allocatedUsd != null) && (
                     <p className="text-[10px] text-gray-500">
-                      {new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(project.directUsd ?? 0)} direct
+                      {formatUsd(project.directUsd ?? 0)} direct
                       {" · "}
-                      {new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(project.allocatedUsd ?? 0)} allocated
+                      {formatUsd(project.allocatedUsd ?? 0)} allocated
                     </p>
                   )}
                   {project.monthlyBudgetUsd != null && (
                     <p className="text-xs text-gray-500">
-                      of {new Intl.NumberFormat("en-US", {
-                        style: "currency",
-                        currency: "USD",
-                      }).format(project.monthlyBudgetUsd)}
+                      of {formatUsd(project.monthlyBudgetUsd)}
                     </p>
                   )}
                 </div>

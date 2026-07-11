@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   markSchedulerStarted,
+  markSchedulerTickCompleted,
   resetRuntimeHealthForTests,
 } from "@/lib/runtime-health";
 
@@ -49,6 +50,36 @@ describe("GET /api/ready", () => {
 
     expect(response.status).toBe(503);
     expect(body.checks.database.ok).toBe(false);
+  });
+
+  it("stays ready after one transient scheduler failure", async () => {
+    markSchedulerTickCompleted(false, null);
+
+    const response = await GET();
+    const body = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(body.checks.scheduler).toMatchObject({
+      ok: true,
+      readinessReason: null,
+      consecutiveFailures: 1,
+    });
+  });
+
+  it("returns 503 after repeated top-level scheduler tick failures", async () => {
+    markSchedulerTickCompleted(false, null);
+    markSchedulerTickCompleted(false, null);
+    markSchedulerTickCompleted(false, null);
+
+    const response = await GET();
+    const body = await response.json();
+
+    expect(response.status).toBe(503);
+    expect(body.checks.scheduler).toMatchObject({
+      ok: false,
+      readinessReason: "repeated_tick_failures",
+      consecutiveFailures: 3,
+    });
   });
 
   it("returns 503 when backup is required but not active", async () => {

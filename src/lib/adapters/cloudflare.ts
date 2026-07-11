@@ -50,6 +50,7 @@ export async function fetchUsage(
 
   let totalRequests: number | null = null;
   let totalCost: number | null = null;
+  let fixedCostIncludedUsd: number | null = null;
   let successfulCalls = 0;
   const billingSyncs: AdapterExternalBillingSync[] = [];
   const failedStatuses: number[] = [];
@@ -191,6 +192,7 @@ export async function fetchUsage(
         records: billingRecords,
       });
       if (foundBilledSubscription) totalCost = billedThisMonthUsd;
+      if (foundBilledSubscription) fixedCostIncludedUsd = billedThisMonthUsd;
       rawData.billing = {
         fixedSubscriptionBilledThisMonthUsd:
           foundBilledSubscription ? billedThisMonthUsd : null,
@@ -373,6 +375,7 @@ export async function fetchUsage(
   return {
     balance: null,
     totalCost,
+    fixedCostIncludedUsd,
     totalRequests,
     credits: null,
     rawData,

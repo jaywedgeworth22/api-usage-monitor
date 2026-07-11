@@ -12,6 +12,8 @@ import {
 export interface SubscriptionCreateInput {
   providerId: string;
   projectId: string | null;
+  externalBillingSource: string | null;
+  externalBillingId: string | null;
   name: string;
   description: string | null;
   costUsd: number;
@@ -37,6 +39,9 @@ export interface SubscriptionCreateInput {
 export interface SubscriptionUpdateInput {
   providerId?: string;
   projectId?: string | null;
+  externalBillingSource?: string | null;
+  externalBillingId?: string | null;
+  activationMode?: "repurchase" | "resume";
   name?: string;
   description?: string | null;
   costUsd?: number;
@@ -129,6 +134,33 @@ function parseCurrency(value: unknown): "USD" {
   return "USD";
 }
 
+function parseExternalBillingLink(record: Record<string, unknown>): {
+  supplied: boolean;
+  source: string | null;
+  externalId: string | null;
+} {
+  const supplied =
+    record.externalBillingSource !== undefined ||
+    record.externalBillingId !== undefined;
+  if (!supplied) return { supplied: false, source: null, externalId: null };
+  const source = cleanNullableString(
+    record.externalBillingSource,
+    "externalBillingSource",
+    200
+  );
+  const externalId = cleanNullableString(
+    record.externalBillingId,
+    "externalBillingId",
+    300
+  );
+  if (Boolean(source) !== Boolean(externalId)) {
+    throw new Error(
+      "externalBillingSource and externalBillingId must both be set or both be null"
+    );
+  }
+  return { supplied: true, source, externalId };
+}
+
 // A flat map of env-var knob name -> string value (e.g.
 // {"PROVIDER_QUOTA_TIINGO_PER_HOUR": "10000"}). Every value must be a string
 // so it round-trips directly into an env var — no numbers/booleans/nesting.
@@ -164,6 +196,7 @@ export function parseSubscriptionCreateInput(
     record.projectId === undefined || record.projectId === null || record.projectId === ""
       ? null
       : cleanString(record.projectId, "projectId");
+  const externalBilling = parseExternalBillingLink(record);
 
   const { currentPeriodStart, nextRenewalAt } = initialCycle({
     startDate,
@@ -175,6 +208,8 @@ export function parseSubscriptionCreateInput(
   return {
     providerId,
     projectId,
+    externalBillingSource: externalBilling.source,
+    externalBillingId: externalBilling.externalId,
     name,
     description: cleanNullableString(record.description, "description"),
     costUsd,
@@ -204,6 +239,17 @@ export function parseSubscriptionUpdateInput(body: unknown): SubscriptionUpdateI
       record.projectId === null || record.projectId === ""
         ? null
         : cleanString(record.projectId, "projectId");
+  }
+  const externalBilling = parseExternalBillingLink(record);
+  if (externalBilling.supplied) {
+    update.externalBillingSource = externalBilling.source;
+    update.externalBillingId = externalBilling.externalId;
+  }
+  if (record.activationMode !== undefined) {
+    if (record.activationMode !== "repurchase" && record.activationMode !== "resume") {
+      throw new Error("activationMode must be repurchase or resume");
+    }
+    update.activationMode = record.activationMode;
   }
   if (record.name !== undefined) update.name = cleanString(record.name, "name");
   if (record.description !== undefined) {

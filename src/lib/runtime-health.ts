@@ -13,7 +13,33 @@ export interface SchedulerRuntimeStatus {
   lastTickStartedAt: string | null;
   lastTickCompletedAt: string | null;
   lastTickSucceeded: boolean | null;
+  consecutiveFailures: number;
+  firstFailureAt: string | null;
   lastRun: SchedulerRunSummary | null;
+}
+
+export interface SchedulerReadiness {
+  ok: boolean;
+  reason: "not_started" | "repeated_tick_failures" | "tick_stalled" | "tick_stale" | null;
+  staleAfterMs: number;
+  failureThreshold: number;
+}
+
+const DEFAULT_SCHEDULER_STALE_AFTER_MS = 45 * 60 * 1_000;
+const DEFAULT_SCHEDULER_FAILURE_THRESHOLD = 3;
+
+function schedulerStaleAfterMs(): number {
+  const configured = Number(process.env.SCHEDULER_STALE_AFTER_MS);
+  return Number.isFinite(configured) && configured > 0
+    ? configured
+    : DEFAULT_SCHEDULER_STALE_AFTER_MS;
+}
+
+function schedulerFailureThreshold(): number {
+  const configured = Number(process.env.SCHEDULER_FAILURE_THRESHOLD);
+  return Number.isSafeInteger(configured) && configured > 0
+    ? configured
+    : DEFAULT_SCHEDULER_FAILURE_THRESHOLD;
 }
 
 interface RuntimeHealthState {
@@ -33,6 +59,8 @@ const state =
       lastTickStartedAt: null,
       lastTickCompletedAt: null,
       lastTickSucceeded: null,
+      consecutiveFailures: 0,
+      firstFailureAt: null,
       lastRun: null,
     },
   });
@@ -54,6 +82,13 @@ export function markSchedulerTickCompleted(
   state.scheduler.tickInProgress = false;
   state.scheduler.lastTickCompletedAt = at.toISOString();
   state.scheduler.lastTickSucceeded = succeeded;
+  if (succeeded) {
+    state.scheduler.consecutiveFailures = 0;
+    state.scheduler.firstFailureAt = null;
+  } else {
+    state.scheduler.consecutiveFailures += 1;
+    state.scheduler.firstFailureAt ??= at.toISOString();
+  }
   state.scheduler.lastRun = lastRun;
 }
 
@@ -62,6 +97,38 @@ export function getSchedulerRuntimeStatus(): SchedulerRuntimeStatus {
     ...state.scheduler,
     lastRun: state.scheduler.lastRun ? { ...state.scheduler.lastRun } : null,
   };
+}
+
+export function getSchedulerReadiness(now = new Date()): SchedulerReadiness {
+  const scheduler = state.scheduler;
+  const staleAfterMs = schedulerStaleAfterMs();
+  const failureThreshold = schedulerFailureThreshold();
+  if (!scheduler.startedAt) {
+    return { ok: false, reason: "not_started", staleAfterMs, failureThreshold };
+  }
+  if (
+    scheduler.tickInProgress &&
+    scheduler.lastTickStartedAt &&
+    now.getTime() - new Date(scheduler.lastTickStartedAt).getTime() > staleAfterMs
+  ) {
+    return { ok: false, reason: "tick_stalled", staleAfterMs, failureThreshold };
+  }
+  if (
+    !scheduler.tickInProgress &&
+    scheduler.lastTickCompletedAt &&
+    now.getTime() - new Date(scheduler.lastTickCompletedAt).getTime() > staleAfterMs
+  ) {
+    return { ok: false, reason: "tick_stale", staleAfterMs, failureThreshold };
+  }
+  if (scheduler.consecutiveFailures >= failureThreshold) {
+    return {
+      ok: false,
+      reason: "repeated_tick_failures",
+      staleAfterMs,
+      failureThreshold,
+    };
+  }
+  return { ok: true, reason: null, staleAfterMs, failureThreshold };
 }
 
 export function getRuntimeIdentity(): {
@@ -112,6 +179,8 @@ export function resetRuntimeHealthForTests(): void {
     lastTickStartedAt: null,
     lastTickCompletedAt: null,
     lastTickSucceeded: null,
+    consecutiveFailures: 0,
+    firstFailureAt: null,
     lastRun: null,
   };
 }

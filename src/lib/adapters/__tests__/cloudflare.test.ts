@@ -60,6 +60,7 @@ describe("cloudflare adapter", () => {
     });
 
     expect(result.totalCost).toBe(7);
+    expect(result.fixedCostIncludedUsd).toBe(5);
     expect(result.totalRequests).toBe(15);
     const subscriptionSync = result.externalBillingSyncs?.find(
       (sync) => sync.source === "cloudflare-subscriptions"
