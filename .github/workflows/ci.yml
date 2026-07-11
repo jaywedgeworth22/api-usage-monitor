@@ -18,9 +18,11 @@ jobs:
     timeout-minutes: 30
     env:
       CI: true
-      DATABASE_URL: file:${{ runner.temp }}/api-usage-monitor-ci.db
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Configure test database
+        run: echo "DATABASE_URL=file:${RUNNER_TEMP}/api-usage-monitor-ci.db" >> "$GITHUB_ENV"
 
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
