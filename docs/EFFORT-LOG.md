@@ -13,6 +13,21 @@ Protocol: /Users/jay/apps/EFFORT-LOG-PROTOCOL.md (canonical). Live board:
   exists specifically to make this section verifiable going forward instead of inferred.
 
 ## Completed
+- **Fix deploy-blocking `migrate-safe.mjs` `--dry-run` crash (CLAUDE, S) — 2026-07-10.**
+  `scripts/migrate-safe.mjs`'s `npx prisma db push --dry-run` pre-check used a flag that doesn't
+  exist on the pinned Prisma version (`6.19.3`), crashing unconditionally on every deploy once the
+  Render disk already had a DB file — before it ever checked for an actual schema diff. Found
+  while verifying PR #83's schema change; flagged there as a separate pre-existing bug and fixed
+  here. Dropped the broken dry-run pre-check/parsing entirely in favor of trusting a plain
+  `npx prisma db push` directly — verified locally that Prisma's own row-count-based data-loss
+  guard already applies additive changes cleanly and refuses genuinely destructive ones (real rows
+  at risk) without `--accept-data-loss`, more precisely than the removed schema-shape heuristic
+  did. Added `scripts/test-migrate-safe-repro.mjs` (manual repro/integration test covering
+  additive, no-op, and destructive-with-real-data scenarios against the real script). Full detail:
+  `docs/rollouts/2026-07-10-migrate-safe-dry-run-fix.md`. Verified: repro script all-PASS,
+  `npm run lint` clean, `npm run build` clean, `npm test` unaffected (pre-existing sandbox-only
+  `sqlite3`-binary test failures confirmed unrelated via `git stash`). Independent of PR #83 — does
+  not block or depend on it.
 - **Litestream backup for the Render SQLite disk (CLAUDE, was AG) — MERGED as PR #59 (`a6ce13b`),
   2026-07-06.** Opt-in continuous replication of `/data/prod.db` to Cloudflare R2 (build fetches a
   pinned, sha256-verified litestream v0.5.13; `start-with-litestream.sh` restores-if-empty then
@@ -230,3 +245,7 @@ PR #63's `agent-sync-relay` health-check adapter (issue #55)._
 ### 2026-07-06
 - **Update Settings Page and Dashboard Page to support Projects UI (AG, S)**
   — Added a "Projects" section in Settings (tabbed UI) and Dashboard. Created `/api/projects` endpoints with CRUD operations and integrated `computeProjectBudgetStatus` to display project-level budget vs spend.
+
+### 2026-07-10
+- 2026-07-10 — CLAUDE: fixed the deploy-blocking `migrate-safe.mjs` `--dry-run` crash (found while
+  verifying PR #83); moved to Completed above. `docs/rollouts/2026-07-10-migrate-safe-dry-run-fix.md`.

@@ -2,18 +2,24 @@
 /**
  * Safe migration script for Prisma + SQLite deployments.
  *
- * This script replaces `npx prisma db push --accept-data-loss` with a
- * safer two-step process:
+ * Runs plain `prisma db push` (no `--accept-data-loss`) and trusts Prisma's
+ * own built-in guard: it refuses to apply a change that would actually drop
+ * or truncate non-empty rows (checked against real row counts, not just
+ * schema-shape heuristics like "a table was recreated") and applies cleanly
+ * otherwise, exiting non-zero only when data would genuinely be lost. On
+ * refusal this script exits with instructions for manual review instead of
+ * silently forcing the change via --accept-data-loss.
  *
- *   1. Run `prisma db push --dry-run` to inspect the diff.
- *   2. Parse the output to determine if the changes are safe (additive only)
- *      or destructive (removing tables/columns).
- *   3. If safe: run `prisma db push` (without --accept-data-loss).
- *   4. If destructive: exit with error and instructions for manual migration.
- *
- * This prevents the silent data loss that --accept-data-loss can cause,
- * especially on SQLite where Prisma must often recreate entire tables to
- * apply schema changes.
+ * Previously this ran `prisma db push --dry-run` first and parsed the diff
+ * text for destructive-looking patterns — `--dry-run` is not a supported
+ * flag on the pinned Prisma version (6.19.3; `npx prisma db push --help`
+ * lists no such option), so that pre-check crashed unconditionally on every
+ * deploy once the disk already had a DB file, before it ever ran the actual
+ * push. Verified locally (old-shape SQLite DB + newer schema, both via
+ * `git show <sha>:prisma/schema.prisma`) that a plain `db push` already
+ * applies additive-only diffs cleanly and refuses destructive ones that
+ * would touch real data, so the separate dry-run/parsing step was removed
+ * rather than repaired.
  */
 
 import { execSync } from "child_process";
@@ -52,117 +58,39 @@ async function main() {
     return;
   }
 
-  log("Existing database found — checking for safe schema changes...");
+  log("Existing database found — applying schema changes...");
 
-  // Run a dry-run to see what changes Prisma would make.
-  let dryRunOutput;
   try {
-    dryRunOutput = run("npx prisma db push --dry-run");
+    const output = run("npx prisma db push");
+    process.stdout.write(output);
+    log(
+      output.includes("already in sync")
+        ? "Schema is already up to date."
+        : "Schema migrated successfully."
+    );
   } catch (err) {
-    error(`prisma db push --dry-run failed: ${err.message}`);
+    error("prisma db push refused to apply the schema changes:");
     if (err.stdout) console.error(err.stdout);
     if (err.stderr) console.error(err.stderr);
-    process.exit(1);
-  }
-
-  // If the dry-run reports no changes, we're good.
-  if (
-    dryRunOutput.includes("No schema change") ||
-    dryRunOutput.includes("is already in sync") ||
-    dryRunOutput.includes("Nothing to push")
-  ) {
-    log("Schema is already in sync — no migration needed.");
-    return;
-  }
-
-  log("Schema changes detected. Analyzing diff for safety...");
-
-  // Parse the dry-run output for destructive operations.
-  // Prisma's dry-run output includes lines like:
-  //   - [*] Changed the `foo` table
-  //   - [+] Added the `bar` table
-  //   - [-] Removed the `baz` table
-  //   - [*] Altered the `foo` table  (for column changes)
-  //
-  // On SQLite, Prisma often recreates tables instead of using ALTER TABLE,
-  // which shows up as "Changed" or "Altered" — these are potentially
-  // destructive because they involve dropping and recreating tables.
-  const lines = dryRunOutput.split("\n");
-
-  const destructivePatterns = [];
-
-  for (const line of lines) {
-    const trimmed = line.trim();
-
-    // Detect table removals
-    if (trimmed.includes("[-]") || trimmed.includes("Removed")) {
-      destructivePatterns.push(`Table removal: ${trimmed}`);
-    }
-
-    // Detect column changes (especially risky on SQLite)
-    // On SQLite, Prisma's output for column changes is particularly
-    // dangerous because it recreates the entire table.
-    if (
-      (trimmed.includes("[*]") || trimmed.includes("Changed") || trimmed.includes("Altered")) &&
-      !trimmed.includes("No schema change")
-    ) {
-      destructivePatterns.push(`Potentially destructive change: ${trimmed}`);
-    }
-  }
-
-  if (destructivePatterns.length > 0) {
-    error("DESTRUCTIVE SCHEMA CHANGES DETECTED:");
-    for (const pattern of destructivePatterns) {
-      console.error(`  • ${pattern}`);
-    }
     console.error("");
     console.error(
-      "These changes may cause data loss on SQLite (table recreation, column drops, etc.)."
+      "Prisma detected this change would drop or truncate existing data on"
+    );
+    console.error(
+      "SQLite (table/column recreation) and refused to apply it automatically."
     );
     console.error("");
-    console.error("To proceed safely:");
+    console.error("To proceed:");
     console.error(
       "  1. Back up the production database: Render Shell → cp /data/prod.db /data/prod.db.backup"
     );
+    console.error("  2. Review the data-loss warning above carefully.");
     console.error(
-      "  2. Review the full diff with: npx prisma db push --dry-run (from the Render Shell)"
+      "  3. If you're certain the loss is acceptable, manually run:"
     );
-    console.error(
-      "  3. If you're certain the changes are safe (e.g., only adding new optional columns"
-    );
-    console.error(
-      "     or new tables), manually run: npx prisma db push --accept-data-loss"
-    );
+    console.error("       npx prisma db push --accept-data-loss");
     console.error(
       "  4. Or use Prisma Migrate for a proper migration: npx prisma migrate dev"
-    );
-    process.exit(1);
-  }
-
-  // Only additive changes detected (new tables, new columns that don't
-  // require table recreation). Run prisma db push without --accept-data-loss.
-  // Note: prisma db push without --accept-data-loss will still refuse to run
-  // if it detects any risk, so this is a double safety check.
-  log("Detected additive-only changes — applying safely...");
-  try {
-    run("npx prisma db push");
-    log("Schema migrated successfully.");
-  } catch (err) {
-    error(`prisma db push failed: ${err.message}`);
-    if (err.stdout) console.error(err.stdout);
-    if (err.stderr) console.error(err.stderr);
-    console.error("");
-    console.error(
-      "prisma db push refused to apply the changes even though our dry-run"
-    );
-    console.error(
-      "analysis suggested they were safe. This can happen when Prisma's own"
-    );
-    console.error(
-      "safety checks disagree with our analysis. Review the output above and"
-    );
-    console.error(
-      "consider running manually with --accept-data-loss if you're certain."
     );
     process.exit(1);
   }
