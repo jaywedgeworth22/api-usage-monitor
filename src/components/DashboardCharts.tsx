@@ -74,7 +74,7 @@ export default function DashboardCharts({ providers }: DashboardChartsProps) {
               ))}
             </Pie>
             <Tooltip
-              formatter={(value: number | string | undefined) =>
+              formatter={(value: any) =>
                 new Intl.NumberFormat("en-US", {
                   style: "currency",
                   currency: "USD",
