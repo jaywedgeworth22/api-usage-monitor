@@ -1,0 +1,195 @@
+#!/usr/bin/env node
+
+import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
+import {
+  chmodSync,
+  existsSync,
+  readFileSync,
+  mkdtempSync,
+  mkdirSync,
+  readdirSync,
+  rmSync,
+  statSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { basename, dirname, join, relative } from "node:path";
+import { DatabaseSync } from "node:sqlite";
+import { fileURLToPath } from "node:url";
+
+const repoRoot = fileURLToPath(new URL("..", import.meta.url));
+const script = join(repoRoot, "scripts", "backup-sqlite-before-migrate.mjs");
+
+const backupScriptSource = readFileSync(script, "utf8");
+const renameIndex = backupScriptSource.indexOf(
+  "renameSync(partialPath, finalPath);"
+);
+assert.notEqual(renameIndex, -1, "backup must atomically promote the verified file");
+assert.notEqual(
+  backupScriptSource.indexOf("fsyncDirectory(backupDirectory);", renameIndex),
+  -1,
+  "backup directory must be fsynced after atomic promotion"
+);
+
+function run(databaseUrl, overrides = {}, cwd = repoRoot) {
+  const env = { ...process.env, DATABASE_URL: databaseUrl };
+  delete env.SQLITE_PRE_MIGRATION_BACKUP_RETENTION;
+  Object.assign(env, overrides);
+  return spawnSync(process.execPath, [script], {
+    cwd,
+    env,
+    encoding: "utf8",
+  });
+}
+
+function expectStatus(name, result, expected) {
+  assert.equal(
+    result.status,
+    expected,
+    `${name}: expected exit ${expected}, got ${result.status}\n${result.stdout}\n${result.stderr}`
+  );
+}
+
+function backupFiles(databasePath) {
+  const directory = join(dirname(databasePath), ".pre-migration-backups");
+  if (!existsSync(directory)) return [];
+  return readdirSync(directory)
+    .filter(
+      (name) =>
+        name.startsWith(`${basename(databasePath)}.pre-migration-`) &&
+        name.endsWith(".backup.db")
+    )
+    .map((name) => join(directory, name));
+}
+
+function assertBackup(path, expectedRows) {
+  const database = new DatabaseSync(path, { readOnly: true });
+  try {
+    assert.deepEqual(
+      database.prepare("PRAGMA integrity_check").all().map((row) => Object.values(row)[0]),
+      ["ok"]
+    );
+    assert.deepEqual(
+      database.prepare("SELECT value FROM sample ORDER BY id").all().map((row) => row.value),
+      expectedRows
+    );
+  } finally {
+    database.close();
+  }
+}
+
+const temp = mkdtempSync(join(tmpdir(), "usage-sqlite-backup-"));
+try {
+  const missingPath = join(temp, "missing.db");
+  const missing = run(`file:${missingPath}`);
+  expectStatus("missing database", missing, 0);
+  assert.match(missing.stdout, /backup not required/);
+  assert.equal(backupFiles(missingPath).length, 0);
+
+  const databasePath = join(temp, "source.db");
+  const source = new DatabaseSync(databasePath);
+  source.exec(`
+    PRAGMA journal_mode = WAL;
+    CREATE TABLE sample (id INTEGER PRIMARY KEY, value TEXT NOT NULL);
+    INSERT INTO sample (value) VALUES ('alpha'), ('beta');
+  `);
+
+  // Keep the WAL-mode source connection open while the child backs it up.
+  // This proves the online backup API captures committed WAL-backed rows and
+  // does not depend on unsafe filesystem copying.
+  const first = run(`file:${databasePath}`, {
+    SQLITE_PRE_MIGRATION_BACKUP_RETENTION: "2",
+  });
+  expectStatus("WAL backup", first, 0);
+  assert.match(first.stdout, /verified .*\.backup\.db/);
+  let backups = backupFiles(databasePath);
+  assert.equal(backups.length, 1);
+  assertBackup(backups[0], ["alpha", "beta"]);
+  assert.equal(statSync(backups[0]).mode & 0o777, 0o600);
+  assert.equal(
+    statSync(join(temp, ".pre-migration-backups")).mode & 0o777,
+    0o700
+  );
+
+  source.prepare("INSERT INTO sample (value) VALUES (?)").run("gamma");
+  for (let index = 0; index < 3; index += 1) {
+    expectStatus(
+      `bounded backup ${index + 1}`,
+      run(`file:${databasePath}`, {
+        SQLITE_PRE_MIGRATION_BACKUP_RETENTION: "2",
+      }),
+      0
+    );
+  }
+  backups = backupFiles(databasePath);
+  assert.equal(backups.length, 2, "retention must keep exactly the newest two backups");
+  for (const path of backups) assertBackup(path, ["alpha", "beta", "gamma"]);
+  source.close();
+
+  const relativeDirectory = join(temp, "relative");
+  mkdirSync(relativeDirectory);
+  const relativePath = join(relativeDirectory, "relative.db");
+  const relativeDb = new DatabaseSync(relativePath);
+  relativeDb.exec("CREATE TABLE sample (id INTEGER PRIMARY KEY, value TEXT NOT NULL); INSERT INTO sample (value) VALUES ('relative');");
+  relativeDb.close();
+  expectStatus(
+    "relative file URL",
+    run(`file:${relative(relativeDirectory, relativePath)}`, {}, relativeDirectory),
+    0
+  );
+  assertBackup(backupFiles(relativePath)[0], ["relative"]);
+
+  const symlinkCase = join(temp, "symlink-case");
+  const symlinkTarget = join(temp, "symlink-target");
+  mkdirSync(symlinkCase);
+  mkdirSync(symlinkTarget);
+  const symlinkDatabasePath = join(symlinkCase, "source.db");
+  const symlinkDatabase = new DatabaseSync(symlinkDatabasePath);
+  symlinkDatabase.exec(
+    "CREATE TABLE sample (id INTEGER PRIMARY KEY, value TEXT NOT NULL);"
+  );
+  symlinkDatabase.close();
+  symlinkSync(
+    symlinkTarget,
+    join(symlinkCase, ".pre-migration-backups"),
+    "dir"
+  );
+  const symlinkResult = run(`file:${symlinkDatabasePath}`);
+  expectStatus("symlink backup directory", symlinkResult, 1);
+  assert.match(symlinkResult.stderr, /backup path is not a real directory/);
+  assert.equal(
+    readdirSync(symlinkTarget).length,
+    0,
+    "a symlink target must never receive backup data"
+  );
+
+  const corruptPath = join(temp, "corrupt.db");
+  writeFileSync(corruptPath, "not a sqlite database");
+  const corrupt = run(`file:${corruptPath}`);
+  expectStatus("corrupt source", corrupt, 1);
+  assert.match(corrupt.stderr, /ERROR:/);
+  assert.equal(backupFiles(corruptPath).length, 0);
+
+  const invalidRetention = run(`file:${databasePath}`, {
+    SQLITE_PRE_MIGRATION_BACKUP_RETENTION: "0",
+  });
+  expectStatus("invalid retention", invalidRetention, 1);
+  assert.match(invalidRetention.stderr, /must be an integer from 1 to 10/);
+
+  const wrongDatasource = run("postgresql://example.invalid/database");
+  expectStatus("non-SQLite datasource", wrongDatasource, 1);
+  assert.match(wrongDatasource.stderr, /must be a file: SQLite URL/);
+
+  const directoryPath = join(temp, "directory.db");
+  mkdirSync(directoryPath);
+  chmodSync(directoryPath, 0o700);
+  const directoryResult = run(`file:${directoryPath}`);
+  expectStatus("non-file database path", directoryResult, 1);
+  assert.match(directoryResult.stderr, /is not a regular file/);
+} finally {
+  rmSync(temp, { recursive: true, force: true });
+}
+
+console.log("SQLite pre-migration backup checks passed");

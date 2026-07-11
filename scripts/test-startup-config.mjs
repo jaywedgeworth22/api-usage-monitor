@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -34,6 +34,15 @@ function expectStatus(name, result, expected) {
 
 const temp = mkdtempSync(join(tmpdir(), "usage-startup-config-"));
 try {
+  const startupSource = readFileSync(script, "utf8");
+  const backupIndex = startupSource.indexOf(
+    'node "${REPO_ROOT}/scripts/backup-sqlite-before-migrate.mjs"'
+  );
+  const migrationIndex = startupSource.indexOf('node "${REPO_ROOT}/scripts/migrate-safe.mjs"');
+  if (backupIndex < 0 || migrationIndex < 0 || backupIndex >= migrationIndex) {
+    throw new Error("startup wrapper must run the SQLite backup before migrate-safe");
+  }
+
   expectStatus("disabled backup", run(), 0);
   expectStatus(
     "partial configuration",

@@ -49,6 +49,9 @@ jobs:
       - name: Test safe migration path
         run: npm run test:migrate-safe
 
+      - name: Test pre-migration SQLite backup
+        run: npm run test:sqlite-backup
+
       - name: Test startup configuration
         run: npm run test:startup-config
 

@@ -10,6 +10,13 @@ interface RenderService {
   name?: string;
   type?: string;
   plan?: string;
+  runtime?: string;
+  env?: string;
+  serviceDetails?: {
+    plan?: string;
+    runtime?: string;
+    env?: string;
+  };
   suspended?: string | boolean;
   updatedAt?: string;
 }
@@ -34,6 +41,13 @@ export async function fetchUsage(
 
   const body = (response.data ?? {}) as RenderService & { service?: RenderService };
   const service = body.service ?? body;
+  const plan = service.serviceDetails?.plan ?? service.plan ?? null;
+  const runtime =
+    service.serviceDetails?.runtime ??
+    service.serviceDetails?.env ??
+    service.runtime ??
+    service.env ??
+    null;
   const suspended = service.suspended;
   const status = suspended === false || suspended === "not_suspended" || suspended == null
     ? "active"
@@ -49,12 +63,13 @@ export async function fetchUsage(
         id: service.id ?? serviceId,
         name: service.name ?? null,
         type: service.type ?? null,
-        plan: service.plan ?? null,
+        plan,
+        runtime,
         status,
         updatedAt: service.updatedAt ?? null,
       },
       capabilities: {
-        servicePlan: service.plan != null,
+        servicePlan: plan != null,
         serviceStatus: true,
         actualInvoiceCost: false,
       },
@@ -66,7 +81,7 @@ export async function fetchUsage(
         {
           externalId: service.id ?? serviceId,
           kind: "service_plan",
-          planName: service.plan ?? null,
+          planName: plan,
           status,
         },
       ],

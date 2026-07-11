@@ -155,6 +155,13 @@ Render per `render.yaml`), plus optional `USAGE_READ_TOKEN` (separate read-only 
 `/api/budget-status`; reuses `USAGE_INGEST_TOKEN` when unset), and optional
 `SENTRY_READ_TOKEN`/`SENTRY_ORG` (Sentry Health card — see above).
 
+`SQLITE_PRE_MIGRATION_BACKUP_RETENTION` controls how many verified local SQLite
+Online Backup API snapshots are retained beside the production DB (default `3`,
+valid `1`-`10`). `start-with-litestream.sh` creates and integrity-checks one
+before every `migrate-safe.mjs` run against an existing DB; failure stops
+startup before schema changes. This same-disk layer is immediate migration
+rollback protection, while Litestream/R2 remains the off-disk PITR layer.
+
 Optional adapter-resilience tuning (both default sanely; see `.env.example`):
 `ADAPTER_HTTP_TIMEOUT_MS` (per-request timeout for `fetchJson` in
 `src/lib/adapters/helpers.ts`, default 30s) and `ADAPTER_PROVIDER_TIMEOUT_MS` (outer per-provider
@@ -164,9 +171,7 @@ how long one hung upstream provider can stall the sequential 15-minute poll loop
 ## Verify
 
 ```bash
-npm run lint     # tsc --noEmit
-npm test         # vitest run
-npm run build    # next build
+npm run verify   # eslint, tsc, vitest, migration/backup/startup checks, build
 ```
 
 Deploy via the Render `render.yaml` blueprint (see `DEPLOY.md`).

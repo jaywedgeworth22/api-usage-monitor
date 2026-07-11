@@ -2,11 +2,10 @@
 # Render startCommand entrypoint. Replaces the raw
 # "node scripts/migrate-safe.mjs && npm start" tail with an opt-in wrapper:
 #
-#   - LITESTREAM_S3_* unset (default): same logical behavior as the old
-#     "node scripts/migrate-safe.mjs && npm start" — log one line, run
-#     migrate-safe, then exec npm start. (Minor, intentional improvement over
-#     the old `sh -c` form: `exec` makes npm start PID 1 so it receives Render's
-#     SIGTERM directly instead of a wrapper shell swallowing it.)
+#   - LITESTREAM_S3_* unset (default): create and integrity-check a bounded
+#     local backup of an existing DB, run migrate-safe, then exec npm start.
+#     `exec` makes npm start PID 1 so it receives Render's SIGTERM directly
+#     instead of a wrapper shell swallowing it.
 #   - LITESTREAM_S3_* all set AND bin/litestream present (see
 #     scripts/fetch-litestream.sh): restore from R2 if the disk has no DB yet
 #     (fresh disk / disaster recovery), run migrate-safe, then exec litestream
@@ -18,8 +17,10 @@
 # error. This prevents a deploy from silently running without its intended
 # backup path.
 #
-# migrate-safe.mjs runs exactly once in both paths, before the server starts,
-# and always against the post-restore (or fresh) database file.
+# backup-sqlite-before-migrate.mjs then migrate-safe.mjs run exactly once in
+# both paths, before the server starts, and always against the post-restore (or
+# existing) database file. An existing database cannot be migrated unless a
+# transaction-consistent local backup passes SQLite integrity verification.
 #
 # Uses `exec` for the final process in each branch so it becomes PID 1 (or
 # litestream's supervised child) and receives Render's SIGTERM directly for
@@ -92,17 +93,20 @@ if [[ "${litestream_enabled}" == "true" ]]; then
   else
     log "local DB already present at ${DB_PATH} — skipping restore."
   fi
-
-  node "${REPO_ROOT}/scripts/migrate-safe.mjs"
-
-  log "starting litestream replicate (wraps npm start as its supervised process)."
-  exec "${LITESTREAM_BIN}" replicate -config "${LITESTREAM_CONFIG}" -exec "npm start"
 else
   export LITESTREAM_ACTIVE=false
   log "replication DISABLED (set LITESTREAM_S3_BUCKET, LITESTREAM_S3_ENDPOINT,"
   log "LITESTREAM_S3_ACCESS_KEY_ID, LITESTREAM_S3_SECRET_ACCESS_KEY to enable — see docs/litestream.md)."
-
-  node "${REPO_ROOT}/scripts/migrate-safe.mjs"
-
-  exec npm start
 fi
+
+log "creating and verifying pre-migration SQLite backup when a database exists."
+node "${REPO_ROOT}/scripts/backup-sqlite-before-migrate.mjs"
+
+node "${REPO_ROOT}/scripts/migrate-safe.mjs"
+
+if [[ "${litestream_enabled}" == "true" ]]; then
+  log "starting litestream replicate (wraps npm start as its supervised process)."
+  exec "${LITESTREAM_BIN}" replicate -config "${LITESTREAM_CONFIG}" -exec "npm start"
+fi
+
+exec npm start

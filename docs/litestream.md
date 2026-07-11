@@ -13,13 +13,13 @@ recovery.
 
 **Opt-in, with fail-closed configuration.** With `LITESTREAM_S3_*` unset and
 `LITESTREAM_REQUIRED=false` (the initial default), `render.yaml`'s
-`startCommand` runs exactly as it did before this was added: `migrate-safe.mjs` then
-`npm start`, no litestream process — same logical behavior as before (it also uses
-`exec` so the server process receives Render's SIGTERM directly). Setting the four
-required `LITESTREAM_S3_*` env vars (BUCKET/ENDPOINT/ACCESS_KEY_ID/SECRET_ACCESS_KEY;
-REGION is optional) turns replication (and restore-on-fresh-disk) on. Partial
-credentials or a configured replica with a missing/unverified binary stop
-startup. After the first successful restore drill, set
+`startCommand` still creates and integrity-checks a bounded local snapshot of
+an existing SQLite database before `migrate-safe.mjs`, then starts without a
+litestream process. Setting the four required `LITESTREAM_S3_*` env vars
+(BUCKET/ENDPOINT/ACCESS_KEY_ID/SECRET_ACCESS_KEY; REGION is optional) turns
+replication (and restore-on-fresh-disk) on. Partial credentials, an unverified
+local pre-migration snapshot, or a configured replica with a missing/unverified
+binary stop startup. After the first successful restore drill, set
 `LITESTREAM_REQUIRED=true` so an entirely missing replica also stops startup
 and makes `/api/ready` fail.
 
@@ -40,12 +40,15 @@ and makes `/api/ready` fail.
   copied from Socratic.Trade's config.
 - `scripts/start-with-litestream.sh` — `render.yaml`'s `startCommand`. If all four
   required `LITESTREAM_S3_*` vars are set and `bin/litestream` exists: restores from
-  R2 first if `/data/prod.db` doesn't exist yet (fresh disk or disaster recovery),
-  runs `migrate-safe.mjs`, then `exec`s `litestream replicate -exec "npm start"` so
-  litestream supervises the Next.js server as PID 1's child and every write gets
-  replicated. Otherwise, when backup is explicitly optional and completely
-  unconfigured: logs one "replication disabled" line, runs
-  `migrate-safe.mjs`, then `exec`s `npm start` directly — today's behavior.
+  R2 first if `/data/prod.db` doesn't exist yet (fresh disk or disaster recovery).
+  In both enabled and disabled modes it then runs
+  `backup-sqlite-before-migrate.mjs` and `migrate-safe.mjs` in that order.
+  Enabled mode finally `exec`s `litestream replicate -exec "npm start"`; disabled
+  mode `exec`s `npm start` directly.
+- `scripts/backup-sqlite-before-migrate.mjs` — transaction-consistent SQLite
+  Online Backup API snapshot plus `PRAGMA integrity_check`, private file modes,
+  atomic promotion, and bounded same-disk retention. It is the immediate schema
+  rollback layer; Litestream remains the off-disk PITR layer.
 - `scripts/litestream-restore.sh` — manual disaster-recovery restore, run from
   Render's Shell tab (see below).
 
@@ -100,8 +103,9 @@ bin/litestream ltx -config litestream.yml /data/prod.db
 ```
 
 In the service's **Logs**, look for the `[start-with-litestream] replication ENABLED`
-line at boot, followed by litestream's own `replicating to type=s3 bucket=...` and
-periodic `ltx file uploaded` / `replica sync` lines. If instead you see
+line and a `[sqlite-pre-migration-backup] verified ...` line at boot, followed
+by litestream's own `replicating to type=s3 bucket=...` and periodic
+`ltx file uploaded` / `replica sync` lines. If instead you see
 `[start-with-litestream] replication DISABLED`, all required `LITESTREAM_S3_*`
 vars are unset and backup is still optional. Partial values or a missing binary
 are startup errors; check `fetch-litestream.sh` and startup logs.

@@ -19,9 +19,12 @@
    Node `24.14.1`, `npm ci` build, `scripts/start-with-litestream.sh` start,
    `/api/ready` health check, and auto-deploy only after CI checks pass.
 6. Wait for the first deploy. At runtime, the startup wrapper optionally
-   restores a missing database, then runs `scripts/migrate-safe.mjs`. It
-   applies additive schema changes and refuses destructive drift; there is no
-   `--accept-data-loss` startup path.
+   restores a missing database, creates a transaction-consistent SQLite Online
+   Backup API snapshot of any existing database, verifies it with
+   `PRAGMA integrity_check`, and only then runs `scripts/migrate-safe.mjs`.
+   Backup or verification failure stops startup before schema changes. The
+   migration applies additive changes and refuses destructive drift; there is
+   no `--accept-data-loss` startup path.
 
 ## Step 2: Add Custom Domain on Render
 1. Go to the `api-usage-monitor` service in Render Dashboard
@@ -57,6 +60,9 @@ not copied from the obsolete gray-cloud setup.
 ## Environment Variables
 - `DATABASE_URL` set to a static path on the service's Render disk
   (`file:/data/prod.db`) - not a secret, just a file path
+- `SQLITE_PRE_MIGRATION_BACKUP_RETENTION` (defaults to `3`, valid `1`-`10`;
+  newest verified local snapshots retained under
+  `/data/.pre-migration-backups` before startup schema synchronization)
 - `ENCRYPTION_KEY` (auto-generated 64-char hex)
 - `CRON_SECRET` (auto-generated; the `/api/cron/fetch-all` route still checks
   this, kept as an authenticated manual-trigger/debug endpoint even though
@@ -165,7 +171,17 @@ error output) and re-run the same command again from the top:
 SOURCE_DATABASE_URL="..." node scripts/migrate-postgres-to-sqlite.mjs
 ```
 
-### Optional follow-up: back up the SQLite file
+### SQLite backup layers
+
+Every startup with an existing DB runs
+`scripts/backup-sqlite-before-migrate.mjs` before `migrate-safe.mjs`. It opens
+the source read-only, uses SQLite's Online Backup API (safe with WAL), checks
+the destination with `PRAGMA integrity_check`, atomically promotes only a
+verified file, and retains the newest
+`SQLITE_PRE_MIGRATION_BACKUP_RETENTION` snapshots. The default three files live
+under `/data/.pre-migration-backups`. Failure to create, verify, or bound the
+backup stops production startup before migration. These same-disk snapshots
+are schema rollback protection, not protection from disk loss.
 
 Render automatically takes an encrypted disk snapshot every 24 hours and keeps
 snapshots for at least seven days. Render also warns against restoring a disk
@@ -174,9 +190,10 @@ transaction-consistent. Treat those snapshots as last-resort infrastructure
 recovery, not a SQLite logical/PITR backup. [Litestream](https://litestream.io/)
 continuously replicates `/data/prod.db` to Cloudflare R2 with transaction-aware
 restore points. It is opt-in until credentials and a restore drill exist. With
-all replica vars unset and `LITESTREAM_REQUIRED=false`, the wrapper runs the safe
-migration and app without Litestream. Partial credentials or a configured
-replica with no verified binary fail closed.
+all replica vars unset and `LITESTREAM_REQUIRED=false`, the wrapper still takes
+the verified local pre-migration snapshot, then runs the safe migration and app
+without Litestream. Partial credentials or a configured replica with no
+verified binary fail closed.
 
 To enable it: create an R2 bucket + token and set the `LITESTREAM_S3_*`
 vars in the Render dashboard's Environment tab (they already exist in
@@ -190,3 +207,10 @@ verification, and disaster-recovery restore steps
 files: `scripts/fetch-litestream.sh` (build-time binary download),
 `litestream.yml` (replica config), `scripts/start-with-litestream.sh` (the
 new `startCommand`), `scripts/litestream-restore.sh` (manual restore).
+
+## Release-time data maintenance
+
+Do not add the Claude cumulative-cost repair or subscription seed to automatic
+startup. Both require production-specific review that an idempotency marker
+cannot replace. See `docs/release-maintenance.md` for the evidence and the
+requirements for any future marker-driven task.

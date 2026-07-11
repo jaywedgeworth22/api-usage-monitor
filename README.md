@@ -46,8 +46,9 @@ npm run verify
 ```
 
 `verify` runs lint, TypeScript, unit/integration tests, the real SQLite safe-
-migration reproduction, startup/backup configuration tests, and a production
-Next.js build. CI uses the same pinned Node version from `.node-version`.
+migration reproduction, transaction-consistent pre-migration backup and
+retention tests, startup/backup configuration tests, and a production Next.js
+build. CI uses the same pinned Node version from `.node-version`.
 
 ## Tech stack
 
@@ -61,4 +62,6 @@ Next.js build. CI uses the same pinned Node version from `.node-version`.
 - **[AGENTS.md](AGENTS.md)** — agent-facing guide (schema, auth, ingest flows, env vars)
 - **[DEPLOY.md](DEPLOY.md)** — Render deployment instructions
 - **[docs/litestream.md](docs/litestream.md)** — backup and restore runbook
+- **[docs/release-maintenance.md](docs/release-maintenance.md)** — why one-time
+  data repairs/seeds remain explicit and what safe marker automation requires
 - **[docs/direct-billing-integrations.md](docs/direct-billing-integrations.md)** — provider billing/API connection matrix (when present)
