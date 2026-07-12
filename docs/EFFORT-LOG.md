@@ -128,15 +128,18 @@ Protocol: /Users/jay/apps/EFFORT-LOG-PROTOCOL.md (canonical). Live board:
 
 ## In Progress
 - **Provider account auto-enrichment + billing/subscription UX (CODEX, owner-directed 2026-07-12).**
-  Branch `codex-provider-account-enrichment`; isolated worktree
-  `/Users/jay/apps/api-usage-monitor-provider-enrichment` from fetched `origin/main`. Auditing
-  provider capabilities and implementing automatic display of trustworthy paid services,
-  subscription tier, renewal, billing, usage, and quota data, with explicit unsupported/manual
-  states and responsive browser QA. Also removing PR #105/#106's unsafe browser-session sync path
-  (`/api/ingest/keys`, Chrome/Safari wrappers): it accepted the fleet ingest token, wrote arbitrary
-  provider config, and persisted full site storage/session material in client-visible config. The
-  dependency baseline is locally repaired to supported ESLint/TypeScript/Tailwind versions. No
-  production writes, merge, or deploy yet.
+  **READY FOR REVIEW — OPEN PR #107**
+  (`codex-provider-account-enrichment`, commit `a640dd6`,
+  https://github.com/jaywedgeworth22/api-usage-monitor/pull/107). Implemented canonical paid-service
+  inventory/provenance, documented provider account enrichment, explicit manual/unsupported
+  boundaries, responsive/dark/accessibility improvements, safe exact-period subscription linking,
+  provider-type credential routing, transactional secret migration, and removal of PR #105/#106's
+  unsafe browser-session sync path. Node 24 `npm run verify` PASS: ESLint, TypeScript, 61 test files /
+  329 tests, migrate-safe 3/3, SQLite backup, startup config, and production build. Browser QA PASS
+  on dashboard, Paid services, provider detail, dark mode, and mobile viewport with no console
+  errors. No production writes, merge, or deploy. Deployment follow-up: verified backup + schema
+  startup, review `npm run migrate:provider-secrets` dry run before `-- --apply`, and rotate the
+  ingest token/provider credentials if retired browser sync was ever used.
 - **Third-party integration transparency drawer (CODEX, owner-directed 2026-07-11).** Branch
   `provider-integration-transparency`, isolated worktree
   `/Users/jay/apps/api-usage-monitor-integration-transparency`, based on `c8ccd7f`. IMPLEMENTED and
