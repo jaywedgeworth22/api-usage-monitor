@@ -137,6 +137,29 @@ Protocol: /Users/jay/apps/EFFORT-LOG-PROTOCOL.md (canonical). Live board:
   provider config, and persisted full site storage/session material in client-visible config. The
   dependency baseline is locally repaired to supported ESLint/TypeScript/Tailwind versions. No
   production writes, merge, or deploy yet.
+- **Third-party integration transparency drawer (CODEX, owner-directed 2026-07-11).** Branch
+  `provider-integration-transparency`, isolated worktree
+  `/Users/jay/apps/api-usage-monitor-integration-transparency`, based on `c8ccd7f`. IMPLEMENTED and
+  ready for parent integration: typed exhaustive built-in/system/custom/manual catalog; accurate
+  credential/config fields; push/manual providers no longer solicit unused keys; accessible,
+  focus-trapped responsive drawer with per-instance connection state that exposes field names and
+  last-four/booleans only; dashboard, Settings, detail, and Add Provider affordances; compile-time
+  adapter/definition coverage. Focused 6/6, TypeScript, ESLint, and production build green. Browser
+  runtime had no available backend in this subagent; rendered QA remains with the parent integration.
+- **Production maintenance script hardening (CODEX, owner-directed 2026-07-11).** Branch
+  `maintenance-script-hardening`, isolated worktree
+  `/Users/jay/apps/api-usage-monitor-maintenance-hardening`, based on `e736bf1`. Scope: make
+  provider-secret migration transactional with encrypted-value precedence and classifier parity;
+  constrain historical Claude repair to cost-only, preserve newer OTLP checkpoints, and add
+  production-safety/idempotency regression coverage. Implementation complete locally: focused
+  suite 6/6, full suite 46 files/258 tests, ESLint, TypeScript, script syntax, diff checks, and
+  production build green. No production writes or deploys.
+- **Deterministic provider-subscription release plan (CODEX, owner-directed 2026-07-11).** Branch
+  `release-plan-hardening`, isolated worktree
+  `/Users/jay/apps/api-usage-monitor-release-plan`, based on `e736bf1`. Scope: transactional
+  `provider-subscriptions-2026-07-10-v1` seed with fixed billing anchors, exact-plan startup gate,
+  database receipt written only after postconditions, ambiguity/manual-row preservation, and
+  startup ordering after verified backup + migration. No production writes or deploys.
 - **Alert-delivery channel reliability (CODEX, owner-directed 2026-07-11).** Branch
   `codex-alert-delivery-reliability`, isolated worktree
   `/Users/jay/apps/api-usage-monitor-alert-delivery`, based on app-wide hardening commit `2dd8ad8`.
@@ -260,6 +283,9 @@ _2026-07-06 (CLAUDE): "Monitor the agent-sync relay endpoint" moved to Completed
 PR #63's `agent-sync-relay` health-check adapter (issue #55)._
 
 ## Changelog of this log
+- 2026-07-11 — CODEX reserved third-party integration transparency catalog/drawer implementation.
+- 2026-07-11 — CODEX implemented integration transparency catalog/drawer; focused tests,
+  typecheck, lint, and build green; handed rendered QA to parent because this lane had no browser backend.
 - 2026-07-04 — bootstrapped by CLAUDE (effort-log standardization).
 - 2026-07-04 — CLAUDE: OTLP ingest + Sentry health card implementation complete, PR pending.
 - 2026-07-04 — CLAUDE: PR #13 merged (OTLP ingest + Sentry health card); moved to Completed.
