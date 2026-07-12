@@ -26,6 +26,7 @@ export interface UsageResult {
 export interface AdapterExternalBillingRecord {
   externalId: string;
   kind: "account" | "billing_period" | "invoice" | "plan" | "subscription" | "service_plan";
+  serviceName?: string | null;
   planName?: string | null;
   status?: string | null;
   amountUsd?: number | null;
@@ -38,6 +39,11 @@ export interface AdapterExternalBillingRecord {
   requestLimitWindow?: string | null;
   spendLimitUsd?: number | null;
   spendLimitWindow?: string | null;
+  usageQuantity?: number | null;
+  remainingQuantity?: number | null;
+  usageUnit?: string | null;
+  rollupRole?: "canonical" | "component" | "metadata" | null;
+  dateKind?: "renewal" | "period_end" | "quota_reset" | "contract_end" | "report_through" | null;
 }
 
 export interface AdapterExternalBillingSync {

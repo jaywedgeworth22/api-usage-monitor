@@ -57,6 +57,8 @@ export interface ExternalUsageEventSummaryGroup {
   provider: string;
   service: string | null;
   projectId: string | null;
+  metricType: string;
+  unit: string | null;
   eventCount: number;
   totalCostUsd: number;
   totalRequests: number;
@@ -269,6 +271,8 @@ function summaryGroupKey(group: {
   provider: string;
   service: string | null;
   projectId: string | null;
+  metricType: string;
+  unit: string | null;
 }): string {
   return [
     group.sourceApp,
@@ -276,6 +280,8 @@ function summaryGroupKey(group: {
     group.provider,
     group.service ?? "",
     group.projectId ?? "",
+    group.metricType,
+    group.unit ?? "",
   ].join("|");
 }
 
@@ -332,6 +338,8 @@ export async function summarizeExternalUsageEvents(
         provider: true,
         service: true,
         projectId: true,
+        metricType: true,
+        unit: true,
         quantity: true,
         costUsd: true,
         requests: true,
@@ -351,6 +359,8 @@ export async function summarizeExternalUsageEvents(
         provider: event.provider,
         service: event.service,
         projectId: event.projectId,
+        metricType: event.metricType,
+        unit: event.unit,
         eventCount: 1,
         totalCostUsd: event.costUsd ?? 0,
         totalRequests: event.requests ?? 0,
@@ -382,6 +392,8 @@ export async function summarizeExternalUsageEvents(
             provider: true,
             service: true,
             projectId: true,
+            metricType: true,
+            unit: true,
             eventCount: true,
             totalCostUsd: true,
             totalRequests: true,
@@ -400,6 +412,8 @@ export async function summarizeExternalUsageEvents(
       provider: rollup.provider,
       service: rollup.service,
       projectId: rollup.projectId,
+      metricType: rollup.metricType,
+      unit: rollup.unit,
       eventCount: rollup.eventCount,
       totalCostUsd: rollup.totalCostUsd,
       totalRequests: rollup.totalRequests,

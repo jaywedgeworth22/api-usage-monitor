@@ -7,6 +7,12 @@ import { buildProviderAlertState, type ProviderAlert } from "@/lib/provider-aler
 import { getExternalEventRawCutoff } from "@/lib/data-retention";
 import { calculateEomForecast } from "@/lib/forecasting";
 import { advancePeriod, isSubscriptionInterval } from "@/lib/subscriptions";
+import {
+  canLinkSubscriptionToExternalBilling,
+  externalBillingFreshnessWindowMs,
+  isExternalBillingLinkCandidate,
+  resolveExternalBillingPeriod,
+} from "@/lib/external-billing-link";
 
 // Budget-status computation for the read endpoint (GET /api/budget-status).
 //
@@ -72,10 +78,6 @@ function monthLabel(now: Date): string {
   const y = now.getUTCFullYear();
   const m = String(now.getUTCMonth() + 1).padStart(2, "0");
   return `${y}-${m}`;
-}
-
-function nearlyEqual(left: number, right: number): boolean {
-  return Math.abs(left - right) <= 0.005;
 }
 
 function forecastSubscriptionRenewals(
@@ -170,6 +172,7 @@ export async function computeBudgetStatus(now: Date = new Date()): Promise<Budge
             autoRenew: true,
             externalBillingSource: true,
             externalBillingId: true,
+            status: true,
           },
         },
         externalBilling: {
@@ -182,6 +185,9 @@ export async function computeBudgetStatus(now: Date = new Date()): Promise<Budge
             currency: true,
             billingInterval: true,
             currentPeriodStart: true,
+            currentPeriodEnd: true,
+            rollupRole: true,
+            syncedAt: true,
           },
         },
       },
@@ -215,20 +221,33 @@ export async function computeBudgetStatus(now: Date = new Date()): Promise<Budge
         metricType: "subscription",
         occurredAt: { gte: monthStart, lte: now },
       },
-      select: { costUsd: true, metadata: true },
+      select: {
+        costUsd: true,
+        metadata: true,
+        occurredAt: true,
+        windowEnd: true,
+      },
     }),
   ]);
 
-  const materializedCostBySubscriptionId = new Map<string, number>();
+  const materializedCostBySubscriptionPeriod = new Map<string, number>();
   for (const event of materializedSubscriptionEvents) {
     if (!event.metadata || typeof event.metadata !== "object" || Array.isArray(event.metadata)) {
       continue;
     }
     const subscriptionId = (event.metadata as Record<string, unknown>).subscriptionId;
-    if (typeof subscriptionId !== "string" || event.costUsd == null) continue;
-    materializedCostBySubscriptionId.set(
-      subscriptionId,
-      (materializedCostBySubscriptionId.get(subscriptionId) ?? 0) + event.costUsd
+    if (
+      typeof subscriptionId !== "string" ||
+      event.costUsd == null ||
+      !event.windowEnd
+    ) {
+      continue;
+    }
+    const periodKey = `${subscriptionId}\u0000${event.occurredAt.toISOString()}\u0000${event.windowEnd.toISOString()}`;
+    materializedCostBySubscriptionPeriod.set(
+      periodKey,
+      (materializedCostBySubscriptionPeriod.get(periodKey) ?? 0) +
+        event.costUsd
     );
   }
 
@@ -312,13 +331,13 @@ export async function computeBudgetStatus(now: Date = new Date()): Promise<Budge
     );
     const usageCost = Math.max(snapshotVariableCostUsd, pushed.usagePushed);
     const liveExternalFixed = p.externalBilling.filter((record) => {
-      const status = record.status?.toLowerCase() ?? "";
       return (
-        ["plan", "subscription"].includes(record.kind) &&
-        !["canceled", "cancelled", "failed", "expired", "inactive"].includes(status) &&
-        (record.currency ?? "USD").toUpperCase() === "USD" &&
-        record.amountUsd != null &&
-        record.amountUsd >= 0 &&
+        isExternalBillingLinkCandidate(record, {
+          now,
+          staleAfterMs: externalBillingFreshnessWindowMs(
+            p.refreshIntervalMin
+          ),
+        }) &&
         record.currentPeriodStart != null &&
         record.currentPeriodStart >= monthStart &&
         record.currentPeriodStart <= now
@@ -337,14 +356,14 @@ export async function computeBudgetStatus(now: Date = new Date()): Promise<Budge
       );
       if (
         !externalRecord ||
-        subscription.intervalCount !== 1 ||
-        externalRecord.billingInterval !== subscription.interval ||
-        !nearlyEqual(externalRecord.amountUsd ?? -1, subscription.costUsd)
+        !canLinkSubscriptionToExternalBilling(subscription, externalRecord)
       ) {
         continue;
       }
+      const externalPeriod = resolveExternalBillingPeriod(externalRecord)!;
+      const periodKey = `${subscription.id}\u0000${externalPeriod.start.toISOString()}\u0000${externalPeriod.end.toISOString()}`;
       linkedMaterializedFixedUsd +=
-        materializedCostBySubscriptionId.get(subscription.id) ?? 0;
+        materializedCostBySubscriptionPeriod.get(periodKey) ?? 0;
     }
     const linkedFixedDedupeUsd = Math.min(
       snapshotFixedCostIncludedUsd,

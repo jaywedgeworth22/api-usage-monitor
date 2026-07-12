@@ -72,6 +72,32 @@ describe("provider secret config", () => {
     expect(JSON.stringify(result)).not.toContain("encrypted");
   });
 
+  it("redacts legacy browser-sync session and storage payloads as opaque secrets", () => {
+    const result = providerConfigForClient(
+      {
+        accountId: "safe-account",
+        sessionCookie: "session=must-not-leak",
+        localStorage: {
+          harmlessLookingName: "secret-value",
+          access_token: "nested-token",
+        },
+        nested: {
+          sessionStorage: { workspace: "private-session-state" },
+        },
+      },
+      null
+    );
+
+    expect(result.config).toEqual({ accountId: "safe-account" });
+    expect(result.secretConfigMeta).toMatchObject({
+      configured: true,
+      fields: ["localStorage", "nested.sessionStorage", "sessionCookie"],
+    });
+    expect(JSON.stringify(result)).not.toContain("must-not-leak");
+    expect(JSON.stringify(result)).not.toContain("harmlessLookingName");
+    expect(JSON.stringify(result)).not.toContain("private-session-state");
+  });
+
   it("deep-merges public and encrypted values only for server execution", () => {
     expect(
       mergeProviderConfig(

@@ -24,6 +24,9 @@ describe("twelve data adapter", () => {
     expect(result.externalBilling?.records[0]).toMatchObject({
       planName: "Pro",
       requestLimit: 610,
+      usageQuantity: 11,
+      remainingQuantity: 599,
+      rollupRole: "metadata",
     });
     expect(String(fetchMock.mock.calls[0][0])).toBe(
       "https://api.twelvedata.com/api_usage"

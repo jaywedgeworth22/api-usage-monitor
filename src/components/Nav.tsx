@@ -67,7 +67,7 @@ export default function Nav() {
                   />
                 </svg>
               </div>
-              <span className="text-lg font-semibold text-gray-900">
+              <span className="text-lg font-semibold text-gray-900 dark:text-gray-100">
                 API Monitor
               </span>
             </Link>
@@ -103,7 +103,7 @@ export default function Nav() {
                 {theme === "dark" ? <Sun size={18} /> : <Moon size={18} />}
               </button>
             )}
-            {logoutError && <span role="alert" className="max-w-48 text-xs text-red-600">{logoutError}</span>}
+            {logoutError && <span role="alert" className="max-w-48 text-xs text-red-600 dark:text-red-300">{logoutError}</span>}
             <button
               type="button"
               onClick={handleLogout}
@@ -119,7 +119,7 @@ export default function Nav() {
             aria-controls="mobile-navigation"
             aria-label={menuOpen ? "Close navigation menu" : "Open navigation menu"}
             onClick={() => setMenuOpen((open) => !open)}
-            className="inline-flex min-h-10 min-w-10 items-center justify-center rounded-lg text-gray-600 hover:bg-gray-100 hover:text-gray-900 focus:outline-none focus:ring-2 focus:ring-blue-500 sm:hidden"
+            className="inline-flex min-h-10 min-w-10 items-center justify-center rounded-lg text-gray-600 hover:bg-gray-100 hover:text-gray-900 focus:outline-none focus:ring-2 focus:ring-blue-500 dark:text-gray-300 dark:hover:bg-gray-800 dark:hover:text-gray-100 sm:hidden"
           >
             <svg aria-hidden="true" className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path
@@ -132,7 +132,7 @@ export default function Nav() {
           </button>
         </div>
         {menuOpen && (
-          <div id="mobile-navigation" className="space-y-1 border-t border-gray-200 py-3 sm:hidden">
+          <div id="mobile-navigation" className="space-y-1 border-t border-gray-200 py-3 dark:border-gray-800 sm:hidden">
             {links.map((link) => {
               const isActive = pathname === link.href;
               return (
@@ -142,7 +142,9 @@ export default function Nav() {
                   onClick={() => setMenuOpen(false)}
                   aria-current={isActive ? "page" : undefined}
                   className={`block rounded-lg px-3 py-2 text-sm font-medium ${
-                    isActive ? "bg-gray-100 text-gray-900" : "text-gray-600 hover:bg-gray-50 hover:text-gray-900"
+                    isActive
+                      ? "bg-gray-100 text-gray-900 dark:bg-gray-800 dark:text-gray-100"
+                      : "text-gray-600 hover:bg-gray-50 hover:text-gray-900 dark:text-gray-300 dark:hover:bg-gray-800 dark:hover:text-gray-100"
                   }`}
                 >
                   {link.label}
@@ -153,11 +155,11 @@ export default function Nav() {
               type="button"
               onClick={handleLogout}
               disabled={logoutPending}
-              className="block w-full rounded-lg px-3 py-2 text-left text-sm font-medium text-gray-600 hover:bg-gray-50 hover:text-gray-900 disabled:opacity-50"
+              className="block w-full rounded-lg px-3 py-2 text-left text-sm font-medium text-gray-600 hover:bg-gray-50 hover:text-gray-900 disabled:opacity-50 dark:text-gray-300 dark:hover:bg-gray-800 dark:hover:text-gray-100"
             >
               {logoutPending ? "Logging out…" : "Log out"}
             </button>
-            {logoutError && <p role="alert" className="px-3 py-1 text-xs text-red-600">{logoutError}</p>}
+            {logoutError && <p role="alert" className="px-3 py-1 text-xs text-red-600 dark:text-red-300">{logoutError}</p>}
           </div>
         )}
       </div>

@@ -46,6 +46,7 @@ describe("reconcileProviderExternalBilling", () => {
         {
           externalId: "sub_1",
           kind: "subscription" as const,
+          serviceName: "Cloudflare Workers",
           planName: "Workers Paid",
           status: "active",
           amountUsd: 5,
@@ -54,6 +55,11 @@ describe("reconcileProviderExternalBilling", () => {
           currentPeriodStart: "2026-07-01T00:00:00.000Z",
           currentPeriodEnd: "2026-08-01T00:00:00.000Z",
           nextRenewalAt: "2026-08-01T00:00:00.000Z",
+          usageQuantity: 2_500_000,
+          remainingQuantity: 7_500_000,
+          usageUnit: "requests",
+          rollupRole: "canonical" as const,
+          dateKind: "renewal" as const,
         },
       ],
     };
@@ -66,8 +72,14 @@ describe("reconcileProviderExternalBilling", () => {
     expect(await prisma.providerExternalBilling.findFirst()).toMatchObject({
       source: "cloudflare-subscriptions",
       externalId: "sub_1",
+      serviceName: "Cloudflare Workers",
       planName: "Workers Paid",
       currency: "USD",
+      usageQuantity: 2_500_000,
+      remainingQuantity: 7_500_000,
+      usageUnit: "requests",
+      rollupRole: "canonical",
+      dateKind: "renewal",
     });
   });
 

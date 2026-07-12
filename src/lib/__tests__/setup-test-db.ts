@@ -66,6 +66,7 @@ CREATE TABLE "ProviderExternalBilling" (
   "source" TEXT NOT NULL,
   "externalId" TEXT NOT NULL,
   "kind" TEXT NOT NULL,
+  "serviceName" TEXT,
   "planName" TEXT,
   "status" TEXT,
   "amountUsd" REAL,
@@ -78,6 +79,11 @@ CREATE TABLE "ProviderExternalBilling" (
   "requestLimitWindow" TEXT,
   "spendLimitUsd" REAL,
   "spendLimitWindow" TEXT,
+  "usageQuantity" REAL,
+  "remainingQuantity" REAL,
+  "usageUnit" TEXT,
+  "rollupRole" TEXT,
+  "dateKind" TEXT,
   "syncedAt" DATETIME NOT NULL,
   "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   "updatedAt" DATETIME NOT NULL,
@@ -279,7 +285,7 @@ CREATE INDEX "ExternalUsageEventDailyRollup_provider_day_idx" ON "ExternalUsageE
 CREATE INDEX "ExternalUsageEventDailyRollup_projectId_day_idx" ON "ExternalUsageEventDailyRollup"("projectId", "day");
 CREATE UNIQUE INDEX "ExternalUsageEventDailyRollup_day_groupKey_key" ON "ExternalUsageEventDailyRollup"("day", "groupKey");
 CREATE INDEX "Subscription_providerId_idx" ON "Subscription"("providerId");
-CREATE INDEX "Subscription_providerId_externalBillingSource_externalBillingId_idx" ON "Subscription"("providerId", "externalBillingSource", "externalBillingId");
+CREATE UNIQUE INDEX "Subscription_providerId_externalBillingSource_externalBillingId_key" ON "Subscription"("providerId", "externalBillingSource", "externalBillingId");
 CREATE INDEX "Subscription_projectId_idx" ON "Subscription"("projectId");
 CREATE INDEX "Subscription_status_nextRenewalAt_idx" ON "Subscription"("status", "nextRenewalAt");
 CREATE INDEX "ExternalUsageEventTombstone_occurredAt_idx" ON "ExternalUsageEventTombstone"("occurredAt");

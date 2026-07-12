@@ -8,7 +8,12 @@ function jsonResponse(body: unknown, status = 200): Response {
   });
 }
 
-function costsPage(value: number, hasMore = false, nextPage: string | null = null) {
+function costsPage(
+  value: number,
+  hasMore = false,
+  nextPage: string | null = null,
+  currency: string | null = "usd"
+) {
   return {
     object: "page",
     data: [
@@ -19,7 +24,7 @@ function costsPage(value: number, hasMore = false, nextPage: string | null = nul
         results: [
           {
             object: "organization.costs.result",
-            amount: { value, currency: "usd" },
+            amount: currency ? { value, currency } : { value },
           },
         ],
       },
@@ -91,6 +96,12 @@ describe("openai adapter", () => {
       dailyUsage: { costUsd: 1.25, requests: 9 },
       costsApiKeyRequirement: expect.stringContaining("Admin API key"),
       costsCredentialSource: "secretConfig.adminApiKey",
+    });
+    expect(result.externalBilling?.records[0]).toMatchObject({
+      serviceName: "OpenAI API",
+      amountUsd: 123.45,
+      spendLimitUsd: 100,
+      rollupRole: "canonical",
     });
     expect(JSON.stringify(result.rawData)).not.toContain("organization.costs.result");
     const costUrls = fetchMock.mock.calls
@@ -209,5 +220,29 @@ describe("openai adapter", () => {
 
     expect(result.totalCost).toBe(7.25);
     expect(result.rawData).toMatchObject({ costSource: "legacy_billing_usage" });
+  });
+
+  it("does not assume a missing organization-cost currency is USD", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((input: string | URL | Request) => {
+        const url = String(input);
+        if (url.includes("/v1/organization/costs?")) {
+          return Promise.resolve(jsonResponse(costsPage(100, false, null, null)));
+        }
+        if (url.includes("/dashboard/billing/usage?")) {
+          return Promise.resolve(jsonResponse({ total_usage: 725 }));
+        }
+        return Promise.resolve(jsonResponse({}));
+      })
+    );
+
+    const result = await fetchUsage("test-key");
+
+    expect(result.totalCost).toBe(7.25);
+    expect(result.rawData).toMatchObject({
+      costSource: "legacy_billing_usage",
+      organizationCosts: { available: false },
+    });
   });
 });

@@ -15,14 +15,15 @@ export interface SubscriptionRow {
   nextRenewalAt: string;
   autoRenew: boolean;
   status: string;
+  effectiveStatus?: string;
   notes: string | null;
   externalBillingSource: string | null;
   externalBillingId: string | null;
   // Effective knobEnv (this subscription's own override if set, else the
   // provider's free-tier ProviderPlan.knobEnv) and the provider's free-tier
   // map on its own (always present when the provider has one, regardless of
-  // this subscription's override). Not yet rendered in this table — phase 1
-  // is data model + API only (see docs/rollouts/2026-07-10-subscription-knob-linkage.md).
+  // this subscription's override). PaidServicesPanel renders the diff so the
+  // operational capacity gained by a paid tier is visible beside its cost.
   knobEnv: Record<string, string> | null;
   freeTierKnobEnv: Record<string, string> | null;
   provider: { id: string; name: string; displayName: string };
@@ -40,17 +41,23 @@ interface SubscriptionsPanelProps {
 }
 
 const STATUS_STYLES: Record<string, string> = {
-  active: "bg-emerald-50 text-emerald-700",
-  paused: "bg-amber-50 text-amber-700",
-  canceled: "bg-gray-100 text-gray-400",
-  considering: "bg-indigo-50 text-indigo-700",
+  active: "bg-emerald-50 text-emerald-700 dark:bg-emerald-950/60 dark:text-emerald-300",
+  paused: "bg-amber-50 text-amber-700 dark:bg-amber-950/60 dark:text-amber-300",
+  canceled: "bg-gray-100 text-gray-400 dark:bg-gray-700 dark:text-gray-400",
+  considering: "bg-indigo-50 text-indigo-700 dark:bg-indigo-950/60 dark:text-indigo-300",
+  expired: "bg-red-50 text-red-700 dark:bg-red-950/60 dark:text-red-300",
 };
 const STATUS_ORDER: Record<string, number> = {
   active: 0,
   considering: 1,
   paused: 2,
   canceled: 3,
+  expired: 4,
 };
+
+function displayStatus(subscription: SubscriptionRow): string {
+  return subscription.effectiveStatus ?? subscription.status;
+}
 
 function formatUsd(amount: number, currency: string): string {
   try {
@@ -75,8 +82,8 @@ export default function SubscriptionsPanel({
 }: SubscriptionsPanelProps) {
   if (subscriptions.length === 0) {
     return (
-      <div className="flex flex-col items-center justify-center py-16 gap-4 text-center bg-white rounded-xl border border-gray-200">
-        <p className="text-gray-500">No subscriptions tracked yet.</p>
+      <div className="flex flex-col items-center justify-center gap-4 rounded-xl border border-gray-200 bg-white py-16 text-center dark:border-gray-700 dark:bg-gray-800">
+        <p className="text-gray-500 dark:text-gray-400">No subscriptions tracked yet.</p>
         <button
           type="button"
           onClick={onAdd}
@@ -89,43 +96,47 @@ export default function SubscriptionsPanel({
   }
 
   const orderedSubscriptions = [...subscriptions].sort((left, right) => {
-    const statusDifference = (STATUS_ORDER[left.status] ?? 99) - (STATUS_ORDER[right.status] ?? 99);
+    const statusDifference =
+      (STATUS_ORDER[displayStatus(left)] ?? 99) -
+      (STATUS_ORDER[displayStatus(right)] ?? 99);
     return statusDifference || left.nextRenewalAt.localeCompare(right.nextRenewalAt) || left.name.localeCompare(right.name);
   });
 
   return (
-    <div className="bg-white rounded-xl border border-gray-200 overflow-x-auto">
+    <div className="overflow-x-auto rounded-xl border border-gray-200 bg-white dark:border-gray-700 dark:bg-gray-800">
       <table className="responsive-table w-full text-sm">
         <caption className="sr-only">Tracked subscriptions</caption>
         <thead>
-          <tr className="border-b border-gray-100 bg-gray-50">
-            <th className="text-left px-6 py-3 font-medium text-gray-500">Name</th>
-            <th className="text-left px-6 py-3 font-medium text-gray-500 hidden sm:table-cell">Provider</th>
-            <th className="text-left px-6 py-3 font-medium text-gray-500 hidden md:table-cell">Project</th>
-            <th className="text-left px-6 py-3 font-medium text-gray-500">Cost</th>
-            <th className="text-left px-6 py-3 font-medium text-gray-500 hidden lg:table-cell">~ / mo</th>
-            <th className="text-left px-6 py-3 font-medium text-gray-500 hidden lg:table-cell">Next renewal</th>
-            <th className="text-left px-6 py-3 font-medium text-gray-500">Status</th>
-            <th className="text-right px-6 py-3 font-medium text-gray-500">Actions</th>
+          <tr className="border-b border-gray-100 bg-gray-50 dark:border-gray-700 dark:bg-gray-900/60">
+            <th className="px-6 py-3 text-left font-medium text-gray-500 dark:text-gray-400">Name</th>
+            <th className="hidden px-6 py-3 text-left font-medium text-gray-500 dark:text-gray-400 sm:table-cell">Provider</th>
+            <th className="hidden px-6 py-3 text-left font-medium text-gray-500 dark:text-gray-400 md:table-cell">Project</th>
+            <th className="px-6 py-3 text-left font-medium text-gray-500 dark:text-gray-400">Cost</th>
+            <th className="hidden px-6 py-3 text-left font-medium text-gray-500 dark:text-gray-400 lg:table-cell">~ / mo</th>
+            <th className="hidden px-6 py-3 text-left font-medium text-gray-500 dark:text-gray-400 lg:table-cell">Renewal / term</th>
+            <th className="px-6 py-3 text-left font-medium text-gray-500 dark:text-gray-400">Status</th>
+            <th className="px-6 py-3 text-right font-medium text-gray-500 dark:text-gray-400">Actions</th>
           </tr>
         </thead>
         <tbody>
-          {orderedSubscriptions.map((sub) => (
-            <tr key={sub.id} className="border-b border-gray-50 hover:bg-gray-50">
+          {orderedSubscriptions.map((sub) => {
+            const effectiveStatus = displayStatus(sub);
+            return (
+              <tr key={sub.id} className="border-b border-gray-50 hover:bg-gray-50 dark:border-gray-700 dark:hover:bg-gray-700/40">
               <td data-label="Name" className="px-6 py-4">
-                <p className="font-medium text-gray-900">{sub.name}</p>
-                {sub.description && <p className="mt-0.5 max-w-xs text-xs text-gray-500">{sub.description}</p>}
-                {!sub.autoRenew && <p className="text-[10px] text-gray-400">does not auto-renew</p>}
+                <p className="font-medium text-gray-900 dark:text-gray-100">{sub.name}</p>
+                {sub.description && <p className="mt-0.5 max-w-xs text-xs text-gray-500 dark:text-gray-400">{sub.description}</p>}
+                {!sub.autoRenew && <p className="text-[10px] text-gray-400 dark:text-gray-500">does not auto-renew</p>}
                 {sub.externalBillingSource && sub.externalBillingId && (
-                  <p className="mt-1 text-[10px] font-medium text-blue-700">
+                  <p className="mt-1 text-[10px] font-medium text-blue-700 dark:text-blue-300">
                     Linked to {sub.externalBillingSource}
                   </p>
                 )}
               </td>
-              <td data-label="Provider" className="px-6 py-4 text-gray-500 hidden sm:table-cell">{sub.provider.displayName}</td>
+              <td data-label="Provider" className="hidden px-6 py-4 text-gray-500 dark:text-gray-400 sm:table-cell">{sub.provider.displayName}</td>
               <td data-label="Project" className="px-6 py-4 hidden md:table-cell">
                 {sub.project ? (
-                  <span className="inline-flex px-2 py-0.5 text-xs rounded bg-blue-50 text-blue-700">
+                  <span className="inline-flex rounded bg-blue-50 px-2 py-0.5 text-xs text-blue-700 dark:bg-blue-950/60 dark:text-blue-300">
                     {sub.project.name}
                   </span>
                 ) : (
@@ -133,29 +144,33 @@ export default function SubscriptionsPanel({
                 )}
               </td>
               <td data-label="Cost" className="px-6 py-4">
-                <p className="font-medium text-gray-900">{formatUsd(sub.costUsd, sub.currency)}</p>
+                <p className="font-medium text-gray-900 dark:text-gray-100">{formatUsd(sub.costUsd, sub.currency)}</p>
                 <p className="text-xs text-gray-400">{formatCadence(sub.intervalCount, sub.interval)}</p>
                 {sub.currency !== "USD" && (
                   <p className="mt-1 text-[10px] font-medium text-red-600">Convert to USD before activation</p>
                 )}
               </td>
-              <td data-label="Monthly equivalent" className="px-6 py-4 text-gray-500 hidden lg:table-cell">
+              <td data-label="Monthly equivalent" className="hidden px-6 py-4 text-gray-500 dark:text-gray-400 lg:table-cell">
                 {formatUsd(sub.monthlyEquivalentUsd, sub.currency)}
               </td>
-              <td data-label="Next renewal" className="px-6 py-4 text-gray-500 text-xs hidden lg:table-cell">
-                {sub.status === "active" && sub.autoRenew
+              <td data-label="Renewal / term" className="hidden px-6 py-4 text-xs text-gray-500 dark:text-gray-400 lg:table-cell">
+                {effectiveStatus === "active" && sub.autoRenew
                   ? new Date(sub.nextRenewalAt).toLocaleDateString(undefined, {
                       timeZone: "UTC",
                     })
-                  : "Not scheduled"}
+                  : !sub.autoRenew && ["active", "expired"].includes(effectiveStatus)
+                    ? `${new Date(sub.nextRenewalAt).toLocaleDateString(undefined, {
+                        timeZone: "UTC",
+                      })} ${effectiveStatus === "expired" ? "ended" : "term end"}`
+                    : "Not scheduled"}
               </td>
               <td data-label="Status" className="px-6 py-4">
                 <span
                   className={`inline-flex px-2 py-1 rounded-full text-xs font-medium ${
-                    STATUS_STYLES[sub.status] ?? "bg-gray-100 text-gray-500"
+                    STATUS_STYLES[effectiveStatus] ?? "bg-gray-100 text-gray-500 dark:bg-gray-700 dark:text-gray-400"
                   }`}
                 >
-                  {sub.status}
+                  {effectiveStatus}
                 </span>
               </td>
               <td data-label="Actions" className="px-6 py-4">
@@ -164,7 +179,7 @@ export default function SubscriptionsPanel({
                     type="button"
                     aria-label={`Edit ${sub.name}`}
                     onClick={() => onEdit(sub)}
-                    className="px-3 py-1.5 text-xs font-medium text-gray-600 bg-gray-50 hover:bg-gray-100 rounded-md transition-colors"
+                    className="rounded-md bg-gray-50 px-3 py-1.5 text-xs font-medium text-gray-600 transition-colors hover:bg-gray-100 dark:bg-gray-700 dark:text-gray-200 dark:hover:bg-gray-600"
                   >
                     Edit
                   </button>
@@ -183,7 +198,7 @@ export default function SubscriptionsPanel({
                         type="button"
                         aria-label={`Cancel deletion of ${sub.name}`}
                         onClick={() => setDeleteConfirm(null)}
-                        className="px-2 py-1.5 text-xs text-gray-400 hover:text-gray-600"
+                        className="px-2 py-1.5 text-xs text-gray-400 hover:text-gray-600 dark:text-gray-500 dark:hover:text-gray-300"
                       >
                         Cancel
                       </button>
@@ -193,15 +208,16 @@ export default function SubscriptionsPanel({
                       type="button"
                       aria-label={`Delete ${sub.name}`}
                       onClick={() => setDeleteConfirm(sub.id)}
-                      className="px-3 py-1.5 text-xs font-medium text-red-600 bg-red-50 hover:bg-red-100 rounded-md transition-colors"
+                      className="rounded-md bg-red-50 px-3 py-1.5 text-xs font-medium text-red-600 transition-colors hover:bg-red-100 dark:bg-red-950/60 dark:text-red-300 dark:hover:bg-red-900/60"
                     >
                       Delete
                     </button>
                   )}
                 </div>
               </td>
-            </tr>
-          ))}
+              </tr>
+            );
+          })}
         </tbody>
       </table>
     </div>

@@ -102,6 +102,10 @@ fi
 log "creating and verifying pre-migration SQLite backup when a database exists."
 node "${REPO_ROOT}/scripts/backup-sqlite-before-migrate.mjs"
 
+log "checking provider billing links before enforcing uniqueness."
+node "${REPO_ROOT}/scripts/audit-subscription-links.mjs"
+node "${REPO_ROOT}/scripts/ensure-subscription-link-unique-index.mjs"
+
 node "${REPO_ROOT}/scripts/migrate-safe.mjs"
 
 if [[ "${litestream_enabled}" == "true" ]]; then

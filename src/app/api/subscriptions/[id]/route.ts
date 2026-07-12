@@ -3,7 +3,14 @@ import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { parseSubscriptionUpdateInput } from "@/lib/subscription-input";
 import {
+  canLinkSubscriptionToExternalBilling,
+  externalBillingFreshnessWindowMs,
+  isExternalBillingLinkCandidate,
+  resolveExternalBillingPeriod,
+} from "@/lib/external-billing-link";
+import {
   advancePeriod,
+  effectiveSubscriptionStatus,
   initialCycle,
   rescheduleCycle,
   isSubscriptionInterval,
@@ -49,24 +56,216 @@ export async function PUT(request: Request, { params }: { params: Promise<{ id: 
   }
 
   const effectiveProviderId = update.providerId ?? existing.providerId;
+  const validationNow = new Date();
+  const wasEffectivelyExpired =
+    effectiveSubscriptionStatus(existing, validationNow) === "expired";
+  const isExpiredRepurchase =
+    wasEffectivelyExpired &&
+    (update.status ?? existing.status) === "active" &&
+    (update.autoRenew ?? existing.autoRenew);
+  const isRawActivating =
+    update.status === "active" && existing.status !== "active";
+  const isActivating = isRawActivating || isExpiredRepurchase;
+  const isResume = isActivating && update.activationMode === "resume";
+  const isRepurchase = isActivating && update.activationMode !== "resume";
   const externalBillingLinkSupplied =
     update.externalBillingSource !== undefined ||
     update.externalBillingId !== undefined;
-  if (update.externalBillingSource && update.externalBillingId) {
+  const providerChanged =
+    update.providerId !== undefined && update.providerId !== existing.providerId;
+  const clearLinkForProviderMove = providerChanged && !externalBillingLinkSupplied;
+  const effectiveExternalSource = clearLinkForProviderMove
+    ? null
+    : update.externalBillingSource !== undefined
+      ? update.externalBillingSource
+      : existing.externalBillingSource;
+  const effectiveExternalId = clearLinkForProviderMove
+    ? null
+    : update.externalBillingId !== undefined
+      ? update.externalBillingId
+      : existing.externalBillingId;
+  const externalBillingLinkChanged =
+    (update.externalBillingSource !== undefined &&
+      update.externalBillingSource !== existing.externalBillingSource) ||
+    (update.externalBillingId !== undefined &&
+      update.externalBillingId !== existing.externalBillingId);
+  const linkedScheduleChanged =
+    (update.interval !== undefined && update.interval !== existing.interval) ||
+    (update.intervalCount !== undefined &&
+      update.intervalCount !== existing.intervalCount) ||
+    (update.anchorDay !== undefined &&
+      update.anchorDay !== existing.anchorDay) ||
+    (update.startDate !== undefined &&
+      !sameCalendarDay(update.startDate, existing.startDate));
+  if (
+    effectiveExternalSource &&
+    effectiveExternalId &&
+    linkedScheduleChanged &&
+    !externalBillingLinkChanged &&
+    !providerChanged &&
+    !isRepurchase
+  ) {
+    return NextResponse.json(
+      {
+        error:
+          "Unlink the provider billing record before changing billing dates or cadence",
+      },
+      { status: 400 }
+    );
+  }
+  if (
+    isResume &&
+    (!["paused", "canceled"].includes(existing.status) ||
+      !existing.lastChargedPeriodStart)
+  ) {
+    return NextResponse.json(
+      {
+        error:
+          "Only a previously charged paused or canceled subscription can resume its paid-through term",
+      },
+      { status: 400 }
+    );
+  }
+  if (
+    effectiveExternalSource &&
+    effectiveExternalId &&
+    (externalBillingLinkChanged || providerChanged) &&
+    isActivating &&
+    update.activationMode === "resume"
+  ) {
+    return NextResponse.json(
+      { error: "Resume cannot also change the provider billing identity" },
+      { status: 400 }
+    );
+  }
+  const linkCompatibilityChanged =
+    externalBillingLinkChanged ||
+    providerChanged ||
+    (update.costUsd !== undefined && update.costUsd !== existing.costUsd) ||
+    (update.currency !== undefined && update.currency !== existing.currency) ||
+    (update.interval !== undefined && update.interval !== existing.interval) ||
+    (update.intervalCount !== undefined &&
+      update.intervalCount !== existing.intervalCount) ||
+    (update.status !== undefined && update.status !== existing.status) ||
+    (update.autoRenew !== undefined && update.autoRenew !== existing.autoRenew) ||
+    isExpiredRepurchase;
+  let linkedCycleOverride: {
+    startDate: Date;
+    currentPeriodStart: Date;
+    nextRenewalAt: Date;
+  } | null = null;
+  if (
+    effectiveExternalSource &&
+    effectiveExternalId &&
+    linkCompatibilityChanged
+  ) {
     const externalBilling = await prisma.providerExternalBilling.findUnique({
       where: {
         providerId_source_externalId: {
           providerId: effectiveProviderId,
-          source: update.externalBillingSource,
-          externalId: update.externalBillingId,
+          source: effectiveExternalSource,
+          externalId: effectiveExternalId,
         },
       },
-      select: { id: true },
+      select: {
+        externalId: true,
+        kind: true,
+        status: true,
+        amountUsd: true,
+        currency: true,
+        billingInterval: true,
+        currentPeriodStart: true,
+        currentPeriodEnd: true,
+        rollupRole: true,
+        syncedAt: true,
+        provider: { select: { refreshIntervalMin: true } },
+      },
     });
     if (!externalBilling) {
       return NextResponse.json(
         { error: "External billing link does not match this provider" },
         { status: 400 }
+      );
+    }
+    const candidateSubscription = {
+      costUsd: update.costUsd ?? existing.costUsd,
+      currency: update.currency ?? existing.currency,
+      interval: update.interval ?? existing.interval,
+      intervalCount: update.intervalCount ?? existing.intervalCount,
+      status: update.status ?? existing.status,
+    };
+    const effectiveLinkSubscription = {
+      ...candidateSubscription,
+      status: isActivating
+        ? "active"
+        : effectiveSubscriptionStatus({
+            status: candidateSubscription.status,
+            autoRenew: update.autoRenew ?? existing.autoRenew,
+            nextRenewalAt: existing.nextRenewalAt,
+          }),
+    };
+    if (
+      !isExternalBillingLinkCandidate(externalBilling, {
+        now: validationNow,
+        staleAfterMs: externalBillingFreshnessWindowMs(
+          externalBilling.provider.refreshIntervalMin
+        ),
+      }) ||
+      !canLinkSubscriptionToExternalBilling(
+        effectiveLinkSubscription,
+        externalBilling
+      )
+    ) {
+      return NextResponse.json(
+        {
+          error:
+            "External billing link must be fresh, current, live, canonical, USD, and match the subscription amount and cadence",
+        },
+        { status: 400 }
+      );
+    }
+    if (
+      externalBillingLinkChanged ||
+      providerChanged ||
+      isRepurchase ||
+      isResume
+    ) {
+      const linkedPeriod = resolveExternalBillingPeriod(externalBilling)!;
+      if (
+        !isRepurchase &&
+        !isResume &&
+        existing.lastChargedPeriodStart &&
+        (existing.lastChargedPeriodStart.getTime() !==
+          linkedPeriod.start.getTime() ||
+          existing.nextRenewalAt.getTime() !== linkedPeriod.end.getTime())
+      ) {
+        return NextResponse.json(
+          {
+            error:
+              "This subscription has charged history from a different billing period; create a new linked term instead",
+          },
+          { status: 400 }
+        );
+      }
+      linkedCycleOverride = {
+        startDate: linkedPeriod.start,
+        currentPeriodStart: linkedPeriod.start,
+        nextRenewalAt: linkedPeriod.end,
+      };
+    }
+    const existingLink = await prisma.subscription.findFirst({
+      where: {
+        providerId: effectiveProviderId,
+        externalBillingSource: effectiveExternalSource,
+        externalBillingId: effectiveExternalId,
+        NOT: { id },
+      },
+      select: { id: true },
+    });
+    if (existingLink) {
+      return NextResponse.json(
+        { error: "External billing record is already linked to another subscription" },
+        { status: 409 }
       );
     }
   }
@@ -140,9 +339,22 @@ export async function PUT(request: Request, { params }: { params: Promise<{ id: 
   // intentionally discards any prior lastChargedPeriodStart: activation
   // starts a fresh cycle, not a continuation of never-billed history. A row
   // that was already "active" is untouched (isActivating is false).
-  const isActivating = update.status === "active" && existing.status !== "active";
-
-  if (isActivating) {
+  if (linkedCycleOverride) {
+    data.interval = interval;
+    data.intervalCount = intervalCount;
+    data.anchorDay = null;
+    data.startDate = linkedCycleOverride.startDate;
+    data.currentPeriodStart = linkedCycleOverride.currentPeriodStart;
+    data.nextRenewalAt = linkedCycleOverride.nextRenewalAt;
+    // A repurchase is a new charge. Merely linking an already-materialized
+    // row marks the provider's current period as accounted so editing cannot
+    // create a second overlapping charge.
+    data.lastChargedPeriodStart = isRepurchase
+      ? null
+      : isResume
+        ? linkedCycleOverride.currentPeriodStart
+        : existing.lastChargedPeriodStart;
+  } else if (isActivating) {
     if (update.activationMode === "resume") {
       if (
         !["paused", "canceled"].includes(existing.status) ||
@@ -178,7 +390,10 @@ export async function PUT(request: Request, { params }: { params: Promise<{ id: 
       data.nextRenewalAt = nextRenewalAt;
       data.lastChargedPeriodStart = currentPeriodStart;
     } else {
-      const activationStartDate = update.startDate ?? new Date();
+      const activationStartDate = isExpiredRepurchase &&
+        (!update.startDate || sameCalendarDay(update.startDate, existing.startDate))
+        ? validationNow
+        : update.startDate ?? validationNow;
       const cycle = initialCycle({ startDate: activationStartDate, interval, intervalCount, anchorDay });
       data.interval = interval;
       data.intervalCount = intervalCount;
@@ -212,6 +427,15 @@ export async function PUT(request: Request, { params }: { params: Promise<{ id: 
     const subscription = await prisma.subscription.update({ where: { id }, data });
     return NextResponse.json(subscription);
   } catch (error) {
+    if (
+      error instanceof Prisma.PrismaClientKnownRequestError &&
+      error.code === "P2002"
+    ) {
+      return NextResponse.json(
+        { error: "External billing record is already linked to another subscription" },
+        { status: 409 }
+      );
+    }
     console.error("Failed to update subscription:", error);
     return NextResponse.json({ error: "Failed to update subscription" }, { status: 500 });
   }

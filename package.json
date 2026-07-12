@@ -19,6 +19,8 @@
     "audit:subscription-currency": "node scripts/audit-subscription-currency.mjs",
     "migrate:provider-secrets": "node scripts/migrate-provider-config-secrets.mjs",
     "audit:provider-duplicates": "node scripts/audit-provider-duplicates.mjs",
+    "audit:subscription-links": "node scripts/audit-subscription-links.mjs",
+    "ensure:subscription-link-index": "node scripts/ensure-subscription-link-unique-index.mjs",
     "test": "vitest run",
     "test:migrate-safe": "node scripts/test-migrate-safe-repro.mjs",
     "test:sqlite-backup": "node scripts/test-sqlite-pre-migration-backup.mjs",

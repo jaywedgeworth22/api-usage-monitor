@@ -22,6 +22,8 @@ describe("summarizeExternalUsageEvents", () => {
       provider: "openai",
       service: "responses",
       projectId: "project-a",
+      metricType: "usage",
+      unit: "token",
       quantity: 2,
       costUsd: 1,
       requests: 1,
@@ -54,6 +56,8 @@ describe("summarizeExternalUsageEvents", () => {
         provider: "openai",
         service: "responses",
         projectId: "project-a",
+        metricType: "usage",
+        unit: "token",
         eventCount: 5,
         totalCostUsd: 5,
         totalRequests: 5,
@@ -87,5 +91,56 @@ describe("summarizeExternalUsageEvents", () => {
         }),
       ],
     });
+  });
+
+  it("keeps metric units in separate quota groups", async () => {
+    prismaMock.externalUsageEvent.findMany.mockResolvedValueOnce([
+      {
+        id: "tokens",
+        sourceApp: "socratic-trade",
+        environment: "prod",
+        provider: "openai",
+        service: "responses",
+        projectId: null,
+        metricType: "usage",
+        unit: "token",
+        quantity: 10_000,
+        costUsd: null,
+        requests: 0,
+        limit: 20_000,
+        limitWindow: "month",
+        occurredAt: new Date("2026-07-12T00:00:00.000Z"),
+      },
+      {
+        id: "requests",
+        sourceApp: "socratic-trade",
+        environment: "prod",
+        provider: "openai",
+        service: "responses",
+        projectId: null,
+        metricType: "usage",
+        unit: "request",
+        quantity: 0,
+        costUsd: null,
+        requests: 10,
+        limit: 100,
+        limitWindow: "month",
+        occurredAt: new Date("2026-07-12T00:00:00.000Z"),
+      },
+    ]);
+    prismaMock.externalUsageEventDailyRollup.findMany.mockResolvedValue([]);
+
+    const result = await summarizeExternalUsageEvents(
+      new Date("2026-07-01T00:00:00.000Z"),
+      new Date("2026-07-01T00:00:00.000Z")
+    );
+
+    expect(result.groups).toHaveLength(2);
+    expect(result.groups).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ unit: "token", totalQuantity: 10_000, limit: 20_000 }),
+        expect.objectContaining({ unit: "request", totalRequests: 10, limit: 100 }),
+      ])
+    );
   });
 });

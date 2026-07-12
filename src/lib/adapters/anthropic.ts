@@ -137,7 +137,7 @@ export async function fetchUsage(
   let foundUsd = false;
   for (const bucket of buckets) {
     for (const result of bucket.results ?? []) {
-      if ((result.currency ?? "USD").toUpperCase() !== "USD") continue;
+      if (result.currency?.trim().toUpperCase() !== "USD") continue;
       const amount = parseNumber(result.amount);
       if (amount != null) {
         totalCents += amount;
@@ -175,11 +175,15 @@ export async function fetchUsage(
         {
           externalId: startingAt.slice(0, 7),
           kind: "billing_period",
+          serviceName: "Anthropic API",
+          planName: "Organization cost report",
           status: "open",
           amountUsd: foundUsd ? totalCents / 100 : null,
           currency: "USD",
           currentPeriodStart: startingAt,
           currentPeriodEnd: endingAt,
+          rollupRole: "canonical",
+          dateKind: "report_through",
         },
       ],
     },

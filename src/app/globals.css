@@ -4,6 +4,10 @@
 
 :root {
   --chart-grid: #e5e7eb;
+  --chart-axis: #4b5563;
+  --chart-balance: #1d4ed8;
+  --chart-cost: #92400e;
+  --chart-credits: #6b21a8;
   --chart-tooltip-bg: #ffffff;
   --chart-tooltip-text: #111827;
 }
@@ -41,6 +45,10 @@ body {
     margin-bottom: 0;
   }
 
+  .dark .responsive-table tbody tr {
+    border-color: rgb(55 65 81);
+  }
+
   .responsive-table tbody td {
     display: grid;
     grid-template-columns: minmax(6.5rem, 0.42fr) minmax(0, 1fr);
@@ -53,11 +61,34 @@ body {
 
   .responsive-table tbody td::before {
     content: attr(data-label);
+    grid-column: 1;
+    grid-row: 1;
     color: rgb(107 114 128);
     font-size: 0.7rem;
     font-weight: 600;
     letter-spacing: 0.025em;
     text-transform: uppercase;
+  }
+
+  .dark .responsive-table tbody td::before {
+    color: rgb(156 163 175);
+  }
+
+  .responsive-table tbody td > * {
+    grid-column: 2;
+  }
+
+  .responsive-table tbody td.table-group-cell {
+    display: block;
+    padding: 0;
+  }
+
+  .responsive-table tbody td.table-group-cell::before {
+    display: none;
+  }
+
+  .responsive-table tbody td.table-group-cell > * {
+    grid-column: 1 / -1;
   }
 
   .responsive-table .table-actions {
@@ -67,6 +98,10 @@ body {
 
 .dark {
     --chart-grid: #374151;
+    --chart-axis: #d1d5db;
+    --chart-balance: #60a5fa;
+    --chart-cost: #fbbf24;
+    --chart-credits: #d8b4fe;
     --chart-tooltip-bg: #111827;
     --chart-tooltip-text: #f3f4f6;
   }

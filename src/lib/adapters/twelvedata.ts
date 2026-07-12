@@ -60,10 +60,15 @@ export async function fetchUsage(apiKey: string): Promise<UsageResult> {
             {
               externalId: "api-plan",
               kind: "plan",
+              serviceName: "Twelve Data API",
               planName,
               status: "active",
               requestLimit: creditLimit,
               requestLimitWindow: "provider-defined-credit-window",
+              usageQuantity: used,
+              remainingQuantity: remaining,
+              usageUnit: "credits",
+              rollupRole: "metadata",
             },
           ],
         }

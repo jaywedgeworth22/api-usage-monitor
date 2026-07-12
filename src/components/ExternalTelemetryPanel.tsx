@@ -8,6 +8,8 @@ export interface ExternalUsageGroup {
   provider: string;
   service: string | null;
   projectId: string | null;
+  metricType: string;
+  unit: string | null;
   projectName?: string | null;
   eventCount: number;
   totalCostUsd: number;
@@ -84,13 +86,24 @@ export default function ExternalTelemetryPanel({ usageSummary }: ExternalTelemet
             </thead>
             <tbody className="divide-y divide-gray-100 dark:divide-gray-700">
               {visibleGroups.map((group) => {
+                const normalizedUnit = group.unit?.trim().toLowerCase();
+                const requestBased =
+                  normalizedUnit === "request" ||
+                  normalizedUnit === "requests" ||
+                  (group.totalQuantity === 0 && group.totalRequests !== 0);
+                const displayedUsage =
+                  requestBased
+                    ? group.totalRequests
+                    : group.totalQuantity;
+                const displayedUnit =
+                  group.unit || (requestBased ? "requests" : group.metricType);
                 const usagePercent =
-                  group.limit && group.totalQuantity
-                    ? Math.min((group.totalQuantity / group.limit) * 100, 999)
+                  group.limit != null && group.limit > 0
+                    ? Math.min((displayedUsage / group.limit) * 100, 999)
                     : null;
                 return (
                   <tr
-                    key={`${group.sourceApp}-${group.environment ?? ""}-${group.provider}-${group.service ?? ""}-${group.projectId ?? ""}`}
+                    key={`${group.sourceApp}-${group.environment ?? ""}-${group.provider}-${group.service ?? ""}-${group.projectId ?? ""}-${group.metricType}-${group.unit ?? ""}`}
                     className="hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors"
                   >
                     <td className="px-6 py-4" data-label="Source">
@@ -109,17 +122,15 @@ export default function ExternalTelemetryPanel({ usageSummary }: ExternalTelemet
                         {group.provider}
                       </p>
                       <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">
-                        {group.service || "API"}
+                        {group.service || "API"} · {displayedUnit}
                       </p>
                     </td>
                     <td className="px-6 py-4 text-right" data-label="Usage">
                       <p className="text-sm font-semibold text-gray-900 dark:text-gray-100">
-                        {new Intl.NumberFormat("en-US").format(
-                          group.totalRequests || group.totalQuantity
-                        )}
+                        {new Intl.NumberFormat("en-US").format(displayedUsage)}
                       </p>
                       <p className="text-xs text-gray-500 dark:text-gray-400">
-                        {group.totalCostUsd
+                        {group.totalCostUsd !== 0
                           ? new Intl.NumberFormat("en-US", {
                               style: "currency",
                               currency: "USD",

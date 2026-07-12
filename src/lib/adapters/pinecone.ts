@@ -3,6 +3,23 @@ import { AdapterError, errorResult, fetchJson, type UsageResult } from "./helper
 interface PineconeIndex {
   name: string;
   host?: string;
+  dimension?: number;
+  metric?: string;
+  status?: { ready?: boolean; state?: string };
+  spec?: {
+    serverless?: { cloud?: string; region?: string };
+    pod?: { environment?: string; pod_type?: string; pods?: number };
+  };
+}
+
+const PINECONE_API_VERSION = "2026-04";
+
+export function pineconeHeaders(apiKey: string): Record<string, string> {
+  return {
+    "Api-Key": apiKey,
+    "X-Pinecone-Api-Version": PINECONE_API_VERSION,
+    "Content-Type": "application/json",
+  };
 }
 
 export function isAllowedPineconeIndexHost(host: string): boolean {
@@ -27,10 +44,7 @@ export function isAllowedPineconeIndexHost(host: string): boolean {
 export async function fetchUsage(apiKey: string): Promise<UsageResult> {
   // Fetch list of indexes, then get stats for each
   const indexesRes = await fetchJson("https://api.pinecone.io/indexes", {
-    headers: {
-      "Api-Key": apiKey,
-      "Content-Type": "application/json",
-    },
+    headers: pineconeHeaders(apiKey),
   });
 
   if (!indexesRes.ok) {
@@ -44,8 +58,10 @@ export async function fetchUsage(apiKey: string): Promise<UsageResult> {
 
   let totalVectorCount = 0;
   const stats: unknown[] = [];
+  const billingRecords = [];
 
   for (const idx of indexes) {
+    let vectorCount: number | null = null;
     try {
       const host = idx.host;
       if (!host) continue;
@@ -58,10 +74,7 @@ export async function fetchUsage(apiKey: string): Promise<UsageResult> {
       const statsRes = await fetchJson(
         `https://${host}/describe_index_stats`,
         {
-          headers: {
-            "Api-Key": apiKey,
-            "Content-Type": "application/json",
-          },
+          headers: pineconeHeaders(apiKey),
           method: "POST",
           body: JSON.stringify({}),
         },
@@ -73,6 +86,7 @@ export async function fetchUsage(apiKey: string): Promise<UsageResult> {
         stats.push({ name: idx.name, stats: indexStats });
         if (typeof indexStats.totalVectorCount === "number") {
           totalVectorCount += indexStats.totalVectorCount;
+          vectorCount = indexStats.totalVectorCount;
         }
       } else {
         stats.push({ name: idx.name, error: `HTTP ${statsRes.status}` });
@@ -83,6 +97,26 @@ export async function fetchUsage(apiKey: string): Promise<UsageResult> {
         error: err instanceof Error ? err.message : "Unknown",
       });
     }
+
+    const serverless = idx.spec?.serverless;
+    const pod = idx.spec?.pod;
+    const planName = serverless
+      ? ["Serverless", serverless.cloud, serverless.region].filter(Boolean).join(" · ")
+      : pod
+        ? ["Pod", pod.pod_type, pod.environment].filter(Boolean).join(" · ")
+        : "Index";
+    billingRecords.push({
+      externalId: idx.name,
+      kind: "service_plan" as const,
+      serviceName: idx.name,
+      planName,
+      status:
+        idx.status?.state ??
+        (idx.status?.ready === true ? "ready" : idx.status?.ready === false ? "initializing" : "unknown"),
+      usageQuantity: vectorCount,
+      usageUnit: "vectors",
+      rollupRole: "metadata" as const,
+    });
   }
 
   rawData.stats = stats;
@@ -100,7 +134,13 @@ export async function fetchUsage(apiKey: string): Promise<UsageResult> {
         vectorCount: true,
         billingCost: false,
         subscriptionStatus: false,
+        apiVersion: PINECONE_API_VERSION,
       },
+    },
+    externalBilling: {
+      source: "pinecone-index-inventory",
+      authoritative: true,
+      records: billingRecords,
     },
   };
 }

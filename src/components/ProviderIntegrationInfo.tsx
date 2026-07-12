@@ -67,10 +67,10 @@ export default function ProviderIntegrationInfo({
   const label = `How ${displayName} integrates with this app`;
   const variantClass =
     variant === "icon"
-      ? "relative z-10 inline-flex h-8 w-8 items-center justify-center rounded-lg text-gray-400 hover:bg-gray-100 hover:text-blue-700"
+      ? "relative z-10 inline-flex h-8 w-8 items-center justify-center rounded-lg text-gray-400 hover:bg-gray-100 hover:text-blue-700 dark:text-gray-500 dark:hover:bg-gray-700 dark:hover:text-blue-300"
       : variant === "name"
-        ? "inline-flex items-center gap-1.5 text-left font-medium text-gray-900 hover:text-blue-700"
-        : "inline-flex items-center gap-2 rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 hover:text-blue-700";
+        ? "inline-flex items-center gap-1.5 text-left font-medium text-gray-900 hover:text-blue-700 dark:text-gray-100 dark:hover:text-blue-300"
+        : "inline-flex items-center gap-2 rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 hover:text-blue-700 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-200 dark:hover:bg-gray-700 dark:hover:text-blue-300";
 
   return (
     <>

@@ -31,9 +31,9 @@
  * IMPORTANT - Alpha Vantage provider name: "alphavantage" (NO hyphen). The
  * adapter registry (src/lib/adapters/index.ts) dispatches usage-fetch on
  * `provider.name.toLowerCase()` and only registers the key "alphavantage" —
- * a Provider row named e.g. "alpha-vantage" would silently fall through to
- * the generic "custom" adapter (no real usage polling) instead of the actual
- * Alpha Vantage adapter. This script creates/matches the provider as
+ * a Provider row named e.g. "alpha-vantage" would fail closed as an unknown
+ * built-in (no polling) instead of reaching the Alpha Vantage adapter. This
+ * script creates/matches the provider as
  * "alphavantage" and WARNS (does not rename) if a hyphenated near-miss name
  * is found in the database instead.
  */
@@ -166,8 +166,8 @@ async function warnOnHyphenatedNearMiss(canonicalName) {
       log(
         `WARNING: found provider "${nearMiss.name}" (id=${nearMiss.id}) which looks like a ` +
           `hyphen/underscore variant of "${canonicalName}". The adapter registry only recognizes ` +
-          `the exact name "alphavantage" (src/lib/adapters/index.ts) — "${nearMiss.name}" silently ` +
-          `falls through to the generic "custom" adapter (no real usage polling). This script does ` +
+          `the exact name "alphavantage" (src/lib/adapters/index.ts) — "${nearMiss.name}" fails ` +
+          `closed without a poll adapter. This script does ` +
           `NOT rename it; that is a manual data-repair decision.`
       );
     }

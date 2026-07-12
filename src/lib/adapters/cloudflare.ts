@@ -219,8 +219,11 @@ export async function fetchUsage(
       rawData.workers = workersData;
       successfulCalls++;
       if (workersData.result?.totals?.requests != null) {
-        totalRequests =
-          (totalRequests ?? 0) + workersData.result.totals.requests;
+        // Account analytics is the broader total. Workers analytics is a
+        // fallback only, never an additive second count of the same traffic.
+        if (totalRequests == null) {
+          totalRequests = workersData.result.totals.requests;
+        }
       }
     } else {
       failedStatuses.push(workersRes.status);
@@ -245,15 +248,23 @@ export async function fetchUsage(
     const billingRecords: AdapterExternalBillingRecord[] = [];
     for (const subscription of rows) {
       const price = parseNumber(subscription.price);
+      const currency = subscription.currency?.trim().toUpperCase() || null;
       const periodStart = subscription.current_period_start
         ? Date.parse(subscription.current_period_start)
         : Number.NaN;
-      const isLive = !["Cancelled", "Failed", "Expired"].includes(
-        subscription.state ?? ""
-      );
+      const normalizedState = (subscription.state ?? "unknown")
+        .trim()
+        .toLowerCase();
+      const isLive = ![
+        "cancelled",
+        "canceled",
+        "failed",
+        "expired",
+        "inactive",
+      ].includes(normalizedState);
       if (
         price != null &&
-        (subscription.currency ?? "USD").toUpperCase() === "USD" &&
+        currency === "USD" &&
         isLive &&
         periodStart >= monthStartMs &&
         periodStart <= nowMs
@@ -261,29 +272,25 @@ export async function fetchUsage(
         billedThisMonthUsd += price;
         foundBilledSubscription = true;
       }
-      const normalizedState = (subscription.state ?? "unknown")
-        .trim()
-        .toLowerCase();
       billingRecords.push({
         externalId: subscription.id!,
         kind: "subscription",
+        serviceName: "Cloudflare subscription",
         planName:
           subscription.rate_plan?.public_name ??
           subscription.rate_plan?.id ??
           null,
         status: normalizedState || "unknown",
-        amountUsd:
-          price != null &&
-          (subscription.currency ?? "USD").toUpperCase() === "USD"
-            ? price
-            : null,
-        currency: subscription.currency ?? "USD",
+        amountUsd: currency == null ? null : price,
+        currency,
         billingInterval: subscription.frequency ?? null,
         currentPeriodStart: subscription.current_period_start ?? null,
         currentPeriodEnd: subscription.current_period_end ?? null,
         nextRenewalAt: isLive
           ? subscription.current_period_end ?? null
           : null,
+        rollupRole: "canonical",
+        dateKind: "renewal",
       });
     }
     billingSyncs.push({
@@ -358,17 +365,40 @@ export async function fetchUsage(
       });
       let paygoCostUsd = 0;
       let foundPaygoCost = false;
-      const byService = new Map<string, { contractedCostUsd: number; quantity: number }>();
+      const byService = new Map<string, {
+        serviceName: string;
+        currency: string | null;
+        contractedCost: number;
+        hasContractedCost: boolean;
+        quantity: number;
+        unit: string | null;
+      }>();
+      const costByCurrency = new Map<string, number>();
       for (const row of rows) {
         const cost = parseNumber(row.ContractedCost);
-        const currency = (row.BillingCurrency ?? "USD").toUpperCase();
+        const currency = row.BillingCurrency?.trim().toUpperCase() || null;
         if (currency === "USD" && cost != null) {
           paygoCostUsd += cost;
           foundPaygoCost = true;
         }
-        const key = row.ServiceName ?? "unknown";
-        const aggregate = byService.get(key) ?? { contractedCostUsd: 0, quantity: 0 };
-        if (currency === "USD") aggregate.contractedCostUsd += cost ?? 0;
+        if (currency && cost != null) {
+          costByCurrency.set(currency, (costByCurrency.get(currency) ?? 0) + cost);
+        }
+        const serviceName = row.ServiceName ?? "Unknown service";
+        const unit = row.ConsumedUnit ?? null;
+        const key = `${currency ?? "unknown"}\u0000${serviceName}\u0000${unit ?? ""}`;
+        const aggregate = byService.get(key) ?? {
+          serviceName,
+          currency,
+          contractedCost: 0,
+          hasContractedCost: false,
+          quantity: 0,
+          unit,
+        };
+        if (currency && cost != null) {
+          aggregate.contractedCost += cost;
+          aggregate.hasContractedCost = true;
+        }
         aggregate.quantity += parseNumber(row.ConsumedQuantity) ?? 0;
         byService.set(key, aggregate);
       }
@@ -385,23 +415,47 @@ export async function fetchUsage(
         currentPeriodCostUsd: foundPaygoCost ? paygoCostUsd : null,
         recordCount: rows.length,
         excludedOutOfPeriodRecords: paygo.result.length - rows.length,
-        byService: Object.fromEntries(byService),
+        byService: [...byService.values()],
         alpha: true,
       };
       billingSyncs.push({
         source: "cloudflare-paygo-usage",
         authoritative: true,
         records: rows.length > 0
-          ? [{
-            externalId: `${accountId}:${periodStart.slice(0, 7)}`,
-            kind: "billing_period",
-            planName: "Cloudflare PayGo billable usage",
-            status: "open",
-            amountUsd: foundPaygoCost ? paygoCostUsd : null,
-            currency: "USD",
-            currentPeriodStart: periodStart,
-            currentPeriodEnd: periodEnd,
-          }]
+          ? [
+              ...[...costByCurrency.entries()].map(([currency, amount]) => ({
+                externalId: `${accountId}:${periodStart.slice(0, 7)}:${currency}`,
+                kind: "billing_period",
+                serviceName: "Cloudflare PayGo",
+                planName: `${currency} monthly billable usage`,
+                status: "open",
+                amountUsd: amount,
+                currency,
+                currentPeriodStart: periodStart,
+                currentPeriodEnd: periodEnd,
+                rollupRole: "canonical",
+                dateKind: "period_end",
+              } as const)),
+              ...[...byService.values()].map((aggregate) => ({
+                externalId: `${accountId}:${periodStart.slice(0, 7)}:${encodeURIComponent(
+                  `${aggregate.currency ?? "unknown"}:${aggregate.serviceName}:${aggregate.unit ?? ""}`
+                )}`,
+                kind: "billing_period" as const,
+                serviceName: aggregate.serviceName,
+                planName: "PayGo service usage",
+                status: "open",
+                amountUsd: aggregate.hasContractedCost
+                  ? aggregate.contractedCost
+                  : null,
+                currency: aggregate.currency,
+                currentPeriodStart: periodStart,
+                currentPeriodEnd: periodEnd,
+                usageQuantity: aggregate.quantity,
+                usageUnit: aggregate.unit,
+                rollupRole: "component" as const,
+                dateKind: "period_end" as const,
+              })),
+            ]
           : [],
       });
     } else {

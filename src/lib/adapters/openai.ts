@@ -40,7 +40,7 @@ function parseCostsPage(data: unknown): {
       const currency =
         typeof amountRecord.currency === "string"
           ? amountRecord.currency.toLowerCase()
-          : "usd";
+          : null;
       const value = parseNumber(amountRecord.value);
       if (value == null || value < 0 || currency !== "usd") return null;
       costUsd += value;
@@ -179,6 +179,8 @@ export async function fetchUsage(
   let balance: number | null = null;
   let totalCost: number | null = null;
   let totalRequests: number | null = null;
+  let hardLimitUsd: number | null = null;
+  let softLimitUsd: number | null = null;
 
   if (costsRes.ok && costsRes.totalCost != null) {
     totalCost = costsRes.totalCost;
@@ -208,15 +210,15 @@ export async function fetchUsage(
 
   if (billingRes.ok && billingRes.data && typeof billingRes.data === "object") {
     const billing = billingRes.data as Record<string, unknown>;
-    const hardLimit = parseNumber(billing.hard_limit_usd);
-    const softLimit = parseNumber(billing.soft_limit_usd);
-    rawData.billingLimits = { hardLimitUsd: hardLimit, softLimitUsd: softLimit };
+    hardLimitUsd = parseNumber(billing.hard_limit_usd);
+    softLimitUsd = parseNumber(billing.soft_limit_usd);
+    rawData.billingLimits = { hardLimitUsd, softLimitUsd };
     if (balance == null) {
-      if (hardLimit != null && totalCost != null) {
-        balance = Math.max(0, hardLimit - totalCost);
+      if (hardLimitUsd != null && totalCost != null) {
+        balance = Math.max(0, hardLimitUsd - totalCost);
         rawData.remainingFromLimit = true;
       } else {
-        balance = hardLimit ?? softLimit;
+        balance = hardLimitUsd ?? softLimitUsd;
         rawData.balanceIsLimit = true;
       }
     }
@@ -257,5 +259,35 @@ export async function fetchUsage(
     totalRequests,
     credits: null,
     rawData,
+    externalBilling:
+      totalCost != null || hardLimitUsd != null || softLimitUsd != null
+        ? {
+            source: "openai-organization-costs",
+            authoritative: true,
+            records: [
+              {
+                externalId: monthStart,
+                kind: "billing_period",
+                serviceName: "OpenAI API",
+                planName:
+                  rawData.costSource === "organization_costs"
+                    ? "Organization costs"
+                    : "Legacy billing usage",
+                status: "open",
+                amountUsd: totalCost,
+                currency: "USD",
+                currentPeriodStart: monthStartDate.toISOString(),
+                currentPeriodEnd: now.toISOString(),
+                spendLimitUsd: hardLimitUsd ?? softLimitUsd,
+                spendLimitWindow:
+                  hardLimitUsd != null || softLimitUsd != null ? "month" : null,
+                usageQuantity: totalRequests,
+                usageUnit: "requests today",
+                rollupRole: "canonical",
+                dateKind: "report_through",
+              },
+            ],
+          }
+        : undefined,
   };
 }

@@ -74,6 +74,8 @@ model ProviderExternalBilling {
   source             String
   externalId         String
   kind               String
+  // Human-readable paid product/service distinct from a tier or plan name.
+  serviceName        String?
   planName           String?
   status             String?
   amountUsd          Float?
@@ -86,6 +88,18 @@ model ProviderExternalBilling {
   requestLimitWindow String?
   spendLimitUsd      Float?
   spendLimitWindow   String?
+  // Optional service-level usage/quota fields. These stay display-only and
+  // never enter canonical provider budget math.
+  usageQuantity      Float?
+  remainingQuantity  Float?
+  usageUnit          String?
+  // canonical = authoritative total/standalone charge; component = child
+  // breakdown of a canonical row; metadata = non-charge plan/quota record.
+  rollupRole         String?
+  // renewal | period_end | quota_reset | contract_end | report_through.
+  // Prevents an observation cutoff or billing
+  // period boundary from being presented as a guaranteed renewal.
+  dateKind           String?
   syncedAt           DateTime
   createdAt          DateTime  @default(now())
   updatedAt          DateTime  @updatedAt
@@ -380,7 +394,9 @@ model Subscription {
   updatedAt              DateTime  @updatedAt
 
   @@index([providerId])
-  @@index([providerId, externalBillingSource, externalBillingId])
+  // One provider billing identity can prove/dedupe at most one materialized
+  // local charge. SQLite permits multiple rows while either link field is NULL.
+  @@unique([providerId, externalBillingSource, externalBillingId])
   @@index([projectId])
   @@index([status, nextRenewalAt])
 }

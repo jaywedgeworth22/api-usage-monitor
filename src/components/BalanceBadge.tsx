@@ -7,7 +7,7 @@ export default function BalanceBadge({
 }) {
   if (amount == null) {
     return (
-      <span className={`text-gray-400 text-sm ${className}`}>--</span>
+      <span className={`text-sm text-gray-400 dark:text-gray-500 ${className}`}>--</span>
     );
   }
 
@@ -21,7 +21,9 @@ export default function BalanceBadge({
   return (
     <span
       className={`inline-flex items-center text-sm font-medium ${
-        isPositive ? "text-emerald-600" : "text-red-600"
+        isPositive
+          ? "text-emerald-600 dark:text-emerald-300"
+          : "text-red-600 dark:text-red-300"
       } ${className}`}
     >
       {isPositive ? formatted : `-${formatted}`}

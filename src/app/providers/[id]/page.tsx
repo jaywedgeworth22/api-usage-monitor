@@ -5,8 +5,10 @@ import { useParams } from "next/navigation";
 import Link from "next/link";
 import UsageChart from "@/components/UsageChart";
 import BalanceBadge from "@/components/BalanceBadge";
-import ExternalBillingDetails, { type ExternalBillingRecord } from "@/components/ExternalBillingDetails";
+import type { ExternalBillingRecord } from "@/components/ExternalBillingDetails";
 import ProviderIntegrationInfo, { publicConfigFieldNames } from "@/components/ProviderIntegrationInfo";
+import PaidServicesPanel from "@/components/PaidServicesPanel";
+import type { SubscriptionRow } from "@/components/SubscriptionsPanel";
 
 interface Provider {
   id: string;
@@ -23,8 +25,20 @@ interface Provider {
   estimatedMonthlyCostUsd: number;
   spentUsd?: number;
   projectedEomUsd?: number;
+  snapshotCostUsd?: number | null;
+  pushedMonthToDateUsd?: number;
+  subscriptionMonthToDateUsd?: number;
+  fixedAccruedUsd?: number;
+  linkedFixedDedupeUsd?: number;
+  fixedCostConflict?: boolean;
   externalBilling?: ExternalBillingRecord[];
-  latestSnapshot?: { fetchedAt: string } | null;
+  latestSnapshot?: {
+    balance: number | null;
+    totalCost: number | null;
+    totalRequests: number | null;
+    credits: number | null;
+    fetchedAt: string;
+  } | null;
   plan: {
     fixedMonthlyCostUsd: number | null;
     monthlyBudgetUsd: number | null;
@@ -32,6 +46,7 @@ interface Provider {
     lowBalanceUsd: number | null;
     lowCredits: number | null;
     renewalDate: string | null;
+    billingInterval: string | null;
     mustKeepFunded: boolean;
     notes: string | null;
   } | null;
@@ -65,6 +80,7 @@ export default function ProviderDetailPage() {
   const { id } = useParams<{ id: string }>();
   const [provider, setProvider] = useState<Provider | null>(null);
   const [snapshots, setSnapshots] = useState<Snapshot[]>([]);
+  const [subscriptions, setSubscriptions] = useState<SubscriptionRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState("");
@@ -80,9 +96,10 @@ export default function ProviderDetailPage() {
     setError("");
     setSnapshotWarning("");
     try {
-      const [providerResult, snapshotsResult] = await Promise.allSettled([
+      const [providerResult, snapshotsResult, subscriptionsResult] = await Promise.allSettled([
         fetchJson<Provider>(`/api/providers/${id}`, "provider"),
         fetchJson<Snapshot[]>(`/api/snapshots?providerId=${id}&days=${rangeDays}`, "snapshots"),
+        fetchJson<SubscriptionRow[]>("/api/subscriptions", "paid services"),
       ]);
 
       if (providerResult.status === "fulfilled") {
@@ -101,6 +118,16 @@ export default function ProviderDetailPage() {
           [current, "Snapshot history is temporarily unavailable."].filter(Boolean).join(" ")
         );
       }
+
+      if (subscriptionsResult.status === "fulfilled") {
+        setSubscriptions(
+          subscriptionsResult.value.filter((subscription) => subscription.provider.id === id)
+        );
+      } else {
+        setSnapshotWarning((current) =>
+          [current, "Tracked subscriptions are temporarily unavailable."].filter(Boolean).join(" ")
+        );
+      }
     } finally {
       loadedOnce.current = true;
       setLoading(false);
@@ -113,7 +140,8 @@ export default function ProviderDetailPage() {
     fetchData();
   }, [fetchData]);
 
-  const hasCredits = snapshots.some((s) => s.credits != null);
+  const hasCredits =
+    provider?.latestSnapshot?.credits != null || snapshots.some((s) => s.credits != null);
   const openAlerts = (provider?.alerts.filter((a) => a.severity !== "info") ?? []).sort((left, right) => {
     const severityRank = { critical: 0, warning: 1, info: 2 } as const;
     return severityRank[left.severity] - severityRank[right.severity] || left.message.localeCompare(right.message);
@@ -136,11 +164,11 @@ export default function ProviderDetailPage() {
         </div>
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
           {[...Array(4)].map((_, i) => (
-            <div key={i} className="bg-gray-100 rounded-xl border border-gray-200 p-4 h-24"></div>
+            <div key={i} className="h-24 rounded-xl border border-gray-200 bg-gray-100 p-4 dark:border-gray-700 dark:bg-gray-800"></div>
           ))}
         </div>
-        <div className="bg-gray-100 rounded-xl border border-gray-200 p-4 h-32"></div>
-        <div className="bg-gray-100 rounded-xl border border-gray-200 h-64"></div>
+        <div className="h-32 rounded-xl border border-gray-200 bg-gray-100 p-4 dark:border-gray-700 dark:bg-gray-800"></div>
+        <div className="h-64 rounded-xl border border-gray-200 bg-gray-100 dark:border-gray-700 dark:bg-gray-800"></div>
       </div>
     );
   }
@@ -160,6 +188,7 @@ export default function ProviderDetailPage() {
   }
 
   const latest = snapshots[snapshots.length - 1];
+  const latestReading = latest ?? provider.latestSnapshot ?? null;
   const newestSnapshots = [...snapshots].reverse();
   const totalSnapshotPages = Math.max(1, Math.ceil(newestSnapshots.length / SNAPSHOT_PAGE_SIZE));
   const currentSnapshotPage = Math.min(snapshotPage, totalSnapshotPages);
@@ -167,20 +196,27 @@ export default function ProviderDetailPage() {
     (currentSnapshotPage - 1) * SNAPSHOT_PAGE_SIZE,
     currentSnapshotPage * SNAPSHOT_PAGE_SIZE
   );
+  const canonicalSpendUsd =
+    provider.spentUsd ?? provider.estimatedMonthlyCostUsd;
+  const reconciledFixedUsd = provider.fixedAccruedUsd ?? 0;
+  const reconciledMeteredUsd = Math.max(
+    0,
+    canonicalSpendUsd - reconciledFixedUsd
+  );
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center gap-2 text-sm text-gray-500">
-        <Link href="/" className="hover:text-gray-900">
+      <div className="flex items-center gap-2 text-sm text-gray-500 dark:text-gray-400">
+        <Link href="/" className="hover:text-gray-900 dark:hover:text-gray-100">
           Dashboard
         </Link>
         <span>/</span>
-        <span className="text-gray-900">{provider.displayName}</span>
+        <span className="text-gray-900 dark:text-gray-100">{provider.displayName}</span>
       </div>
 
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <h1 className="text-2xl font-bold text-gray-900">
+          <h1 className="text-2xl font-bold text-gray-900 dark:text-gray-100">
             {provider.displayName}
           </h1>
           <ProviderIntegrationInfo
@@ -202,44 +238,45 @@ export default function ProviderDetailPage() {
             }}
           />
         </div>
-        <span className="px-2 py-1 text-xs font-medium text-gray-500 uppercase bg-gray-100 rounded">
+        <span className="rounded bg-gray-100 px-2 py-1 text-xs font-medium uppercase text-gray-500 dark:bg-gray-800 dark:text-gray-400">
           {provider.type}
         </span>
       </div>
 
       {snapshotWarning && (
-        <p role="status" className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+        <p role="status" className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800 dark:border-amber-900 dark:bg-amber-950/40 dark:text-amber-200">
           {snapshotWarning}
         </p>
       )}
 
       {openAlerts.length > 0 && (
-        <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
-          <div className="px-6 py-4 border-b border-gray-100">
-            <h2 className="text-sm font-semibold text-gray-700">Alerts</h2>
+        <div className="overflow-hidden rounded-xl border border-gray-200 bg-white dark:border-gray-700 dark:bg-gray-800">
+          <div className="border-b border-gray-100 px-6 py-4 dark:border-gray-700">
+            <h2 className="text-sm font-semibold text-gray-700 dark:text-gray-200">Alerts</h2>
           </div>
-          <div className="divide-y divide-gray-100">
+          <div className="divide-y divide-gray-100 dark:divide-gray-700">
             {openAlerts.map((alert, index) => (
               <div key={index} className="px-6 py-4 flex items-start gap-3">
                 <span
                   className={`mt-0.5 text-xs font-medium px-2 py-1 rounded-full ${
                     alert.severity === "critical"
-                      ? "bg-red-50 text-red-700"
-                      : "bg-amber-50 text-amber-700"
+                      ? "bg-red-50 text-red-700 dark:bg-red-950/60 dark:text-red-300"
+                      : "bg-amber-50 text-amber-700 dark:bg-amber-950/60 dark:text-amber-300"
                   }`}
                 >
                   {alert.severity}
                 </span>
-                <p className="text-sm text-gray-700">{alert.message}</p>
+                <p className="text-sm text-gray-700 dark:text-gray-200">{alert.message}</p>
               </div>
             ))}
           </div>
         </div>
       )}
 
-      <ExternalBillingDetails
-        records={provider.externalBilling ?? []}
-        refreshIntervalMin={provider.refreshIntervalMin}
+      <PaidServicesPanel
+        providers={[provider]}
+        subscriptions={subscriptions}
+        variant="provider"
       />
 
       {/* Summary stats */}
@@ -248,71 +285,71 @@ export default function ProviderDetailPage() {
           hasCredits ? "lg:grid-cols-5" : "lg:grid-cols-4"
         } gap-4`}
       >
-        <div className="bg-white rounded-xl border border-gray-200 p-4">
-          <p className="text-xs text-gray-500 mb-1">Balance</p>
+        <div className="rounded-xl border border-gray-200 bg-white p-4 dark:border-gray-700 dark:bg-gray-800">
+          <p className="mb-1 text-xs text-gray-500 dark:text-gray-400">Balance</p>
           <BalanceBadge
-            amount={latest?.balance ?? null}
+            amount={latestReading?.balance ?? null}
             className="text-lg font-semibold"
           />
         </div>
-        <div className="bg-white rounded-xl border border-gray-200 p-4">
-          <p className="text-xs text-gray-500 mb-1">Tracked spend this month</p>
-          <p className="text-lg font-semibold text-amber-600">
+        <div className="rounded-xl border border-gray-200 bg-white p-4 dark:border-gray-700 dark:bg-gray-800">
+          <p className="mb-1 text-xs text-gray-500 dark:text-gray-400">Tracked spend this month</p>
+          <p className="text-lg font-semibold text-amber-600 dark:text-amber-300">
             {formatUsd(provider.spentUsd ?? provider.estimatedMonthlyCostUsd)}
           </p>
-          <p className="text-[10px] text-gray-500">
+          <p className="text-[10px] text-gray-500 dark:text-gray-400">
             {provider.spentUsd == null ? "provider-report fallback" : "poll + telemetry + subscriptions"}
           </p>
         </div>
-        <div className="bg-white rounded-xl border border-gray-200 p-4">
-          <p className="text-xs text-gray-500 mb-1">Projected end of month</p>
-          <p className="text-lg font-semibold text-gray-900">
+        <div className="rounded-xl border border-gray-200 bg-white p-4 dark:border-gray-700 dark:bg-gray-800">
+          <p className="mb-1 text-xs text-gray-500 dark:text-gray-400">Projected end of month</p>
+          <p className="text-lg font-semibold text-gray-900 dark:text-gray-100">
             {formatUsd(provider.projectedEomUsd ?? provider.estimatedMonthlyCostUsd)}
           </p>
-          <p className="text-[10px] uppercase text-gray-400">
+          <p className="text-[10px] uppercase text-gray-400 dark:text-gray-500">
             {provider.billingMode}
           </p>
         </div>
         {hasCredits && (
-          <div className="bg-white rounded-xl border border-gray-200 p-4">
-            <p className="text-xs text-gray-500 mb-1">Credits</p>
-            <p className="text-lg font-semibold text-purple-600">
-              {latest?.credits != null
-                ? new Intl.NumberFormat("en-US").format(latest.credits)
+          <div className="rounded-xl border border-gray-200 bg-white p-4 dark:border-gray-700 dark:bg-gray-800">
+            <p className="mb-1 text-xs text-gray-500 dark:text-gray-400">Credits</p>
+            <p className="text-lg font-semibold text-purple-600 dark:text-purple-300">
+              {latestReading?.credits != null
+                ? new Intl.NumberFormat("en-US").format(latestReading.credits)
                 : "--"}
             </p>
           </div>
         )}
-        <div className="bg-white rounded-xl border border-gray-200 p-4">
-          <p className="text-xs text-gray-500 mb-1">Latest reported requests</p>
-          <p className="text-lg font-semibold text-gray-900">
-            {latest?.totalRequests != null
-              ? new Intl.NumberFormat("en-US").format(latest.totalRequests)
+        <div className="rounded-xl border border-gray-200 bg-white p-4 dark:border-gray-700 dark:bg-gray-800">
+          <p className="mb-1 text-xs text-gray-500 dark:text-gray-400">Latest reported requests</p>
+          <p className="text-lg font-semibold text-gray-900 dark:text-gray-100">
+            {latestReading?.totalRequests != null
+              ? new Intl.NumberFormat("en-US").format(latestReading.totalRequests)
               : "--"}
           </p>
         </div>
       </div>
 
-      <div className="bg-white rounded-xl border border-gray-200 p-4">
-        <h2 className="text-sm font-semibold text-gray-700 mb-3">
-          Billing Plan
-        </h2>
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
+      <div className="rounded-xl border border-gray-200 bg-white p-4 dark:border-gray-700 dark:bg-gray-800">
+        <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
           <div>
-            <p className="text-xs text-gray-500 mb-1">Plan Price</p>
-            <p className="font-medium text-gray-900">
-              {formatUsd(provider.plan?.fixedMonthlyCostUsd)}
-            </p>
+            <h2 className="text-sm font-semibold text-gray-700 dark:text-gray-200">Budget & alert policy</h2>
+            <p className="mt-0.5 text-xs text-gray-500 dark:text-gray-400">Owner-defined guardrails; these are not provider-reported plan terms.</p>
           </div>
+          <Link href="/settings?tab=connections" className="text-xs font-semibold text-blue-600 hover:text-blue-700 dark:text-blue-400 dark:hover:text-blue-300">
+            Edit connection
+          </Link>
+        </div>
+        <div className="grid grid-cols-2 gap-4 text-sm md:grid-cols-4">
           <div>
-            <p className="text-xs text-gray-500 mb-1">Monthly Budget</p>
-            <p className="font-medium text-gray-900">
+            <p className="mb-1 text-xs text-gray-500 dark:text-gray-400">Monthly Budget</p>
+            <p className="font-medium text-gray-900 dark:text-gray-100">
               {formatUsd(provider.plan?.monthlyBudgetUsd)}
             </p>
           </div>
           <div>
-            <p className="text-xs text-gray-500 mb-1">Request Limit</p>
-            <p className="font-medium text-gray-900">
+            <p className="mb-1 text-xs text-gray-500 dark:text-gray-400">Request alert</p>
+            <p className="font-medium text-gray-900 dark:text-gray-100">
               {provider.plan?.monthlyRequestLimit != null
                 ? new Intl.NumberFormat("en-US").format(
                     provider.plan.monthlyRequestLimit
@@ -321,24 +358,62 @@ export default function ProviderDetailPage() {
             </p>
           </div>
           <div>
-            <p className="text-xs text-gray-500 mb-1">Renewal</p>
-            <p className="font-medium text-gray-900">
-              {provider.plan?.renewalDate
-                ? new Date(provider.plan.renewalDate).toLocaleDateString(undefined, {
-                    timeZone: "UTC",
-                  })
+            <p className="mb-1 text-xs text-gray-500 dark:text-gray-400">Low balance alert</p>
+            <p className="font-medium text-gray-900 dark:text-gray-100">{formatUsd(provider.plan?.lowBalanceUsd)}</p>
+          </div>
+          <div>
+            <p className="mb-1 text-xs text-gray-500 dark:text-gray-400">Low credits alert</p>
+            <p className="font-medium text-gray-900 dark:text-gray-100">
+              {provider.plan?.lowCredits != null
+                ? new Intl.NumberFormat("en-US").format(provider.plan.lowCredits)
                 : "--"}
             </p>
           </div>
         </div>
         {provider.plan?.notes && (
-          <p className="text-xs text-gray-500 mt-4">{provider.plan.notes}</p>
+          <p className="mt-4 text-xs text-gray-500 dark:text-gray-400">{provider.plan.notes}</p>
         )}
       </div>
 
+      <details className="rounded-xl border border-gray-200 bg-white dark:border-gray-700 dark:bg-gray-800">
+        <summary className="cursor-pointer px-4 py-3 text-sm font-semibold text-gray-700 hover:bg-gray-50 dark:text-gray-200 dark:hover:bg-gray-700/40">
+          Spend reconciliation
+        </summary>
+        <dl className="grid grid-cols-2 gap-4 border-t border-gray-100 px-4 py-4 text-sm dark:border-gray-700 sm:grid-cols-3 lg:grid-cols-5">
+          <div>
+            <dt className="text-xs text-gray-500 dark:text-gray-400">Canonical tracked MTD</dt>
+            <dd className="mt-1 font-medium text-gray-900 dark:text-gray-100">{formatUsd(canonicalSpendUsd)}</dd>
+          </div>
+          <div>
+            <dt className="text-xs text-gray-500 dark:text-gray-400">Metered after max-dedupe</dt>
+            <dd className="mt-1 font-medium text-gray-900 dark:text-gray-100">{formatUsd(reconciledMeteredUsd)}</dd>
+          </div>
+          <div>
+            <dt className="text-xs text-gray-500 dark:text-gray-400">Fixed after link-dedupe</dt>
+            <dd className="mt-1 font-medium text-gray-900 dark:text-gray-100">{formatUsd(reconciledFixedUsd)}</dd>
+          </div>
+          <div>
+            <dt className="text-xs text-gray-500 dark:text-gray-400">Raw provider report</dt>
+            <dd className="mt-1 font-medium text-gray-900 dark:text-gray-100">{formatUsd(provider.snapshotCostUsd)}</dd>
+          </div>
+          <div>
+            <dt className="text-xs text-gray-500 dark:text-gray-400">Removed linked overlap</dt>
+            <dd className="mt-1 font-medium text-gray-900 dark:text-gray-100">
+              {(provider.linkedFixedDedupeUsd ?? 0) > 0
+                ? `−${formatUsd(provider.linkedFixedDedupeUsd)}`
+                : formatUsd(0)}
+            </dd>
+          </div>
+        </dl>
+        <p className="border-t border-gray-100 px-4 py-3 text-xs text-gray-500 dark:border-gray-700 dark:text-gray-400">
+          Canonical spend equals reconciled metered usage plus deduplicated fixed charges. The raw provider report is an overlapping input, not another amount to add.
+          {provider.fixedCostConflict ? " Review the active fixed-cost conflict alert." : ""}
+        </p>
+      </details>
+
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <p className="text-sm text-gray-500">Showing provider-reported snapshots from the selected window.</p>
-        <label className="flex items-center gap-2 text-sm text-gray-700">
+        <p className="text-sm text-gray-500 dark:text-gray-400">Showing provider-reported snapshots from the selected window.</p>
+        <label className="flex items-center gap-2 text-sm text-gray-700 dark:text-gray-200">
           Range
           <select
             aria-label="Snapshot history range"
@@ -348,7 +423,7 @@ export default function ProviderDetailPage() {
               setSnapshotPage(1);
             }}
             disabled={refreshing}
-            className="rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm"
+            className="rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm dark:border-gray-600 dark:bg-gray-800 dark:text-gray-100"
           >
             <option value={7}>7 days</option>
             <option value={30}>30 days</option>
@@ -361,15 +436,15 @@ export default function ProviderDetailPage() {
       <UsageChart snapshots={snapshots} />
 
       {/* Snapshots Table */}
-      <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
-        <div className="px-6 py-4 border-b border-gray-100">
+      <div className="overflow-hidden rounded-xl border border-gray-200 bg-white dark:border-gray-700 dark:bg-gray-800">
+        <div className="border-b border-gray-100 px-6 py-4 dark:border-gray-700">
           <div className="flex flex-wrap items-center justify-between gap-2">
-            <h3 className="text-sm font-semibold text-gray-700">Recent Snapshots</h3>
-            <span className="text-xs text-gray-500">{snapshots.length} records · {rangeDays} days</span>
+            <h3 className="text-sm font-semibold text-gray-700 dark:text-gray-200">Recent Snapshots</h3>
+            <span className="text-xs text-gray-500 dark:text-gray-400">{snapshots.length} records · {rangeDays} days</span>
           </div>
         </div>
         {snapshots.length === 0 ? (
-          <div className="px-6 py-8 text-center text-sm text-gray-400">
+          <div className="px-6 py-8 text-center text-sm text-gray-400 dark:text-gray-500">
             No snapshots recorded yet
           </div>
         ) : (
@@ -377,22 +452,22 @@ export default function ProviderDetailPage() {
             <table className="responsive-table w-full text-sm">
               <caption className="sr-only">Provider snapshot history</caption>
               <thead>
-                <tr className="border-b border-gray-100 bg-gray-50">
-                  <th className="text-left px-6 py-3 font-medium text-gray-500">
+                <tr className="border-b border-gray-100 bg-gray-50 dark:border-gray-700 dark:bg-gray-900/60">
+                  <th className="px-6 py-3 text-left font-medium text-gray-500 dark:text-gray-400">
                     Date
                   </th>
-                  <th className="text-right px-6 py-3 font-medium text-gray-500">
+                  <th className="px-6 py-3 text-right font-medium text-gray-500 dark:text-gray-400">
                     Balance
                   </th>
-                  <th className="text-right px-6 py-3 font-medium text-gray-500">
+                  <th className="px-6 py-3 text-right font-medium text-gray-500 dark:text-gray-400">
                     Reported Cost
                   </th>
                   {hasCredits && (
-                    <th className="text-right px-6 py-3 font-medium text-gray-500">
+                    <th className="px-6 py-3 text-right font-medium text-gray-500 dark:text-gray-400">
                       Credits
                     </th>
                   )}
-                  <th className="text-right px-6 py-3 font-medium text-gray-500">
+                  <th className="px-6 py-3 text-right font-medium text-gray-500 dark:text-gray-400">
                     Reported Requests
                   </th>
                 </tr>
@@ -401,15 +476,15 @@ export default function ProviderDetailPage() {
                 {visibleSnapshots.map((s) => (
                   <tr
                     key={s.id}
-                    className="border-b border-gray-50 hover:bg-gray-50"
+                    className="border-b border-gray-50 hover:bg-gray-50 dark:border-gray-700 dark:hover:bg-gray-700/40"
                   >
-                    <td data-label="Date" className="px-6 py-3 text-gray-600">
+                    <td data-label="Date" className="px-6 py-3 text-gray-600 dark:text-gray-300">
                       {new Date(s.fetchedAt).toLocaleString()}
                     </td>
                     <td data-label="Balance" className="px-6 py-3 text-right">
                       <BalanceBadge amount={s.balance} />
                     </td>
-                    <td data-label="Reported cost" className="px-6 py-3 text-right text-amber-600">
+                    <td data-label="Reported cost" className="px-6 py-3 text-right text-amber-600 dark:text-amber-300">
                       {s.totalCost != null
                         ? new Intl.NumberFormat("en-US", {
                             style: "currency",
@@ -418,13 +493,13 @@ export default function ProviderDetailPage() {
                         : "--"}
                     </td>
                     {hasCredits && (
-                      <td data-label="Credits" className="px-6 py-3 text-right text-purple-600">
+                      <td data-label="Credits" className="px-6 py-3 text-right text-purple-600 dark:text-purple-300">
                         {s.credits != null
                           ? new Intl.NumberFormat("en-US").format(s.credits)
                           : "--"}
                       </td>
                     )}
-                    <td data-label="Reported requests" className="px-6 py-3 text-right text-gray-600">
+                    <td data-label="Reported requests" className="px-6 py-3 text-right text-gray-600 dark:text-gray-300">
                       {s.totalRequests != null
                         ? new Intl.NumberFormat("en-US").format(s.totalRequests)
                         : "--"}
@@ -434,8 +509,8 @@ export default function ProviderDetailPage() {
               </tbody>
             </table>
             {totalSnapshotPages > 1 && (
-              <div className="flex flex-wrap items-center justify-between gap-3 border-t border-gray-100 px-4 py-3 sm:px-6">
-                <p className="text-xs text-gray-500">
+              <div className="flex flex-wrap items-center justify-between gap-3 border-t border-gray-100 px-4 py-3 dark:border-gray-700 sm:px-6">
+                <p className="text-xs text-gray-500 dark:text-gray-400">
                   Page {currentSnapshotPage} of {totalSnapshotPages}
                 </p>
                 <div className="flex gap-2">
@@ -443,7 +518,7 @@ export default function ProviderDetailPage() {
                     type="button"
                     onClick={() => setSnapshotPage((page) => Math.max(1, page - 1))}
                     disabled={currentSnapshotPage === 1}
-                    className="rounded-md border border-gray-300 px-3 py-1.5 text-xs font-medium text-gray-700 disabled:opacity-40"
+                    className="rounded-md border border-gray-300 px-3 py-1.5 text-xs font-medium text-gray-700 disabled:opacity-40 dark:border-gray-600 dark:text-gray-200"
                   >
                     Previous
                   </button>
@@ -451,7 +526,7 @@ export default function ProviderDetailPage() {
                     type="button"
                     onClick={() => setSnapshotPage((page) => Math.min(totalSnapshotPages, page + 1))}
                     disabled={currentSnapshotPage === totalSnapshotPages}
-                    className="rounded-md border border-gray-300 px-3 py-1.5 text-xs font-medium text-gray-700 disabled:opacity-40"
+                    className="rounded-md border border-gray-300 px-3 py-1.5 text-xs font-medium text-gray-700 disabled:opacity-40 dark:border-gray-600 dark:text-gray-200"
                   >
                     Next
                   </button>

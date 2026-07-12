@@ -2,6 +2,7 @@ import { useState, Fragment } from "react";
 import { type Provider } from "@/app/settings/page";
 import { isExternalBillingStale } from "@/components/ExternalBillingDetails";
 import ProviderIntegrationInfo, { publicConfigFieldNames } from "@/components/ProviderIntegrationInfo";
+import { getProviderIntegrationProfile } from "@/lib/provider-integration-catalog";
 
 interface ProviderTableProps {
   providers: Provider[];
@@ -16,8 +17,51 @@ interface ProviderTableProps {
   onFetchNow: (id: string) => void;
 }
 
-type SortField = "name" | "type" | "status" | "spend" | "renewal" | "alerts" | "credits" | "lastFetched";
+type SortField = "name" | "type" | "status" | "spend" | "alerts" | "credits" | "lastFetched";
 type SortDirection = "asc" | "desc";
+
+function SortHeader({
+  field,
+  label,
+  className = "",
+  align = "left",
+  activeField,
+  direction,
+  onSort,
+}: {
+  field: SortField;
+  label: string;
+  className?: string;
+  align?: "left" | "right";
+  activeField: SortField;
+  direction: SortDirection;
+  onSort: (field: SortField) => void;
+}) {
+  const isActive = activeField === field;
+  return (
+    <th
+      aria-sort={isActive ? (direction === "asc" ? "ascending" : "descending") : "none"}
+      className={`px-6 py-3 font-medium text-gray-500 dark:text-gray-400 ${className}`}
+    >
+      <button
+        type="button"
+        onClick={() => onSort(field)}
+        className={`group flex w-full items-center hover:text-gray-800 dark:hover:text-gray-100 ${
+          align === "right" ? "justify-end text-right" : "justify-start text-left"
+        }`}
+      >
+        {label}
+        <span className={`ml-1 ${isActive ? "text-gray-500 dark:text-gray-300" : "text-gray-300 opacity-0 group-hover:opacity-100 group-focus:opacity-100 dark:text-gray-600"}`}>
+          {isActive ? (direction === "asc" ? "↑" : "↓") : "↕"}
+        </span>
+      </button>
+    </th>
+  );
+}
+
+function providerProfile(provider: Provider) {
+  return getProviderIntegrationProfile(provider.name, provider.type);
+}
 
 export default function ProviderTable({
   providers,
@@ -48,11 +92,10 @@ export default function ProviderTable({
     }
   };
 
-  const renderSortIcon = (field: SortField) => {
-    if (sortField !== field) {
-      return <span className="ml-1 text-gray-300 opacity-0 group-hover:opacity-100">↕</span>;
-    }
-    return <span className="ml-1 text-gray-500">{sortDirection === "asc" ? "↑" : "↓"}</span>;
+  const sortHeaderProps = {
+    activeField: sortField,
+    direction: sortDirection,
+    onSort: handleSort,
   };
 
   const formatDateObject = (dateStr: string | null) => {
@@ -67,11 +110,6 @@ export default function ProviderTable({
       currency: "USD",
       maximumFractionDigits: 2,
     }).format(amount);
-  };
-
-  const formatDateOnly = (dateStr: string | null | undefined) => {
-    if (!dateStr) return "--";
-    return new Date(dateStr).toLocaleDateString();
   };
 
   const hasAnyCredits = providers.some(
@@ -91,7 +129,9 @@ export default function ProviderTable({
         comparison = a.displayName.localeCompare(b.displayName);
         break;
       case "type":
-        comparison = a.type.localeCompare(b.type);
+        comparison =
+          providerProfile(a).category.localeCompare(providerProfile(b).category) ||
+          providerProfile(a).mode.localeCompare(providerProfile(b).mode);
         break;
       case "status":
         comparison = (a.isActive ? 1 : 0) - (b.isActive ? 1 : 0);
@@ -99,12 +139,6 @@ export default function ProviderTable({
       case "spend":
         comparison = (a.spentUsd ?? a.estimatedMonthlyCostUsd) - (b.spentUsd ?? b.estimatedMonthlyCostUsd);
         break;
-      case "renewal": {
-        const dateA = a.plan?.renewalDate ? new Date(a.plan.renewalDate).getTime() : 0;
-        const dateB = b.plan?.renewalDate ? new Date(b.plan.renewalDate).getTime() : 0;
-        comparison = dateA - dateB;
-        break;
-      }
       case "alerts":
         comparison = countProviderAlerts(a).open - countProviderAlerts(b).open;
         break;
@@ -126,8 +160,8 @@ export default function ProviderTable({
 
   if (providers.length === 0) {
     return (
-      <div className="flex flex-col items-center justify-center py-16 gap-4 text-center bg-white rounded-xl border border-gray-200">
-        <p className="text-gray-500">No providers configured yet.</p>
+      <div className="flex flex-col items-center justify-center gap-4 rounded-xl border border-gray-200 bg-white py-16 text-center dark:border-gray-700 dark:bg-gray-800">
+        <p className="text-gray-500 dark:text-gray-400">No providers configured yet.</p>
         <button
           type="button"
           onClick={onAddProvider}
@@ -140,65 +174,21 @@ export default function ProviderTable({
   }
 
   return (
-    <div className="bg-white rounded-xl border border-gray-200 overflow-x-auto">
+    <div className="overflow-x-auto rounded-xl border border-gray-200 bg-white dark:border-gray-700 dark:bg-gray-800">
       <table className="responsive-table w-full text-sm">
         <caption className="sr-only">Configured API providers</caption>
         <thead>
-          <tr className="border-b border-gray-100 bg-gray-50">
-            <th 
-              className="text-left px-6 py-3 font-medium text-gray-500 cursor-pointer hover:bg-gray-100 group select-none"
-              onClick={() => handleSort("name")}
-            >
-              Name {renderSortIcon("name")}
-            </th>
-            <th className="text-left px-6 py-3 font-medium text-gray-500 hidden md:table-cell">
-              Label
-            </th>
-            <th 
-              className="text-left px-6 py-3 font-medium text-gray-500 hidden sm:table-cell cursor-pointer hover:bg-gray-100 group select-none"
-              onClick={() => handleSort("type")}
-            >
-              Type {renderSortIcon("type")}
-            </th>
-            <th 
-              className="text-left px-6 py-3 font-medium text-gray-500 hidden sm:table-cell cursor-pointer hover:bg-gray-100 group select-none"
-              onClick={() => handleSort("status")}
-            >
-              Status {renderSortIcon("status")}
-            </th>
-            <th 
-              className="text-left px-6 py-3 font-medium text-gray-500 cursor-pointer hover:bg-gray-100 group select-none"
-              onClick={() => handleSort("spend")}
-            >
-              Spend / Budget {renderSortIcon("spend")}
-            </th>
-            <th 
-              className="text-left px-6 py-3 font-medium text-gray-500 hidden lg:table-cell cursor-pointer hover:bg-gray-100 group select-none"
-              onClick={() => handleSort("renewal")}
-            >
-              Renewal {renderSortIcon("renewal")}
-            </th>
-            <th 
-              className="text-left px-6 py-3 font-medium text-gray-500 cursor-pointer hover:bg-gray-100 group select-none"
-              onClick={() => handleSort("alerts")}
-            >
-              Alerts {renderSortIcon("alerts")}
-            </th>
+          <tr className="border-b border-gray-100 bg-gray-50 dark:border-gray-700 dark:bg-gray-900/60">
+            <SortHeader {...sortHeaderProps} field="name" label="Name" />
+            <SortHeader {...sortHeaderProps} field="type" label="Tracking" className="hidden sm:table-cell" />
+            <SortHeader {...sortHeaderProps} field="status" label="Status" className="hidden sm:table-cell" />
+            <SortHeader {...sortHeaderProps} field="spend" label="Spend / Budget" />
+            <SortHeader {...sortHeaderProps} field="alerts" label="Alerts" />
             {hasAnyCredits && (
-              <th 
-                className="text-right px-6 py-3 font-medium text-gray-500 cursor-pointer hover:bg-gray-100 group select-none"
-                onClick={() => handleSort("credits")}
-              >
-                Credits {renderSortIcon("credits")}
-              </th>
+              <SortHeader {...sortHeaderProps} field="credits" label="Credits" align="right" />
             )}
-            <th 
-              className="text-left px-6 py-3 font-medium text-gray-500 hidden xl:table-cell cursor-pointer hover:bg-gray-100 group select-none"
-              onClick={() => handleSort("lastFetched")}
-            >
-              Last Fetched {renderSortIcon("lastFetched")}
-            </th>
-            <th className="text-right px-6 py-3 font-medium text-gray-500">
+            <SortHeader {...sortHeaderProps} field="lastFetched" label="Last fetched" className="hidden xl:table-cell" />
+            <th className="px-6 py-3 text-right font-medium text-gray-500 dark:text-gray-400">
               Actions
             </th>
           </tr>
@@ -206,27 +196,33 @@ export default function ProviderTable({
         <tbody>
           {Object.entries(
             sortedProviders.reduce((acc, provider) => {
-              const t = provider.type;
-              if (!acc[t]) acc[t] = [];
-              acc[t].push(provider);
+              const category = providerProfile(provider).category;
+              if (!acc[category]) acc[category] = [];
+              acc[category].push(provider);
               return acc;
             }, {} as Record<string, Provider[]>)
           )
-            .sort(([typeA], [typeB]) => typeA.localeCompare(typeB))
-            .map(([type, groupProviders]) => {
+            .sort(([categoryA], [categoryB]) => categoryA.localeCompare(categoryB))
+            .map(([category, groupProviders]) => {
               const groupSpend = groupProviders.reduce((sum, p) => sum + (p.spentUsd ?? p.estimatedMonthlyCostUsd ?? 0), 0);
               const groupBudget = groupProviders.reduce((sum, p) => sum + (p.plan?.monthlyBudgetUsd ?? 0), 0);
               
-              const isCollapsed = collapsedGroups[type] || false;
+              const isCollapsed = collapsedGroups[category] || false;
               
               return (
-                <Fragment key={type}>
-                  <tr 
-                    className="bg-gray-50 dark:bg-gray-800/50 border-b border-gray-100 dark:border-gray-800 cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
-                    onClick={() => toggleGroup(type)}
-                  >
-                    <td colSpan={hasAnyCredits ? 9 : 8} className="px-6 py-2">
-                      <div className="flex items-center justify-between">
+                <Fragment key={category}>
+                  <tr className="border-b border-gray-100 bg-gray-50 dark:border-gray-800 dark:bg-gray-800/50">
+                    <td
+                      data-label=""
+                      colSpan={hasAnyCredits ? 8 : 7}
+                      className="table-group-cell p-0"
+                    >
+                      <button
+                        type="button"
+                        aria-expanded={!isCollapsed}
+                        onClick={() => toggleGroup(category)}
+                        className="flex w-full items-center justify-between px-6 py-2 text-left transition-colors hover:bg-gray-100 dark:hover:bg-gray-700"
+                      >
                         <div className="flex items-center gap-2">
                           <svg 
                             className={`w-4 h-4 text-gray-400 transition-transform ${isCollapsed ? "-rotate-90" : ""}`}
@@ -237,18 +233,25 @@ export default function ProviderTable({
                             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
                           </svg>
                           <span className="text-xs font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400 select-none">
-                            {type} <span className="font-normal normal-case opacity-75">({groupProviders.length})</span>
+                            {category} <span className="font-normal normal-case opacity-75">({groupProviders.length})</span>
                           </span>
                         </div>
                         <span className="text-xs font-medium text-gray-500 dark:text-gray-400">
                           Group Spend: {formatUsd(groupSpend)} {groupBudget > 0 && ` / ${formatUsd(groupBudget)}`}
                         </span>
-                      </div>
+                      </button>
                     </td>
                   </tr>
                   {!isCollapsed && groupProviders.map((provider) => {
                     const alertCounts = countProviderAlerts(provider);
                     const connectedBilling = provider.externalBilling?.[0];
+                    const billingRecordCount = provider.externalBilling?.length ?? 0;
+                    const staleBillingCount = (provider.externalBilling ?? []).filter((record) =>
+                      isExternalBillingStale(
+                        record,
+                        Math.min(24 * 60 * 60 * 1_000, Math.max(60 * 60 * 1_000, provider.refreshIntervalMin * 3 * 60 * 1_000))
+                      )
+                    ).length;
                     const fetchedDate = formatDateObject(provider.latestSnapshot?.fetchedAt ?? null);
 
                     return (
@@ -275,9 +278,12 @@ export default function ProviderTable({
                         externalBillingSources: [...new Set((provider.externalBilling ?? []).map((record) => record.source))].sort(),
                       }}
                     />
-                    <p className="text-xs text-gray-400">{provider.name}</p>
+                    <p className="text-xs text-gray-400 dark:text-gray-500">{provider.name}</p>
+                    {provider.label && (
+                      <p className="mt-0.5 text-xs text-gray-500 dark:text-gray-400">{provider.label}</p>
+                    )}
                     {provider.groupId && (
-                      <span className="inline-flex items-center gap-1 mt-1 px-1.5 py-0.5 text-[10px] font-medium rounded bg-amber-50 text-amber-700 border border-amber-200">
+                      <span className="mt-1 inline-flex items-center gap-1 rounded border border-amber-200 bg-amber-50 px-1.5 py-0.5 text-[10px] font-medium text-amber-700 dark:border-amber-900 dark:bg-amber-950/60 dark:text-amber-300">
                         <svg className="w-2.5 h-2.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1" />
                         </svg>
@@ -286,14 +292,9 @@ export default function ProviderTable({
                     )}
                   </div>
                 </td>
-                <td data-label="Label" className="px-6 py-4 hidden md:table-cell">
-                  <span className="text-xs text-gray-400">
-                    {provider.label || "--"}
-                  </span>
-                </td>
-                <td data-label="Type" className="px-6 py-4 hidden sm:table-cell">
-                  <span className="inline-flex px-2 py-0.5 text-xs font-medium uppercase rounded bg-gray-100 text-gray-500">
-                    {provider.type}
+                <td data-label="Tracking" className="px-6 py-4 hidden sm:table-cell">
+                  <span className="inline-flex rounded bg-gray-100 px-2 py-0.5 text-xs font-medium uppercase text-gray-500 dark:bg-gray-700 dark:text-gray-300">
+                    {providerProfile(provider).mode.replace("-", " ")}
                   </span>
                 </td>
                 <td data-label="Status" className="px-6 py-4 hidden sm:table-cell">
@@ -304,8 +305,8 @@ export default function ProviderTable({
                     disabled={actionLoading === provider.id}
                     className={`inline-flex items-center gap-1.5 text-xs font-medium px-2 py-1 rounded-full transition-colors ${
                       provider.isActive
-                        ? "bg-emerald-50 text-emerald-700"
-                        : "bg-gray-100 text-gray-400"
+                        ? "bg-emerald-50 text-emerald-700 dark:bg-emerald-950/60 dark:text-emerald-300"
+                        : "bg-gray-100 text-gray-400 dark:bg-gray-700 dark:text-gray-400"
                     }`}
                   >
                     <span
@@ -318,57 +319,51 @@ export default function ProviderTable({
                 </td>
                 <td data-label="Spend / Budget" className="px-6 py-4">
                   <div className="text-xs">
-                    <p className="font-medium text-gray-900">
+                    <p className="font-medium text-gray-900 dark:text-gray-100">
                       {formatUsd(provider.spentUsd ?? provider.estimatedMonthlyCostUsd)} MTD
                     </p>
                     {provider.projectedEomUsd != null && (
-                      <p className="text-gray-400">Projected {formatUsd(provider.projectedEomUsd)}</p>
+                      <p className="text-gray-600 dark:text-gray-300">Projected {formatUsd(provider.projectedEomUsd)}</p>
                     )}
-                    <p className="text-gray-400">
+                    <p className="text-gray-600 dark:text-gray-300">
                       Budget {formatUsd(provider.plan?.monthlyBudgetUsd)}
                     </p>
-                    <span className="inline-flex mt-1 px-1.5 py-0.5 rounded bg-gray-100 text-[10px] font-medium uppercase text-gray-500">
+                    <span className="mt-1 inline-flex rounded bg-gray-100 px-1.5 py-0.5 text-[10px] font-medium uppercase text-gray-500 dark:bg-gray-700 dark:text-gray-300">
                       {provider.billingMode}
                     </span>
                     {connectedBilling && (
-                      <p className="mt-1 text-[10px] font-medium text-blue-700">
-                        Connected: {connectedBilling.planName || connectedBilling.kind}
+                      <p className="mt-1 text-[10px] font-medium text-blue-700 dark:text-blue-300">
+                        Provider billing: {billingRecordCount} record{billingRecordCount === 1 ? "" : "s"} · {connectedBilling.serviceName || connectedBilling.planName || connectedBilling.kind}
                         {connectedBilling.status ? ` · ${connectedBilling.status}` : ""}
-                        {isExternalBillingStale(
-                          connectedBilling,
-                          Math.min(24 * 60 * 60 * 1_000, Math.max(60 * 60 * 1_000, provider.refreshIntervalMin * 3 * 60 * 1_000))
-                        ) ? " · stale" : ""}
+                        {staleBillingCount > 0 ? ` · ${staleBillingCount} stale` : ""}
                       </p>
                     )}
                   </div>
-                </td>
-                <td data-label="Renewal" className="px-6 py-4 text-xs text-gray-500 hidden lg:table-cell">
-                  {formatDateOnly(provider.plan?.renewalDate)}
                 </td>
                 <td data-label="Alerts" className="px-6 py-4">
                   {alertCounts.open > 0 ? (
                     <span
                       className={`inline-flex px-2 py-1 rounded-full text-xs font-medium ${
                         alertCounts.critical > 0
-                          ? "bg-red-50 text-red-700"
-                          : "bg-amber-50 text-amber-700"
+                          ? "bg-red-50 text-red-700 dark:bg-red-950/60 dark:text-red-300"
+                          : "bg-amber-50 text-amber-700 dark:bg-amber-950/60 dark:text-amber-300"
                       }`}
                     >
                       {alertCounts.open}{" "}
                       open
                     </span>
                   ) : alertCounts.info > 0 ? (
-                    <span className="inline-flex px-2 py-1 rounded-full bg-blue-50 text-blue-700 text-xs font-medium">
+                    <span className="inline-flex rounded-full bg-blue-50 px-2 py-1 text-xs font-medium text-blue-700 dark:bg-blue-950/60 dark:text-blue-300">
                       Needs setup
                     </span>
                   ) : (
-                    <span className="inline-flex px-2 py-1 rounded-full bg-emerald-50 text-emerald-700 text-xs font-medium">
+                    <span className="inline-flex rounded-full bg-emerald-50 px-2 py-1 text-xs font-medium text-emerald-700 dark:bg-emerald-950/60 dark:text-emerald-300">
                       OK
                     </span>
                   )}
                 </td>
                 {hasAnyCredits && (
-                  <td data-label="Credits" className="px-6 py-4 text-right text-purple-600 text-xs">
+                  <td data-label="Credits" className="px-6 py-4 text-right text-xs text-purple-600 dark:text-purple-300">
                     {provider.latestSnapshot?.credits != null
                       ? new Intl.NumberFormat("en-US").format(
                           provider.latestSnapshot.credits
@@ -379,15 +374,15 @@ export default function ProviderTable({
                 <td data-label="Last fetched" className="px-6 py-4 hidden xl:table-cell">
                   {fetchedDate ? (
                     <div className="flex flex-col">
-                      <span className="text-sm text-gray-900">
+                      <span className="text-sm text-gray-900 dark:text-gray-100">
                         {fetchedDate.toLocaleDateString()}
                       </span>
-                      <span className="text-xs text-gray-500">
+                      <span className="text-xs text-gray-500 dark:text-gray-400">
                         {fetchedDate.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}
                       </span>
                     </div>
                   ) : (
-                    <span className="text-gray-500 text-xs">Never</span>
+                    <span className="text-xs text-gray-500 dark:text-gray-400">Never</span>
                   )}
                 </td>
                 <td data-label="Actions" className="px-6 py-4">
@@ -397,7 +392,7 @@ export default function ProviderTable({
                       aria-label={`Fetch ${provider.displayName} now`}
                       onClick={() => onFetchNow(provider.id)}
                       disabled={actionLoading === provider.id}
-                      className="px-3 py-1.5 text-xs font-medium text-blue-600 bg-blue-50 hover:bg-blue-100 rounded-md transition-colors disabled:opacity-50"
+                      className="rounded-md bg-blue-50 px-3 py-1.5 text-xs font-medium text-blue-600 transition-colors hover:bg-blue-100 disabled:opacity-50 dark:bg-blue-950/60 dark:text-blue-300 dark:hover:bg-blue-900/60"
                     >
                       {actionLoading === provider.id ? "..." : "Fetch Now"}
                     </button>
@@ -405,7 +400,7 @@ export default function ProviderTable({
                       type="button"
                       aria-label={`Edit ${provider.displayName}`}
                       onClick={() => onEdit(provider)}
-                      className="px-3 py-1.5 text-xs font-medium text-gray-600 bg-gray-50 hover:bg-gray-100 rounded-md transition-colors"
+                      className="rounded-md bg-gray-50 px-3 py-1.5 text-xs font-medium text-gray-600 transition-colors hover:bg-gray-100 dark:bg-gray-700 dark:text-gray-200 dark:hover:bg-gray-600"
                     >
                       Edit
                     </button>
@@ -424,7 +419,7 @@ export default function ProviderTable({
                           type="button"
                           aria-label={`Cancel deletion of ${provider.displayName}`}
                           onClick={() => onDeleteConfirmCancel()}
-                          className="px-2 py-1.5 text-xs text-gray-400 hover:text-gray-600"
+                          className="px-2 py-1.5 text-xs text-gray-400 hover:text-gray-600 dark:text-gray-500 dark:hover:text-gray-300"
                         >
                           Cancel
                         </button>
@@ -434,7 +429,7 @@ export default function ProviderTable({
                         type="button"
                         aria-label={`Delete ${provider.displayName}`}
                         onClick={() => onDeleteConfirmStart(provider.id)}
-                        className="px-3 py-1.5 text-xs font-medium text-red-600 bg-red-50 hover:bg-red-100 rounded-md transition-colors"
+                        className="rounded-md bg-red-50 px-3 py-1.5 text-xs font-medium text-red-600 transition-colors hover:bg-red-100 dark:bg-red-950/60 dark:text-red-300 dark:hover:bg-red-900/60"
                       >
                         Delete
                       </button>
@@ -452,4 +447,3 @@ export default function ProviderTable({
     </div>
   );
 }
-

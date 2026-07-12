@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   advancePeriod,
   applyAnchorDay,
+  effectiveSubscriptionStatus,
   rescheduleCycle,
   initialCycle,
   normalizeMonthlyUsd,
@@ -9,6 +10,32 @@ import {
 } from "../subscriptions";
 
 const iso = (d: Date) => d.toISOString();
+
+describe("effectiveSubscriptionStatus", () => {
+  it("expires only a stored-active non-renewing term after its end", () => {
+    const now = new Date("2026-07-12T00:00:00.000Z");
+    expect(
+      effectiveSubscriptionStatus(
+        {
+          status: "active",
+          autoRenew: false,
+          nextRenewalAt: "2026-07-10T00:00:00.000Z",
+        },
+        now
+      )
+    ).toBe("expired");
+    expect(
+      effectiveSubscriptionStatus(
+        {
+          status: "active",
+          autoRenew: true,
+          nextRenewalAt: "2026-07-10T00:00:00.000Z",
+        },
+        now
+      )
+    ).toBe("active");
+  });
+});
 
 describe("advancePeriod", () => {
   it("advances monthly, clamping to the shorter month", () => {

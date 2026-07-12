@@ -10,9 +10,10 @@ import SubscriptionsPanel, { type SubscriptionRow } from "@/components/Subscript
 import ProviderTable from "@/components/ProviderTable";
 import ProjectTable from "@/components/ProjectTable";
 import type { ExternalBillingRecord } from "@/components/ExternalBillingDetails";
+import PaidServicesPanel from "@/components/PaidServicesPanel";
 
 export type BillingMode = "actual" | "estimated" | "manual";
-type SettingsTab = "api-keys" | "notifications" | "billing";
+type SettingsTab = "connections" | "services" | "projects";
 
 export interface ProviderPlan {
   billingMode: BillingMode;
@@ -63,7 +64,9 @@ export interface Provider {
 }
 
 function parseSettingsTab(value: string | null): SettingsTab {
-  return value === "notifications" || value === "billing" ? value : "api-keys";
+  if (value === "projects") return "projects";
+  if (value === "services" || value === "billing") return "services";
+  return "connections";
 }
 
 function SettingsPageContent() {
@@ -153,6 +156,7 @@ function SettingsPageContent() {
     apiKey?: string;
     config?: Record<string, unknown>;
     label?: string | null;
+    refreshIntervalMin?: number;
     plan?: ProviderPlan | null;
     allocations?: { projectId: string; percentage: number }[];
   }) => {
@@ -165,6 +169,7 @@ function SettingsPageContent() {
           apiKey: provider.apiKey,
           config: provider.config,
           label: provider.label,
+          refreshIntervalMin: provider.refreshIntervalMin,
           plan: provider.plan,
           allocations: provider.allocations ?? [],
         }),
@@ -304,8 +309,9 @@ function SettingsPageContent() {
   };
 
   if (
-    (loading && activeTab === "api-keys") ||
-    ((projectsLoading || subscriptionsLoading) && activeTab === "billing")
+    (loading && activeTab === "connections") ||
+    ((loading || subscriptionsLoading) && activeTab === "services") ||
+    (projectsLoading && activeTab === "projects")
   ) {
     return (
       <div className="space-y-6 animate-pulse">
@@ -329,7 +335,7 @@ function SettingsPageContent() {
     <div className="space-y-6">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <h1 className="text-2xl font-bold text-gray-900 dark:text-gray-100">Settings</h1>
-        {activeTab === "api-keys" ? (
+        {activeTab === "connections" ? (
           <button
             type="button"
             onClick={() => {
@@ -338,20 +344,9 @@ function SettingsPageContent() {
             }}
             className="px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700 transition-colors"
           >
-            Add API Key
+            Add provider
           </button>
-        ) : activeTab === "billing" ? (
-          <div className="flex gap-2">
-            <button
-              type="button"
-              onClick={() => {
-                setEditProject(null);
-                setProjectModalOpen(true);
-              }}
-              className="px-4 py-2 text-sm font-medium text-blue-700 bg-blue-50 dark:text-blue-300 dark:bg-blue-900/30 border border-blue-200 dark:border-blue-800 rounded-lg hover:bg-blue-100 dark:hover:bg-blue-900/50 transition-colors"
-            >
-              Add Project
-            </button>
+        ) : activeTab === "services" ? (
             <button
               type="button"
               onClick={() => {
@@ -360,48 +355,58 @@ function SettingsPageContent() {
               }}
               className="px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700 transition-colors"
             >
-              Add Subscription
+              Track paid service
             </button>
-          </div>
+        ) : activeTab === "projects" ? (
+          <button
+            type="button"
+            onClick={() => {
+              setEditProject(null);
+              setProjectModalOpen(true);
+            }}
+            className="px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700 transition-colors"
+          >
+            Add project
+          </button>
         ) : null}
       </div>
 
       <nav aria-label="Settings sections" className="flex overflow-x-auto border-b border-gray-200 dark:border-gray-800">
         <Link
-          href="/settings?tab=api-keys"
-          id="settings-tab-api-keys"
-          aria-current={activeTab === "api-keys" ? "page" : undefined}
+          href="/settings?tab=connections"
+          id="settings-tab-connections"
+          aria-current={activeTab === "connections" ? "page" : undefined}
           className={`pb-3 px-4 text-sm font-medium border-b-2 transition-colors whitespace-nowrap ${
-            activeTab === "api-keys"
+            activeTab === "connections"
               ? "border-blue-500 text-blue-600 dark:text-blue-400"
               : "border-transparent text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200"
           }`}
         >
-          API Keys
+          Connections
         </Link>
         <Link
-          href="/settings?tab=notifications"
-          id="settings-tab-notifications"
-          aria-current={activeTab === "notifications" ? "page" : undefined}
+          href="/settings?tab=services"
+          id="settings-tab-services"
+          aria-current={activeTab === "services" ? "page" : undefined}
           className={`pb-3 px-4 text-sm font-medium border-b-2 transition-colors whitespace-nowrap ${
-            activeTab === "notifications"
+            activeTab === "services"
               ? "border-blue-500 text-blue-600 dark:text-blue-400"
               : "border-transparent text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200"
           }`}
         >
-          Notifications
+          Paid services
         </Link>
         <Link
-          href="/settings?tab=billing"
-          id="settings-tab-billing"
-          aria-current={activeTab === "billing" ? "page" : undefined}
+          href="/settings?tab=projects"
+          id="settings-tab-projects"
+          aria-current={activeTab === "projects" ? "page" : undefined}
           className={`pb-3 px-4 text-sm font-medium border-b-2 transition-colors whitespace-nowrap ${
-            activeTab === "billing"
+            activeTab === "projects"
               ? "border-blue-500 text-blue-600 dark:text-blue-400"
               : "border-transparent text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200"
           }`}
         >
-          Billing & Projects
+          Projects
         </Link>
       </nav>
 
@@ -412,125 +417,98 @@ function SettingsPageContent() {
       )}
 
       <section id={`settings-panel-${activeTab}`} aria-label={`${activeTab} settings`}>
-      {activeTab === "api-keys" ? (
-        <div className="space-y-6">
-          <div className="bg-blue-50 dark:bg-blue-900/30 border border-blue-200 dark:border-blue-800 rounded-xl p-5">
-            <h2 className="text-sm font-semibold text-blue-900 dark:text-blue-100 flex items-center gap-2 mb-3">
-              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-              </svg>
-              How Usage Tracking Works
-            </h2>
-            <div className="grid sm:grid-cols-3 gap-4 text-sm text-blue-800 dark:text-blue-200">
-              <div className="space-y-1">
-                <p className="font-medium text-blue-900 dark:text-blue-100">1. Poll Adapters</p>
-                <p className="text-xs opacity-90">The monitor actively queries provider APIs (e.g. OpenAI) on a schedule. Best for services with billing endpoints.</p>
-              </div>
-              <div className="space-y-1">
-                <p className="font-medium text-blue-900 dark:text-blue-100">2. Pushed Telemetry</p>
-                <p className="text-xs opacity-90">Apps explicitly send usage events to the monitor. Used for &quot;blind&quot; providers (e.g. Anthropic, Robinhood) without billing APIs.</p>
-              </div>
-              <div className="space-y-1">
-                <p className="font-medium text-blue-900 dark:text-blue-100">3. OTLP Metrics</p>
-                <p className="text-xs opacity-90">Standardized metrics streaming. Perfect for tracking natively supported tools like Claude Code via <code className="px-1 py-0.5 rounded bg-blue-100 dark:bg-blue-800 text-[10px]">/v1/metrics</code>.</p>
+        {activeTab === "connections" ? (
+          <div className="space-y-6">
+            <div className="rounded-xl border border-blue-200 bg-blue-50 p-5 dark:border-blue-800 dark:bg-blue-900/30">
+              <h2 className="mb-3 flex items-center gap-2 text-sm font-semibold text-blue-900 dark:text-blue-100">
+                How data gets here
+              </h2>
+              <div className="grid gap-4 text-sm text-blue-800 dark:text-blue-200 sm:grid-cols-3">
+                <div className="space-y-1">
+                  <p className="font-medium text-blue-900 dark:text-blue-100">Automatic account sync</p>
+                  <p className="text-xs opacity-90">Read-only provider adapters fetch authoritative usage, billing, plan, and quota fields whenever the provider exposes them.</p>
+                </div>
+                <div className="space-y-1">
+                  <p className="font-medium text-blue-900 dark:text-blue-100">Pushed telemetry</p>
+                  <p className="text-xs opacity-90">Apps send metered usage and cost when a provider has no suitable account API or when project-level detail is needed.</p>
+                </div>
+                <div className="space-y-1">
+                  <p className="font-medium text-blue-900 dark:text-blue-100">Manual plan tracking</p>
+                  <p className="text-xs opacity-90">Dashboard-only subscriptions stay explicit instead of being inferred from API traffic, balances, or portfolio assets.</p>
+                </div>
               </div>
             </div>
+            <ProviderTable
+              providers={providers}
+              actionLoading={actionLoading}
+              deleteConfirm={deleteConfirm}
+              onEdit={(provider) => {
+                setEditProvider(provider);
+                setModalOpen(true);
+              }}
+              onDeleteConfirmStart={setDeleteConfirm}
+              onDeleteConfirmCancel={() => setDeleteConfirm(null)}
+              onDelete={handleDelete}
+              onAddProvider={() => {
+                setEditProvider(null);
+                setModalOpen(true);
+              }}
+              onToggleActive={handleToggleActive}
+              onFetchNow={handleFetchNow}
+            />
           </div>
-          <ProviderTable
-            providers={providers}
-            actionLoading={actionLoading}
-            deleteConfirm={deleteConfirm}
-            onEdit={(provider) => {
-              setEditProvider(provider);
-              setModalOpen(true);
-            }}
-            onDeleteConfirmStart={setDeleteConfirm}
-            onDeleteConfirmCancel={() => setDeleteConfirm(null)}
-            onDelete={handleDelete}
-            onAddProvider={() => {
-              setEditProvider(null);
-              setModalOpen(true);
-            }}
-            onToggleActive={handleToggleActive}
-            onFetchNow={handleFetchNow}
-          />
-        </div>
-      ) : activeTab === "notifications" ? (
-        <div className="bg-white dark:bg-gray-800 rounded-xl border border-gray-200 dark:border-gray-700 p-6 space-y-6">
-          <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100">Notification Preferences</h2>
-          <p className="text-sm text-gray-500 dark:text-gray-400 max-w-2xl">
-            Configure how you want to be alerted about budget overruns, payment failures, and system issues.
-          </p>
-          <div className="space-y-4 max-w-md">
-            <div className="flex items-start gap-3">
-              <div className="flex h-6 items-center">
-                <input
-                  id="email-alerts"
-                  name="email-alerts"
-                  type="checkbox"
-                  defaultChecked
-                  className="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-600 dark:border-gray-600 dark:bg-gray-900 dark:ring-offset-gray-900"
-                />
-              </div>
-              <div className="text-sm leading-6">
-                <label htmlFor="email-alerts" className="font-medium text-gray-900 dark:text-gray-100">Email Alerts</label>
-                <p className="text-gray-500 dark:text-gray-400">Receive critical alerts via email immediately.</p>
-              </div>
-            </div>
-            <div className="flex items-start gap-3">
-              <div className="flex h-6 items-center">
-                <input
-                  id="slack-alerts"
-                  name="slack-alerts"
-                  type="checkbox"
-                  className="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-600 dark:border-gray-600 dark:bg-gray-900 dark:ring-offset-gray-900"
-                />
-              </div>
-              <div className="text-sm leading-6">
-                <label htmlFor="slack-alerts" className="font-medium text-gray-900 dark:text-gray-100">Slack Integration</label>
-                <p className="text-gray-500 dark:text-gray-400">Send notifications to a designated Slack channel.</p>
-              </div>
-            </div>
-          </div>
-          <button type="button" className="px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700 transition-colors">
-            Save Preferences
-          </button>
-        </div>
-      ) : (
-        <div className="space-y-8">
-          <SubscriptionsPanel
-            subscriptions={subscriptions}
-            onAdd={() => {
-              setEditSubscription(null);
-              setSubscriptionModalOpen(true);
-            }}
-            onEdit={(sub) => {
-              setEditSubscription({
-                id: sub.id,
-                providerId: sub.provider.id,
-                projectId: sub.project?.id ?? null,
-                name: sub.name,
-                description: sub.description,
-                costUsd: sub.costUsd,
-                currency: sub.currency,
-                interval: sub.interval,
-                intervalCount: sub.intervalCount,
-                anchorDay: sub.anchorDay,
-                startDate: sub.startDate,
-                autoRenew: sub.autoRenew,
-                status: sub.status,
-                notes: sub.notes,
-                externalBillingSource: sub.externalBillingSource,
-                externalBillingId: sub.externalBillingId,
-              });
-              setSubscriptionModalOpen(true);
-            }}
-            onDelete={handleDeleteSubscription}
-            deleteConfirm={deleteSubscriptionConfirm}
-            setDeleteConfirm={setDeleteSubscriptionConfirm}
-            actionLoading={actionLoading}
-          />
+        ) : activeTab === "services" ? (
+          <div className="space-y-8">
+            <PaidServicesPanel
+              providers={providers}
+              subscriptions={subscriptions}
+              variant="settings"
+              showCoverage
+            />
 
+            <div className="space-y-3">
+              <div>
+                <h2 className="text-base font-semibold text-gray-900 dark:text-gray-100">Tracked recurring costs</h2>
+                <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                  Edit dashboard-only subscriptions or link them to an automatically discovered provider record. Linked records render once and charge once.
+                </p>
+              </div>
+              <SubscriptionsPanel
+                subscriptions={subscriptions}
+                onAdd={() => {
+                  setEditSubscription(null);
+                  setSubscriptionModalOpen(true);
+                }}
+                onEdit={(sub) => {
+                  setEditSubscription({
+                    id: sub.id,
+                    providerId: sub.provider.id,
+                    projectId: sub.project?.id ?? null,
+                    name: sub.name,
+                    description: sub.description,
+                    costUsd: sub.costUsd,
+                    currency: sub.currency,
+                    interval: sub.interval,
+                    intervalCount: sub.intervalCount,
+                    anchorDay: sub.anchorDay,
+                    startDate: sub.startDate,
+                    autoRenew: sub.autoRenew,
+                    status: sub.status,
+                    effectiveStatus: sub.effectiveStatus,
+                    notes: sub.notes,
+                    externalBillingSource: sub.externalBillingSource,
+                    externalBillingId: sub.externalBillingId,
+                  });
+                  setSubscriptionModalOpen(true);
+                }}
+                onDelete={handleDeleteSubscription}
+                deleteConfirm={deleteSubscriptionConfirm}
+                setDeleteConfirm={setDeleteSubscriptionConfirm}
+                actionLoading={actionLoading}
+              />
+            </div>
+          </div>
+        ) : (
           <ProjectTable
             projects={projects}
             actionLoading={actionLoading}
@@ -547,8 +525,7 @@ function SettingsPageContent() {
               setProjectModalOpen(true);
             }}
           />
-        </div>
-      )}
+        )}
       </section>
 
       <AddProviderModal
@@ -584,6 +561,7 @@ function SettingsPageContent() {
           id: p.id,
           name: p.name,
           displayName: p.displayName,
+          refreshIntervalMin: p.refreshIntervalMin,
           externalBilling: p.externalBilling,
         }))}
         projects={projects

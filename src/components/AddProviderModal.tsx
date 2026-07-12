@@ -5,6 +5,7 @@ import ModalDialog from "@/components/ModalDialog";
 import ProviderIntegrationInfo from "@/components/ProviderIntegrationInfo";
 import {
   BUILT_IN_PROVIDERS,
+  hasConfiguredProviderField,
   PROVIDER_CATEGORIES,
   type ProviderDefinition,
 } from "@/lib/provider-definitions";
@@ -32,6 +33,7 @@ interface Provider {
   config?: Record<string, unknown>;
   apiKey?: string;
   label?: string | null;
+  refreshIntervalMin?: number;
   keyPreview?: string | null;
   plan?: ProviderPlan | null;
   allocations?: { projectId: string; percentage: number }[];
@@ -98,6 +100,9 @@ export default function AddProviderModal({
   const [builtinDisplayName, setBuiltinDisplayName] = useState(editProvider?.displayName || "");
   const [apiKey, setApiKey] = useState(editProvider?.apiKey || "");
   const [label, setLabel] = useState(editProvider?.label || "");
+  const [refreshIntervalMin, setRefreshIntervalMin] = useState(
+    editProvider?.refreshIntervalMin ?? 60
+  );
   const [originalConfig, setOriginalConfig] = useState<Record<string, unknown>>(editProvider?.config || {});
   const [extraFields, setExtraFields] = useState<Record<string, string>>(
     stringFieldsFromConfig(editProvider?.config)
@@ -184,6 +189,7 @@ export default function AddProviderModal({
     setBuiltinDisplayName(editProvider?.displayName || "");
     setApiKey("");
     setLabel(editProvider?.label || "");
+    setRefreshIntervalMin(editProvider?.refreshIntervalMin ?? 60);
     setOriginalConfig(config);
     setExtraFields(stringConfig);
     setCustomName(nextTab !== "builtin" ? editProvider?.name || "" : "");
@@ -282,7 +288,14 @@ export default function AddProviderModal({
           throw new Error(`${selectedDef.name === "twilio" ? "Account SID" : "Account ID"} is required`);
         }
         for (const field of selectedDef.needsConfig?.fields ?? []) {
-          if (field.required && !String(config[field.key] ?? "").trim()) {
+          if (
+            field.required &&
+            !hasConfiguredProviderField(
+              config,
+              field.key,
+              editProvider?.secretConfigMeta?.fields ?? []
+            )
+          ) {
             throw new Error(`${field.label} is required`);
           }
         }
@@ -296,6 +309,7 @@ export default function AddProviderModal({
           apiKey: selectedDef.usesApiKey === false ? undefined : apiKey || undefined,
           config: Object.keys(config).length > 0 ? config : undefined,
           label: label.trim() || null,
+          refreshIntervalMin,
           plan,
           allocations: allocationPayload,
         });
@@ -326,6 +340,7 @@ export default function AddProviderModal({
           apiKey: apiKey || undefined,
           config,
           label: label.trim() || null,
+          refreshIntervalMin,
           plan,
           allocations: allocationPayload,
         });
@@ -342,6 +357,7 @@ export default function AddProviderModal({
           displayName: customDisplayName.trim(),
           type: "generic",
           label: label.trim() || null,
+          refreshIntervalMin,
           plan,
           allocations: allocationPayload,
         });
@@ -502,6 +518,31 @@ export default function AddProviderModal({
         />
       </div>
     </fieldset>
+  );
+
+  const renderSyncCadence = () => (
+    <div>
+      <label htmlFor="provider-refresh-interval" className="block text-xs font-medium text-gray-500 mb-1">
+        Automatic sync cadence
+      </label>
+      <select
+        id="provider-refresh-interval"
+        value={refreshIntervalMin}
+        onChange={(event) => setRefreshIntervalMin(Number(event.target.value))}
+        className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-500"
+      >
+        {![15, 60, 360, 1440].includes(refreshIntervalMin) && (
+          <option value={refreshIntervalMin}>Every {refreshIntervalMin} minutes (custom)</option>
+        )}
+        <option value={15}>Every 15 minutes</option>
+        <option value={60}>Hourly</option>
+        <option value={360}>Every 6 hours</option>
+        <option value={1440}>Daily</option>
+      </select>
+      <p className="mt-1 text-xs text-gray-400">
+        Use a longer interval for quota-bearing provider endpoints.
+      </p>
+    </div>
   );
 
   const renderExtraFields = () => {
@@ -735,6 +776,7 @@ export default function AddProviderModal({
                     setSelectedBuiltin(e.target.value);
                     const def = BUILT_IN_PROVIDERS.find((p) => p.name === e.target.value);
                     setBuiltinDisplayName(def?.displayName || "");
+                    setRefreshIntervalMin(def?.defaultRefreshIntervalMin ?? 60);
                     setOriginalConfig({});
                     setExtraFields({});
                     if (def?.creditBased && editProvider) {
@@ -850,6 +892,8 @@ export default function AddProviderModal({
                 />
                 <p className="text-xs text-gray-400 mt-0.5">Tag this key to distinguish it from others with the same provider name</p>
               </div>
+
+              {renderSyncCadence()}
 
               {renderExtraFields()}
 
@@ -1033,6 +1077,7 @@ export default function AddProviderModal({
                 )}
               </fieldset>
 
+              {renderSyncCadence()}
               {renderAllocations()}
               {renderBillingFields()}
             </div>
@@ -1084,6 +1129,7 @@ export default function AddProviderModal({
                 />
               </div>
 
+              {renderSyncCadence()}
               {renderAllocations()}
               {renderBillingFields()}
             </div>

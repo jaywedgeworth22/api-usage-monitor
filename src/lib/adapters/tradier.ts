@@ -118,11 +118,17 @@ async function fetchAccountBalance(
             {
               externalId: "account-api-limit",
               kind: "account",
+              serviceName: "Tradier API",
               planName: "Tradier API rate limit",
               status: "active",
               requestLimit: allowed,
               requestLimitWindow: "minute",
+              usageQuantity: used,
+              remainingQuantity: available,
+              usageUnit: "requests",
               currentPeriodEnd: expiryAt,
+              rollupRole: "metadata",
+              dateKind: "quota_reset",
             },
           ],
         }

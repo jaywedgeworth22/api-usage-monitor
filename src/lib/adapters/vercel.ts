@@ -20,7 +20,8 @@ interface FocusCharge {
 
 function parseCharges(data: unknown): FocusCharge[] {
   let charges: FocusCharge[];
-  if (Array.isArray(data)) charges = data as FocusCharge[];
+  if (data == null) charges = [];
+  else if (Array.isArray(data)) charges = data as FocusCharge[];
   else if (typeof data === "object" && data !== null) charges = [data as FocusCharge];
   else if (typeof data !== "string") {
     throw new AdapterError("Vercel returned an invalid FOCUS response", {
@@ -87,24 +88,86 @@ export async function fetchUsage(
 
   const charges = parseCharges(response.data);
   let totalCost = 0;
-  let foundUsd = false;
-  const byService = new Map<string, { billedCostUsd: number; quantity: number }>();
+  let foundUsd = charges.length === 0;
+  const byCurrency = new Map<string, number>();
+  const byService = new Map<string, {
+    service: string;
+    currency: string;
+    billedCost: number;
+    quantity: number;
+    unit: string | null;
+  }>();
   for (const charge of charges) {
-    const currency = (charge.BillingCurrency ?? "USD").toUpperCase();
+    const currency = charge.BillingCurrency!.trim().toUpperCase();
     const amount = parseNumber(charge.BilledCost);
+    if (amount != null) {
+      byCurrency.set(currency, (byCurrency.get(currency) ?? 0) + amount);
+    }
     if (currency === "USD" && amount != null) {
       totalCost += amount;
       foundUsd = true;
     }
-    const key = charge.ServiceName ?? "unknown";
-    const aggregate = byService.get(key) ?? { billedCostUsd: 0, quantity: 0 };
-    if (currency === "USD") aggregate.billedCostUsd += amount ?? 0;
+    const service = charge.ServiceName ?? "unknown";
+    const unit = charge.ConsumedUnit ?? null;
+    const key = `${currency}\u0000${service}\u0000${unit ?? ""}`;
+    const aggregate = byService.get(key) ?? {
+      service,
+      currency,
+      billedCost: 0,
+      quantity: 0,
+      unit,
+    };
+    aggregate.billedCost += amount ?? 0;
     aggregate.quantity += parseNumber(charge.ConsumedQuantity) ?? 0;
     byService.set(key, aggregate);
   }
   const month = monthStart.toISOString().slice(0, 7);
   const owner = teamId ?? "personal";
   const canonicalTotalCost = foundUsd ? Math.max(0, totalCost) : null;
+  const records = [];
+  const canonicalCurrencyTotals =
+    charges.length === 0
+      ? [["USD", 0] as const]
+      : [...byCurrency.entries()].sort(([left], [right]) => left.localeCompare(right));
+  for (const [currency, amount] of canonicalCurrencyTotals) {
+    records.push({
+      externalId: `${owner}:${month}:${currency}`,
+      kind: "billing_period" as const,
+      serviceName: "Vercel",
+      planName: `${currency} FOCUS charges total`,
+      status: "open",
+      amountUsd: amount,
+      currency,
+      currentPeriodStart: monthStart.toISOString(),
+      currentPeriodEnd: monthEnd.toISOString(),
+      rollupRole: "canonical" as const,
+      dateKind: "period_end" as const,
+    });
+  }
+  if (byService.size > 0) {
+    for (const aggregate of [...byService.values()].sort((left, right) =>
+      left.currency.localeCompare(right.currency) ||
+      left.service.localeCompare(right.service)
+    )) {
+      records.push({
+        externalId: `${owner}:${month}:${aggregate.currency}:${encodeURIComponent(
+          `${aggregate.service}:${aggregate.unit ?? ""}`
+        )}`,
+        kind: "billing_period" as const,
+        serviceName: aggregate.service,
+        planName: "Vercel metered service",
+        status: "open",
+        amountUsd: aggregate.billedCost,
+        currency: aggregate.currency,
+        currentPeriodStart: monthStart.toISOString(),
+        currentPeriodEnd: monthEnd.toISOString(),
+        usageQuantity: aggregate.quantity,
+        usageUnit: aggregate.unit,
+        rollupRole: "component" as const,
+        dateKind: "period_end" as const,
+      });
+    }
+  }
 
   return {
     balance: null,
@@ -119,28 +182,25 @@ export async function fetchUsage(
       owner,
       month,
       chargeCount: charges.length,
-      byService: Object.fromEntries(byService),
+      byService: Object.fromEntries(
+        [...byService.values()].map((aggregate) => [
+          `${aggregate.currency}:${aggregate.service}`,
+          aggregate,
+        ])
+      ),
+      byCurrency: Object.fromEntries([...byCurrency.entries()].sort()),
       capabilities: {
         actualBilledCost: true,
         format: "FOCUS 1.3 JSONL",
         requiredAccess: "Vercel billing read (Pro or Enterprise)",
+        canonicalUsdCost: canonicalTotalCost != null || charges.length === 0,
+        mixedCurrency: byCurrency.size > 1,
       },
     },
     externalBilling: {
       source: "vercel-focus-billing",
       authoritative: true,
-      records: [
-        {
-          externalId: `${owner}:${month}`,
-          kind: "billing_period",
-          planName: "Vercel FOCUS charges",
-          status: "open",
-          amountUsd: canonicalTotalCost,
-          currency: "USD",
-          currentPeriodStart: monthStart.toISOString(),
-          currentPeriodEnd: monthEnd.toISOString(),
-        },
-      ],
+      records,
     },
   };
 }

@@ -5,7 +5,14 @@ import { SESSION_COOKIE_NAME, verifySessionToken } from "@/lib/auth";
 import { isUsageReadAuthorized } from "@/lib/ingest-auth";
 import { parseSubscriptionCreateInput } from "@/lib/subscription-input";
 import {
+  canLinkSubscriptionToExternalBilling,
+  externalBillingFreshnessWindowMs,
+  isExternalBillingLinkCandidate,
+  resolveExternalBillingPeriod,
+} from "@/lib/external-billing-link";
+import {
   normalizeMonthlyUsd,
+  effectiveSubscriptionStatus,
   isSubscriptionInterval,
   type SubscriptionInterval,
 } from "@/lib/subscriptions";
@@ -56,7 +63,9 @@ export async function GET(request: NextRequest) {
       // effective (it would tell a consumer to apply paid-tier knobs for a
       // plan that isn't currently in force). freeTierKnobEnv below stays the
       // provider baseline unconditionally, regardless of status.
-      const knobOverrideApplies = sub.status === "active" || sub.status === "considering";
+      const effectiveStatus = effectiveSubscriptionStatus(sub);
+      const knobOverrideApplies =
+        effectiveStatus === "active" || effectiveStatus === "considering";
       const knobEnv = knobOverrideApplies
         ? ((sub.knobEnv as Record<string, string> | null) ?? freeTierKnobEnv)
         : freeTierKnobEnv;
@@ -75,6 +84,7 @@ export async function GET(request: NextRequest) {
         nextRenewalAt: sub.nextRenewalAt.toISOString(),
         autoRenew: sub.autoRenew,
         status: sub.status,
+        effectiveStatus,
         notes: sub.notes,
         externalBillingSource: sub.externalBillingSource,
         externalBillingId: sub.externalBillingId,
@@ -126,6 +136,13 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: "projectId does not match a known project" }, { status: 400 });
     }
   }
+  const validationNow = new Date();
+  let linkedCycle: {
+    startDate: Date;
+    currentPeriodStart: Date;
+    nextRenewalAt: Date;
+    anchorDay: null;
+  } | null = null;
   if (input.externalBillingSource && input.externalBillingId) {
     const externalBilling = await prisma.providerExternalBilling.findUnique({
       where: {
@@ -135,12 +152,61 @@ export async function POST(request: NextRequest) {
           externalId: input.externalBillingId,
         },
       },
-      select: { id: true },
+      select: {
+        externalId: true,
+        kind: true,
+        status: true,
+        amountUsd: true,
+        currency: true,
+        billingInterval: true,
+        currentPeriodStart: true,
+        currentPeriodEnd: true,
+        rollupRole: true,
+        syncedAt: true,
+      },
     });
     if (!externalBilling) {
       return NextResponse.json(
         { error: "External billing link does not match this provider" },
         { status: 400 }
+      );
+    }
+    if (
+      !isExternalBillingLinkCandidate(externalBilling, {
+        now: validationNow,
+        staleAfterMs: externalBillingFreshnessWindowMs(
+          provider.refreshIntervalMin
+        ),
+      }) ||
+      !canLinkSubscriptionToExternalBilling(input, externalBilling)
+    ) {
+      return NextResponse.json(
+        {
+          error:
+            "External billing link must be fresh, current, live, canonical, USD, and match the subscription amount and cadence",
+        },
+        { status: 400 }
+      );
+    }
+    const linkedPeriod = resolveExternalBillingPeriod(externalBilling)!;
+    linkedCycle = {
+      startDate: linkedPeriod.start,
+      currentPeriodStart: linkedPeriod.start,
+      nextRenewalAt: linkedPeriod.end,
+      anchorDay: null,
+    };
+    const existingLink = await prisma.subscription.findFirst({
+      where: {
+        providerId: input.providerId,
+        externalBillingSource: input.externalBillingSource,
+        externalBillingId: input.externalBillingId,
+      },
+      select: { id: true },
+    });
+    if (existingLink) {
+      return NextResponse.json(
+        { error: "External billing record is already linked to another subscription" },
+        { status: 409 }
       );
     }
   }
@@ -158,10 +224,11 @@ export async function POST(request: NextRequest) {
         currency: input.currency,
         interval: input.interval,
         intervalCount: input.intervalCount,
-        anchorDay: input.anchorDay,
-        startDate: input.startDate,
-        currentPeriodStart: input.currentPeriodStart,
-        nextRenewalAt: input.nextRenewalAt,
+        anchorDay: linkedCycle ? linkedCycle.anchorDay : input.anchorDay,
+        startDate: linkedCycle?.startDate ?? input.startDate,
+        currentPeriodStart:
+          linkedCycle?.currentPeriodStart ?? input.currentPeriodStart,
+        nextRenewalAt: linkedCycle?.nextRenewalAt ?? input.nextRenewalAt,
         autoRenew: input.autoRenew,
         status: input.status,
         notes: input.notes,
@@ -170,6 +237,15 @@ export async function POST(request: NextRequest) {
     });
     return NextResponse.json(subscription, { status: 201 });
   } catch (error) {
+    if (
+      error instanceof Prisma.PrismaClientKnownRequestError &&
+      error.code === "P2002"
+    ) {
+      return NextResponse.json(
+        { error: "External billing record is already linked to another subscription" },
+        { status: 409 }
+      );
+    }
     console.error("Failed to create subscription:", error);
     return NextResponse.json({ error: "Failed to create subscription" }, { status: 500 });
   }

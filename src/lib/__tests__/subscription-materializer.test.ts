@@ -2,7 +2,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import fs from "fs";
 import os from "os";
 import path from "path";
-import { initialCycle } from "../subscriptions";
+import { initialCycle, isSubscriptionInterval } from "../subscriptions";
 import { setupPrismaSqliteTestDb } from "./setup-test-db";
 
 // Everything that transitively imports @/lib/prisma is loaded DYNAMICALLY after
@@ -29,21 +29,34 @@ interface FakeSub {
   projectId: string | null;
   autoRenew: boolean;
   currentPeriodStart: Date;
+  nextRenewalAt: Date;
   lastChargedPeriodStart: Date | null;
   provider: { name: string };
 }
 
 function fakeSubscription(overrides: Partial<FakeSub> = {}): FakeSub {
+  const interval = overrides.interval ?? "monthly";
+  const intervalCount = overrides.intervalCount ?? 1;
+  const currentPeriodStart =
+    overrides.currentPeriodStart ?? new Date("2026-07-01T00:00:00Z");
   return {
     id: "sub-1",
     name: "Test plan",
     costUsd: 20,
     currency: "USD",
-    interval: "monthly",
-    intervalCount: 1,
+    interval,
+    intervalCount,
     projectId: "proj-1",
     autoRenew: true,
-    currentPeriodStart: new Date("2026-07-01T00:00:00Z"),
+    currentPeriodStart,
+    nextRenewalAt:
+      overrides.nextRenewalAt ??
+      initialCycle({
+        startDate: currentPeriodStart,
+        interval: isSubscriptionInterval(interval) ? interval : "monthly",
+        intervalCount,
+        anchorDay: null,
+      }).nextRenewalAt,
     lastChargedPeriodStart: null,
     provider: { name: "anthropic" },
     ...overrides,
@@ -79,6 +92,27 @@ describe("planSubscriptionCharges", () => {
     expect(plan!.inputs[0].costUsd).toBe(20);
     expect(plan!.currentPeriodStart.toISOString()).toBe("2026-07-01T00:00:00.000Z");
     expect(plan!.nextRenewalAt.toISOString()).toBe("2026-08-01T00:00:00.000Z");
+  });
+
+  it("honors an authoritative prorated end for the current provider-linked period", () => {
+    const plan = planSubscriptionCharges(
+      fakeSubscription({
+        currentPeriodStart: new Date("2026-07-12T00:00:00Z"),
+        nextRenewalAt: new Date("2026-08-01T00:00:00Z"),
+      }),
+      new Date("2026-07-15T00:00:00Z")
+    );
+
+    expect(plan?.inputs).toHaveLength(1);
+    expect(plan?.inputs[0].windowStart?.toISOString()).toBe(
+      "2026-07-12T00:00:00.000Z"
+    );
+    expect(plan?.inputs[0].windowEnd?.toISOString()).toBe(
+      "2026-08-01T00:00:00.000Z"
+    );
+    expect(plan?.nextRenewalAt.toISOString()).toBe(
+      "2026-08-01T00:00:00.000Z"
+    );
   });
 
   it("backfills every elapsed period since currentPeriodStart", () => {
@@ -277,6 +311,54 @@ describe("materializeDueSubscriptions + project attribution (integration)", () =
     expect(prov.fixedCostConflict).toBe(false);
     expect(prov.fixedAccruedUsd).toBe(30);
     expect(prov.spentUsd).toBe(35);
+  });
+
+  it("does not dedupe a legacy linked charge with a different provider period end", async () => {
+    const provider = await prisma.provider.create({
+      data: {
+        name: "cloudflare",
+        displayName: "Cloudflare",
+        type: "builtin",
+        refreshIntervalMin: 60,
+        plan: { create: { billingMode: "actual", monthlyBudgetUsd: 200 } },
+      },
+    });
+    await prisma.usageSnapshot.create({
+      data: {
+        providerId: provider.id,
+        fetchedAt: NOW,
+        totalCost: 35,
+        fixedCostIncludedUsd: 30,
+      },
+    });
+    await prisma.providerExternalBilling.create({
+      data: {
+        providerId: provider.id,
+        source: "cloudflare-subscriptions",
+        externalId: "shifted-pro-plan",
+        kind: "subscription",
+        planName: "Pro",
+        status: "active",
+        amountUsd: 30,
+        currency: "USD",
+        billingInterval: "monthly",
+        currentPeriodStart: new Date("2026-07-01T00:00:00Z"),
+        currentPeriodEnd: new Date("2026-07-20T00:00:00Z"),
+        syncedAt: NOW,
+      },
+    });
+    await createSubscription(provider.id, {
+      externalBillingSource: "cloudflare-subscriptions",
+      externalBillingId: "shifted-pro-plan",
+    });
+    await materializeDueSubscriptions(NOW);
+
+    const status = await computeBudgetStatus(NOW);
+    const result = status.providers.find((item) => item.id === provider.id)!;
+    expect(result.subscriptionMonthToDateUsd).toBe(30);
+    expect(result.linkedFixedDedupeUsd).toBe(0);
+    expect(result.fixedCostConflict).toBe(true);
+    expect(result.spentUsd).toBe(65);
   });
 
   it("never dedupes equal-priced fixed costs without an explicit billing identity link", async () => {

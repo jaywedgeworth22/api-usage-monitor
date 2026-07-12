@@ -47,6 +47,7 @@ interface DueSubscription {
   projectId: string | null;
   autoRenew: boolean;
   currentPeriodStart: Date;
+  nextRenewalAt: Date;
   lastChargedPeriodStart: Date | null;
   provider: { name: string };
 }
@@ -74,12 +75,22 @@ export function planSubscriptionCharges(
   let periodStart = subscription.currentPeriodStart;
   let lastCharged = subscription.lastChargedPeriodStart;
   let latestStarted = subscription.currentPeriodStart;
-  let nextRenewalAt = advancePeriod(periodStart, interval, intervalCount);
+  const cadencePeriodEnd = advancePeriod(periodStart, interval, intervalCount);
+  let nextRenewalAt =
+    subscription.nextRenewalAt.getTime() > periodStart.getTime()
+      ? new Date(
+          Math.min(
+            subscription.nextRenewalAt.getTime(),
+            cadencePeriodEnd.getTime()
+          )
+        )
+      : cadencePeriodEnd;
+  let latestPeriodEnd = nextRenewalAt;
   let guard = 0;
 
   while (periodStart.getTime() <= now.getTime() && guard < MAX_PERIODS_PER_RUN) {
     guard += 1;
-    const periodEnd = advancePeriod(periodStart, interval, intervalCount);
+    const periodEnd = nextRenewalAt;
 
     if (!lastCharged || periodStart.getTime() > lastCharged.getTime()) {
       inputs.push({
@@ -109,12 +120,13 @@ export function planSubscriptionCharges(
     }
 
     latestStarted = periodStart;
-    nextRenewalAt = periodEnd;
+    latestPeriodEnd = periodEnd;
     // A non-auto-renewing subscription is charged for exactly the one term it
     // is in and then stops — never advance into (or charge) a following period.
     if (!subscription.autoRenew) break;
     if (periodEnd.getTime() > now.getTime()) break;
     periodStart = periodEnd;
+    nextRenewalAt = advancePeriod(periodStart, interval, intervalCount);
   }
 
   if (inputs.length === 0) return null;
@@ -122,7 +134,7 @@ export function planSubscriptionCharges(
   return {
     inputs,
     currentPeriodStart: latestStarted,
-    nextRenewalAt,
+    nextRenewalAt: latestPeriodEnd,
     lastChargedPeriodStart: lastCharged as Date,
   };
 }
@@ -142,6 +154,7 @@ export async function materializeDueSubscriptions(
       projectId: true,
       autoRenew: true,
       currentPeriodStart: true,
+      nextRenewalAt: true,
       lastChargedPeriodStart: true,
       provider: { select: { name: true } },
     },

@@ -31,12 +31,29 @@ const ALWAYS_SECRET_KEYS = new Set([
   "authusername",
   "bearertoken",
   "clientsecret",
+  "cookie",
+  "cookies",
   "extraheaders",
   "managementkey",
+  "localstorage",
   "password",
   "refreshtoken",
   "secretkey",
+  "sessioncookie",
+  "sessionstorage",
   "webhooksecret",
+]);
+const LEGACY_BROWSER_STATE_KEYS = new Set([
+  "cookie",
+  "cookies",
+  "localstorage",
+  "sessioncookie",
+  "sessionstorage",
+]);
+const OPAQUE_SECRET_CONTAINER_KEYS = new Set([
+  "cookies",
+  "localstorage",
+  "sessionstorage",
 ]);
 const SECRET_KEY_PATTERN =
   /(?:^|[_-])(authorization|credential|password|private[_-]?key|secret|token)(?:$|[_-])/i;
@@ -50,6 +67,30 @@ function isSecretKey(key) {
   if (normalized === "publickey") return false;
   return ALWAYS_SECRET_KEYS.has(normalized) || SECRET_KEY_PATTERN.test(key) ||
     /(?:authorization|credential|password|privatekey|secret|token)$/.test(normalized);
+}
+
+function normalizedKey(key) {
+  return key.replace(/[_-]/g, "").toLowerCase();
+}
+
+function stripLegacyBrowserState(input, prefix = "") {
+  const cleaned = {};
+  const removedPaths = [];
+  for (const [key, value] of Object.entries(input)) {
+    const path = prefix ? `${prefix}.${key}` : key;
+    if (LEGACY_BROWSER_STATE_KEYS.has(normalizedKey(key))) {
+      removedPaths.push(path);
+      continue;
+    }
+    if (isRecord(value)) {
+      const nested = stripLegacyBrowserState(value, path);
+      if (Object.keys(nested.cleaned).length) cleaned[key] = nested.cleaned;
+      removedPaths.push(...nested.removedPaths);
+    } else {
+      cleaned[key] = value;
+    }
+  }
+  return { cleaned, removedPaths };
 }
 
 function splitRecord(input) {
@@ -82,7 +123,9 @@ function mergeRecords(left, right) {
 function collectPaths(input, prefix = "") {
   return Object.entries(input).flatMap(([key, value]) => {
     const path = prefix ? `${prefix}.${key}` : key;
-    return isRecord(value) ? collectPaths(value, path) : [path];
+    return isRecord(value) && !OPAQUE_SECRET_CONTAINER_KEYS.has(normalizedKey(key))
+      ? collectPaths(value, path)
+      : [path];
   });
 }
 
@@ -135,23 +178,49 @@ try {
   });
 
   for (const provider of providers) {
-    const split = splitRecord(isRecord(provider.config) ? provider.config : {});
+    const strippedConfig = stripLegacyBrowserState(
+      isRecord(provider.config) ? provider.config : {}
+    );
+    const split = splitRecord(strippedConfig.cleaned);
     const fields = collectPaths(split.secretConfig).sort();
-    if (fields.length === 0) continue;
+    let existing = {};
+    let strippedExisting = { cleaned: {}, removedPaths: [] };
+    const canInspectEncryptedConfig =
+      apply || /^[0-9a-fA-F]{64}$/.test(process.env.ENCRYPTION_KEY ?? "");
+    if (provider.secretConfig && canInspectEncryptedConfig) {
+      try {
+        existing = decryptJson(provider.secretConfig);
+        strippedExisting = stripLegacyBrowserState(existing);
+      } catch (error) {
+        failed++;
+        console.error(`failed: ${provider.name}: ${error instanceof Error ? error.message : "unknown error"}`);
+        continue;
+      }
+    }
+    const browserStatePaths = [
+      ...strippedConfig.removedPaths,
+      ...strippedExisting.removedPaths.map((path) => `secretConfig.${path}`),
+    ].sort();
+    if (fields.length === 0 && browserStatePaths.length === 0) continue;
     candidates++;
-    console.log(`${apply ? "migrate" : "would migrate"}: ${provider.name} [${fields.join(", ")}]`);
+    const actions = [
+      fields.length ? `encrypt ${fields.join(", ")}` : null,
+      browserStatePaths.length ? `scrub ${browserStatePaths.join(", ")}` : null,
+    ].filter(Boolean).join("; ");
+    console.log(`${apply ? "process" : "would process"}: ${provider.name} [${actions}]`);
 
     if (!apply) continue;
     try {
-      const existing = provider.secretConfig ? decryptJson(provider.secretConfig) : {};
-      const merged = mergeRecords(existing, split.secretConfig);
+      // Already-encrypted values are newer/authoritative. Legacy plaintext is
+      // migrated only where the encrypted envelope has no replacement.
+      const merged = mergeRecords(split.secretConfig, strippedExisting.cleaned);
       await prisma.provider.update({
         where: { id: provider.id },
         data: {
           config: Object.keys(split.publicConfig).length
             ? split.publicConfig
             : Prisma.JsonNull,
-          secretConfig: encryptJson(merged),
+          secretConfig: Object.keys(merged).length ? encryptJson(merged) : null,
         },
       });
       migrated++;

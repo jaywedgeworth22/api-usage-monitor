@@ -62,7 +62,13 @@ export async function fetchUsage(
   const items = data.usageItems;
   let totalCost = 0;
   let foundCost = false;
-  const byProduct = new Map<string, { quantity: number; netAmountUsd: number }>();
+  const byProduct = new Map<string, {
+    product: string;
+    sku: string;
+    unit: string | null;
+    quantity: number;
+    netAmountUsd: number;
+  }>();
   for (const item of items) {
     if (!item || typeof item !== "object" || parseNumber(item.netAmount) == null) {
       throw new AdapterError("GitHub billing usage item omitted netAmount", {
@@ -74,13 +80,51 @@ export async function fetchUsage(
       totalCost += amount;
       foundCost = true;
     }
-    const key = [item.product ?? "unknown", item.sku ?? "unknown"].join(" / ");
-    const aggregate = byProduct.get(key) ?? { quantity: 0, netAmountUsd: 0 };
+    const product = item.product ?? "unknown";
+    const sku = item.sku ?? "unknown";
+    const key = [product, sku].join(" / ");
+    const aggregate = byProduct.get(key) ?? {
+      product,
+      sku,
+      unit: item.unitType ?? null,
+      quantity: 0,
+      netAmountUsd: 0,
+    };
     aggregate.quantity += parseNumber(item.netQuantity ?? item.quantity) ?? 0;
     aggregate.netAmountUsd += amount ?? 0;
     byProduct.set(key, aggregate);
   }
   const month = monthStart.toISOString().slice(0, 7);
+  const records = [
+    {
+      externalId: `${org.toLowerCase()}:${month}`,
+      kind: "billing_period" as const,
+      serviceName: "GitHub",
+      planName: "Enhanced billing total",
+      status: "open",
+      amountUsd: foundCost ? totalCost : null,
+      currency: "USD",
+      currentPeriodStart: monthStart.toISOString(),
+      currentPeriodEnd: monthEnd.toISOString(),
+      rollupRole: "canonical" as const,
+      dateKind: "period_end" as const,
+    },
+    ...[...byProduct.values()].map((aggregate) => ({
+      externalId: `${org.toLowerCase()}:${month}:${aggregate.product}:${aggregate.sku}`,
+      kind: "billing_period" as const,
+      serviceName: aggregate.product,
+      planName: aggregate.sku,
+      status: "open",
+      amountUsd: aggregate.netAmountUsd,
+      currency: "USD",
+      currentPeriodStart: monthStart.toISOString(),
+      currentPeriodEnd: monthEnd.toISOString(),
+      usageQuantity: aggregate.quantity,
+      usageUnit: aggregate.unit,
+      rollupRole: "component" as const,
+      dateKind: "period_end" as const,
+    })),
+  ];
 
   return {
     balance: null,
@@ -104,18 +148,7 @@ export async function fetchUsage(
     externalBilling: {
       source: "github-enhanced-billing",
       authoritative: true,
-      records: [
-        {
-          externalId: `${org.toLowerCase()}:${month}`,
-          kind: "billing_period",
-          planName: "GitHub enhanced billing usage",
-          status: "open",
-          amountUsd: foundCost ? totalCost : null,
-          currency: "USD",
-          currentPeriodStart: monthStart.toISOString(),
-          currentPeriodEnd: monthEnd.toISOString(),
-        },
-      ],
+      records,
     },
   };
 }

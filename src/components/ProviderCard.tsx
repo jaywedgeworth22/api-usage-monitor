@@ -91,6 +91,12 @@ export default function ProviderCard({
   const openAlerts = alerts.filter((alert) => alert.severity !== "info");
   const hasCritical = openAlerts.some((alert) => alert.severity === "critical");
   const connectedBilling = externalBilling[0];
+  const staleBillingCount = externalBilling.filter((record) =>
+    isExternalBillingStale(
+      record,
+      Math.min(24 * 60 * 60 * 1_000, Math.max(60 * 60 * 1_000, refreshIntervalMin * 3 * 60 * 1_000))
+    )
+  ).length;
 
   const formatNumber = (n: number | null) => {
     if (n == null) return "--";
@@ -106,12 +112,12 @@ export default function ProviderCard({
 
   return (
     <div
-      className="relative block bg-white rounded-xl border border-gray-200 p-6 transition-all duration-200 hover:shadow-md hover:border-gray-300 hover:-translate-y-0.5"
+      className="relative block rounded-xl border border-gray-200 bg-white p-6 transition-all duration-200 hover:-translate-y-0.5 hover:border-gray-300 hover:shadow-md dark:border-gray-700 dark:bg-gray-800 dark:hover:border-gray-600"
     >
       <div className="flex items-center gap-3 mb-4">
         <div className={`w-3 h-3 rounded-full ${dotColor} flex-shrink-0`} />
         <div className="min-w-0 flex-1">
-          <h3 className="text-lg font-semibold text-gray-900 truncate">
+          <h3 className="truncate text-lg font-semibold text-gray-900 dark:text-gray-100">
             <Link href={`/providers/${id}`} className="after:absolute after:inset-0">
               {displayName}
             </Link>
@@ -141,7 +147,7 @@ export default function ProviderCard({
                 externalBillingSources: [...new Set(externalBilling.map((record) => record.source))].sort(),
               }}
             />
-            <span className="text-xs font-medium text-gray-400 uppercase bg-gray-50 px-2 py-0.5 rounded">
+            <span className="rounded bg-gray-50 px-2 py-0.5 text-xs font-medium uppercase text-gray-400 dark:bg-gray-700 dark:text-gray-300">
               {type}
             </span>
           </div>
@@ -149,8 +155,8 @@ export default function ProviderCard({
             <span
               className={`text-xs font-medium px-2 py-0.5 rounded ${
                 hasCritical
-                  ? "bg-red-50 text-red-700"
-                  : "bg-amber-50 text-amber-700"
+                  ? "bg-red-50 text-red-700 dark:bg-red-950/60 dark:text-red-300"
+                  : "bg-amber-50 text-amber-700 dark:bg-amber-950/60 dark:text-amber-300"
               }`}
             >
               {openAlerts.length} alert{openAlerts.length === 1 ? "" : "s"}
@@ -161,17 +167,16 @@ export default function ProviderCard({
 
       <div className="grid grid-cols-2 gap-4">
         <div>
-          <p className="text-xs text-gray-500 mb-1">Balance</p>
+          <p className="mb-1 text-xs text-gray-500 dark:text-gray-400">Balance</p>
           <BalanceBadge amount={latestSnapshot?.balance ?? null} />
         </div>
         <div>
-          <p className="text-xs text-gray-500 mb-1">Latest provider report</p>
-          <p className="text-sm font-medium text-gray-900">
+          <p className="mb-1 text-xs text-gray-500 dark:text-gray-400">Latest provider report</p>
+          <p className="text-sm font-medium text-gray-900 dark:text-gray-100">
             {latestSnapshot?.totalCost != null ? (
-              <BalanceBadge
-                amount={-latestSnapshot.totalCost}
-                className=""
-              />
+              <span className="font-medium text-amber-600 dark:text-amber-300">
+                {formatUsd(latestSnapshot.totalCost)}
+              </span>
             ) : (
               "--"
             )}
@@ -179,36 +184,33 @@ export default function ProviderCard({
         </div>
         {(isCreditBased || hasCredits) && (
           <div>
-            <p className="text-xs text-gray-500 mb-1">Credits</p>
-            <p className="text-sm font-medium text-purple-600">
+            <p className="mb-1 text-xs text-gray-500 dark:text-gray-400">Credits</p>
+            <p className="text-sm font-medium text-purple-600 dark:text-purple-300">
               {formatNumber(latestSnapshot?.credits ?? null)}
             </p>
           </div>
         )}
         <div>
-          <p className="text-xs text-gray-500 mb-1">Requests</p>
-          <p className="text-sm font-medium text-gray-900">
+          <p className="mb-1 text-xs text-gray-500 dark:text-gray-400">Requests</p>
+          <p className="text-sm font-medium text-gray-900 dark:text-gray-100">
             {formatNumber(latestSnapshot?.totalRequests ?? null)}
           </p>
         </div>
         <div className={(isCreditBased || hasCredits) ? "col-span-2" : ""}>
-          <p className="text-xs text-gray-500 mb-1">Tracked MTD / projected EOM</p>
-          <p className="text-sm font-medium text-gray-900">
-            {formatUsd(spentUsd ?? estimatedMonthlyCostUsd)} <span className="text-gray-400 font-normal">/ {formatUsd(projectedEomUsd)}</span>
+          <p className="mb-1 text-xs text-gray-500 dark:text-gray-400">Tracked MTD / projected EOM</p>
+          <p className="text-sm font-medium text-gray-900 dark:text-gray-100">
+            {formatUsd(spentUsd ?? estimatedMonthlyCostUsd)} <span className="font-normal text-gray-400 dark:text-gray-500">/ {formatUsd(projectedEomUsd)}</span>
           </p>
           <p className="text-xs uppercase text-gray-400">{billingMode}</p>
         </div>
       </div>
 
       {connectedBilling && (
-        <div className="mt-3 rounded-lg border border-blue-100 bg-blue-50 px-3 py-2 text-xs text-blue-800">
+        <div className="mt-3 rounded-lg border border-blue-100 bg-blue-50 px-3 py-2 text-xs text-blue-800 dark:border-blue-900 dark:bg-blue-950/40 dark:text-blue-200">
           <span className="font-semibold">Provider-reported:</span>{" "}
-          {connectedBilling.planName || connectedBilling.kind}
+          {externalBilling.length} record{externalBilling.length === 1 ? "" : "s"} · {connectedBilling.serviceName || connectedBilling.planName || connectedBilling.kind}
           {connectedBilling.status ? ` · ${connectedBilling.status}` : ""}
-          {isExternalBillingStale(
-            connectedBilling,
-            Math.min(24 * 60 * 60 * 1_000, Math.max(60 * 60 * 1_000, refreshIntervalMin * 3 * 60 * 1_000))
-          ) ? " · stale" : ""}
+          {staleBillingCount > 0 ? ` · ${staleBillingCount} stale` : ""}
         </div>
       )}
 
@@ -216,8 +218,8 @@ export default function ProviderCard({
         <p
           className={`mt-3 text-xs rounded-lg px-3 py-2 ${
             openAlerts[0].severity === "critical"
-              ? "bg-red-50 text-red-700"
-              : "bg-amber-50 text-amber-700"
+              ? "bg-red-50 text-red-700 dark:bg-red-950/60 dark:text-red-300"
+              : "bg-amber-50 text-amber-700 dark:bg-amber-950/60 dark:text-amber-300"
           }`}
         >
           {openAlerts[0].message}
@@ -225,7 +227,7 @@ export default function ProviderCard({
       )}
 
       {latestSnapshot && (
-        <p className="mt-3 text-xs text-gray-400">
+        <p className="mt-3 text-xs text-gray-400 dark:text-gray-500">
           Last updated: {new Date(latestSnapshot.fetchedAt).toLocaleString()}
         </p>
       )}

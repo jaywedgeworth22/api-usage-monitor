@@ -24,12 +24,23 @@ const ALWAYS_SECRET_KEYS = new Set([
   "authusername",
   "bearertoken",
   "clientsecret",
+  "cookie",
+  "cookies",
   "extraheaders",
   "managementkey",
+  "localstorage",
   "password",
   "refreshtoken",
   "secretkey",
+  "sessioncookie",
+  "sessionstorage",
   "webhooksecret",
+]);
+
+const OPAQUE_SECRET_CONTAINER_KEYS = new Set([
+  "cookies",
+  "localstorage",
+  "sessionstorage",
 ]);
 
 const SECRET_KEY_PATTERN =
@@ -41,6 +52,10 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function normalizedKey(key: string): string {
   return key.replace(/[_-]/g, "").toLowerCase();
+}
+
+function isOpaqueSecretContainerKey(key: string): boolean {
+  return OPAQUE_SECRET_CONTAINER_KEYS.has(normalizedKey(key));
 }
 
 export function isSecretConfigKey(key: string): boolean {
@@ -113,7 +128,9 @@ function collectFieldPaths(
   const fields: string[] = [];
   for (const [key, nested] of Object.entries(value)) {
     const path = prefix ? `${prefix}.${key}` : key;
-    if (isRecord(nested)) fields.push(...collectFieldPaths(nested, path));
+    if (isRecord(nested) && !isOpaqueSecretContainerKey(key)) {
+      fields.push(...collectFieldPaths(nested, path));
+    }
     else fields.push(path);
   }
   return fields;

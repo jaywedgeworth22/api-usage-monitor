@@ -25,7 +25,14 @@ describe("github billing adapter", () => {
       kind: "billing_period",
       amountUsd: 1.75,
       currency: "USD",
+      rollupRole: "canonical",
     });
+    expect(result.externalBilling?.records).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ serviceName: "Actions", planName: "Linux", rollupRole: "component" }),
+        expect.objectContaining({ serviceName: "Copilot", planName: "Premium", rollupRole: "component" }),
+      ])
+    );
     expect(JSON.stringify(result.rawData)).not.toContain("private/repo");
     expect(fetchMock.mock.calls[0][0]).toContain(
       "/organizations/Acme/settings/billing/usage?"

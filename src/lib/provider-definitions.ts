@@ -8,6 +8,7 @@ export interface ProviderDefinition {
   needsOrgSlug?: boolean;
   creditBased?: boolean;
   usesApiKey?: boolean;
+  defaultRefreshIntervalMin?: number;
   helpNote?: string;
   needsConfig?: {
     fields: {
@@ -18,6 +19,18 @@ export interface ProviderDefinition {
       type?: string;
     }[];
   };
+}
+
+export function hasConfiguredProviderField(
+  config: Record<string, unknown>,
+  fieldKey: string,
+  protectedFieldPaths: string[] = []
+): boolean {
+  const value = config[fieldKey];
+  return (
+    (typeof value === "string" && value.trim().length > 0) ||
+    protectedFieldPaths.includes(fieldKey)
+  );
 }
 
 const DEFINITIONS = [
@@ -39,7 +52,7 @@ const DEFINITIONS = [
   { name: "marketstack", displayName: "Marketstack", type: "builtin", category: "Market Data", usesApiKey: false, helpNote: "No public account usage API. This row is push/manual; no market-data call or key is used by polling." },
   { name: "intrinio", displayName: "Intrinio", type: "builtin", category: "Market Data", helpNote: "Reads the official per-feed current-usage, limit, remaining-call, and reset-window endpoint. Pricing remains manual." },
   { name: "tiingo", displayName: "Tiingo", type: "builtin", category: "Market Data", usesApiKey: false, helpNote: "No public account usage API. This row is push/manual; no API-test call or key is used by polling." },
-  { name: "twelvedata", displayName: "Twelve Data", type: "builtin", category: "Market Data", helpNote: "Reads the documented plan response and real-time credits-used/remaining headers. Price and renewal remain manual." },
+  { name: "twelvedata", displayName: "Twelve Data", type: "builtin", category: "Market Data", defaultRefreshIntervalMin: 1440, helpNote: "Reads the documented plan response and real-time credits-used/remaining headers. The monitor call consumes one API credit, so new connections default to daily sync. Price and renewal remain manual." },
   { name: "fintech-studios", displayName: "Fintech Studios", type: "builtin", category: "Market Data", usesApiKey: false, helpNote: "No public account usage API. This row is push/manual; no key is used by polling." },
   { name: "massive", displayName: "Massive", type: "builtin", category: "Market Data", usesApiKey: false, helpNote: "No public account usage API. This row is push/manual; no aggregate-data call or key is used by polling." },
   { name: "fred", displayName: "FRED", type: "builtin", category: "Market Data", usesApiKey: false, helpNote: "Free federal data with no account billing state. No key or data request is used by polling." },

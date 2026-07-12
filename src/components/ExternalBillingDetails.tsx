@@ -1,7 +1,10 @@
+import { externalBillingFreshnessWindowMs } from "@/lib/external-billing-link";
+
 export interface ExternalBillingRecord {
   source: string;
   externalId: string | null;
   kind: string;
+  serviceName?: string | null;
   planName: string | null;
   status: string | null;
   amountUsd: number | null;
@@ -14,28 +17,32 @@ export interface ExternalBillingRecord {
   requestLimitWindow: string | null;
   spendLimitUsd: number | null;
   spendLimitWindow: string | null;
+  usageQuantity?: number | null;
+  remainingQuantity?: number | null;
+  usageUnit?: string | null;
+  rollupRole?: string | null;
+  dateKind?: string | null;
   syncedAt: string;
 }
 
-const EXTERNAL_BILLING_STALE_AFTER_MS = 24 * 60 * 60 * 1_000;
-
 export function isExternalBillingStale(
   record: Pick<ExternalBillingRecord, "syncedAt">,
-  staleAfterMs = EXTERNAL_BILLING_STALE_AFTER_MS,
+  staleAfterMs = externalBillingFreshnessWindowMs(),
   now = Date.now()
 ): boolean {
   const syncedAt = Date.parse(record.syncedAt);
-  return !Number.isFinite(syncedAt) || now - syncedAt > EXTERNAL_BILLING_STALE_AFTER_MS;
+  return !Number.isFinite(syncedAt) || now - syncedAt > staleAfterMs;
 }
 
 function formatCurrency(amount: number, currency: string | null): string {
+  const normalizedCurrency = currency?.trim().toUpperCase() || "UNKNOWN";
   try {
     return new Intl.NumberFormat("en-US", {
       style: "currency",
-      currency: currency || "USD",
+      currency: normalizedCurrency,
     }).format(amount);
   } catch {
-    return `${amount.toFixed(2)} ${currency || "USD"}`;
+    return `${amount.toFixed(2)} ${normalizedCurrency}`;
   }
 }
 
@@ -83,16 +90,16 @@ export default function ExternalBillingDetails({
           <article key={`${record.source}-${record.externalId ?? record.kind}-${index}`} className="space-y-3 px-4 py-4 sm:px-6">
             <div className="flex flex-wrap items-start justify-between gap-3">
               <div>
-                <p className="font-medium text-gray-900">{record.planName || record.kind}</p>
+                <p className="font-medium text-gray-900">{record.serviceName || record.planName || record.kind}</p>
+                {record.serviceName && record.planName && (
+                  <p className="text-xs text-gray-600">{record.planName}</p>
+                )}
                 <p className="text-xs text-gray-500">{record.source} · {record.kind}</p>
               </div>
               <div className="flex flex-wrap items-center gap-2">
                 {isExternalBillingStale(
                   record,
-                  Math.min(
-                    EXTERNAL_BILLING_STALE_AFTER_MS,
-                    Math.max(60 * 60 * 1_000, refreshIntervalMin * 3 * 60 * 1_000)
-                  )
+                  externalBillingFreshnessWindowMs(refreshIntervalMin)
                 ) && (
                   <span className="rounded-full bg-amber-50 px-2 py-1 text-xs font-medium text-amber-800">
                     stale sync

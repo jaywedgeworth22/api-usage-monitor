@@ -39,8 +39,24 @@ try {
     'node "${REPO_ROOT}/scripts/backup-sqlite-before-migrate.mjs"'
   );
   const migrationIndex = startupSource.indexOf('node "${REPO_ROOT}/scripts/migrate-safe.mjs"');
-  if (backupIndex < 0 || migrationIndex < 0 || backupIndex >= migrationIndex) {
-    throw new Error("startup wrapper must run the SQLite backup before migrate-safe");
+  const linkAuditIndex = startupSource.indexOf(
+    'node "${REPO_ROOT}/scripts/audit-subscription-links.mjs"'
+  );
+  const linkIndexIndex = startupSource.indexOf(
+    'node "${REPO_ROOT}/scripts/ensure-subscription-link-unique-index.mjs"'
+  );
+  if (
+    backupIndex < 0 ||
+    linkAuditIndex < 0 ||
+    linkIndexIndex < 0 ||
+    migrationIndex < 0 ||
+    backupIndex >= linkAuditIndex ||
+    linkAuditIndex >= linkIndexIndex ||
+    linkIndexIndex >= migrationIndex
+  ) {
+    throw new Error(
+      "startup wrapper must run backup, subscription-link audit, then migrate-safe"
+    );
   }
 
   expectStatus("disabled backup", run(), 0);

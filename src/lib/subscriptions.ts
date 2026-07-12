@@ -23,6 +23,28 @@ export function isSubscriptionStatus(value: string): value is SubscriptionStatus
   return (SUBSCRIPTION_STATUSES as readonly string[]).includes(value);
 }
 
+/** Stored status plus term semantics used consistently by API and billing UI. */
+export function effectiveSubscriptionStatus(
+  subscription: {
+    status: string;
+    autoRenew: boolean;
+    nextRenewalAt: Date | string;
+  },
+  now: Date = new Date()
+): string {
+  const status = subscription.status.trim().toLowerCase() || "active";
+  const termEnd = new Date(subscription.nextRenewalAt).getTime();
+  if (
+    status === "active" &&
+    !subscription.autoRenew &&
+    Number.isFinite(termEnd) &&
+    termEnd <= now.getTime()
+  ) {
+    return "expired";
+  }
+  return status;
+}
+
 // Months in one whole interval unit — the multiplier used for both period
 // advancement (quarterly = 3 months, annual = 12) and monthly-equivalent cost.
 // Weekly is special-cased in the functions below since it isn't month-based.

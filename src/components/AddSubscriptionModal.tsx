@@ -5,11 +5,18 @@ import { useEffect, useState } from "react";
 import ModalDialog from "@/components/ModalDialog";
 import { startDateForStatusTransition, toDateInputValue } from "@/lib/subscription-form";
 import type { ExternalBillingRecord } from "@/components/ExternalBillingDetails";
+import {
+  externalBillingFreshnessWindowMs,
+  formatExternalBillingAmount,
+  isExternalBillingLinkCandidate,
+  normalizeExternalBillingCadence,
+} from "@/lib/external-billing-link";
 
 export interface SubscriptionProviderOption {
   id: string;
   name: string;
   displayName: string;
+  refreshIntervalMin?: number;
   externalBilling?: ExternalBillingRecord[];
 }
 
@@ -32,6 +39,7 @@ export interface SubscriptionFormValue {
   startDate: string;
   autoRenew: boolean;
   status: string;
+  effectiveStatus?: string;
   notes: string | null;
   externalBillingSource?: string | null;
   externalBillingId?: string | null;
@@ -186,10 +194,67 @@ export default function AddSubscriptionModal({
   const canResumeExistingTerm =
     isActivating &&
     (editSubscription?.status === "paused" || editSubscription?.status === "canceled");
+  const selectedProvider = providers.find((provider) => provider.id === providerId);
+  const isLinkCandidate = (record: ExternalBillingRecord) =>
+    isExternalBillingLinkCandidate(record, {
+      staleAfterMs: externalBillingFreshnessWindowMs(
+        selectedProvider?.refreshIntervalMin ?? 60
+      ),
+    });
   const billingRecords =
-    providers.find((provider) => provider.id === providerId)?.externalBilling?.filter(
-      (record) => record.externalId && ["plan", "subscription", "service_plan"].includes(record.kind)
+    selectedProvider?.externalBilling?.filter(
+      (record) => {
+        if (isLinkCandidate(record)) return true;
+        if (!record.externalId || !editSubscription?.externalBillingSource || !editSubscription.externalBillingId) {
+          return false;
+        }
+        return (
+          record.source === editSubscription.externalBillingSource &&
+          record.externalId === editSubscription.externalBillingId
+        );
+      }
     ) ?? [];
+  if (
+    providerId === editSubscription?.providerId &&
+    editSubscription.externalBillingSource &&
+    editSubscription.externalBillingId &&
+    !billingRecords.some(
+      (record) =>
+        record.source === editSubscription.externalBillingSource &&
+        record.externalId === editSubscription.externalBillingId
+    )
+  ) {
+    billingRecords.push({
+      source: editSubscription.externalBillingSource,
+      externalId: editSubscription.externalBillingId,
+      kind: "subscription",
+      serviceName: editSubscription.externalBillingId,
+      planName: "No longer reported by provider",
+      status: null,
+      amountUsd: null,
+      currency: null,
+      billingInterval: null,
+      currentPeriodStart: null,
+      currentPeriodEnd: null,
+      nextRenewalAt: null,
+      requestLimit: null,
+      requestLimitWindow: null,
+      spendLimitUsd: null,
+      spendLimitWindow: null,
+      usageQuantity: null,
+      remainingQuantity: null,
+      usageUnit: null,
+      rollupRole: "canonical",
+      dateKind: null,
+      syncedAt: "",
+    });
+  }
+  const selectedLinkedBillingRecord = billingRecords.find(
+    (record) =>
+      `${encodeURIComponent(record.source)}|${encodeURIComponent(record.externalId ?? "")}` ===
+      externalBillingKey
+  );
+  const providerControlsSchedule = Boolean(externalBillingKey);
 
   return (
     <ModalDialog
@@ -199,6 +264,12 @@ export default function AddSubscriptionModal({
     >
           {error && (
             <div role="alert" className="mb-4 p-3 bg-red-50 text-red-700 text-sm rounded-lg">{error}</div>
+          )}
+
+          {editSubscription?.effectiveStatus === "expired" && (
+            <div className="mb-4 rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900 dark:border-amber-800 dark:bg-amber-950/50 dark:text-amber-200">
+              This term ended. Notes-only edits preserve its history. Enabling Auto-renews starts a new term now, anchored to current provider billing data when linked; for a one-term repurchase, unlink this record and track the new term separately.
+            </div>
           )}
 
           <div className="space-y-4">
@@ -263,22 +334,64 @@ export default function AddSubscriptionModal({
                 <select
                   id="subscription-external-billing"
                   value={externalBillingKey}
-                  onChange={(event) => setExternalBillingKey(event.target.value)}
+                  onChange={(event) => {
+                    const key = event.target.value;
+                    setExternalBillingKey(key);
+                    const [source, externalId] = key
+                      .split("|")
+                      .map((part) => (part ? decodeURIComponent(part) : ""));
+                    const record = billingRecords.find(
+                      (candidate) =>
+                        candidate.source === source &&
+                        candidate.externalId === externalId
+                    );
+                    if (!record || !isLinkCandidate(record)) return;
+
+                    const cadence = normalizeExternalBillingCadence(
+                      record.billingInterval
+                    );
+                    setCostUsd(String(record.amountUsd));
+                    setCurrency(record.currency!.trim().toUpperCase());
+                    setInterval(cadence!);
+                    setIntervalCount("1");
+                    setStatus("active");
+                    if (record.currentPeriodStart) {
+                      setStartDate(record.currentPeriodStart.slice(0, 10));
+                      setActivationDateReset(false);
+                    }
+                    if (!name.trim()) {
+                      setName(
+                        record.serviceName ||
+                          record.planName ||
+                          record.externalId ||
+                          "Paid service"
+                      );
+                    }
+                  }}
                   className={inputClass}
                 >
                   <option value="">Not linked — count as a separate manual cost</option>
                   {billingRecords.map((record) => {
                     const value = `${encodeURIComponent(record.source)}|${encodeURIComponent(record.externalId!)}`;
-                    const amount = record.amountUsd == null ? "" : ` · $${record.amountUsd.toFixed(2)}`;
+                    const amount = record.amountUsd == null
+                      ? ""
+                      : ` · ${formatExternalBillingAmount(record.amountUsd, record.currency)}`;
+                    const noLongerCompatible = !isLinkCandidate(record);
+                    const noLongerReported = !record.syncedAt;
                     return (
                       <option key={value} value={value}>
-                        {record.planName || record.externalId}{amount} · {record.source}
+                        {record.serviceName || record.planName || record.externalId}{amount} · {record.source}
+                        {noLongerReported
+                          ? " · no longer reported"
+                          : noLongerCompatible
+                            ? " · existing link no longer dedupe-compatible"
+                            : ""}
                       </option>
                     );
                   })}
                 </select>
                 <p className="mt-1 text-xs text-gray-500">
-                  Linking the exact provider record lets the budget engine dedupe the same fixed charge safely.
+                  Selecting a compatible record fills its amount, cadence, active status, and current-period start so the budget engine can dedupe that exact fixed charge safely.
                 </p>
               </div>
             )}
@@ -356,7 +469,9 @@ export default function AddSubscriptionModal({
                 <label htmlFor="subscription-start-date" className={labelClass}>
                   {isActivating && activationMode === "repurchase"
                     ? "Activation date"
-                    : "Start date"}
+                    : providerControlsSchedule
+                      ? "Start date (provider-linked)"
+                      : "Start date"}
                 </label>
                 <input
                   id="subscription-start-date"
@@ -366,9 +481,17 @@ export default function AddSubscriptionModal({
                     setStartDate(e.target.value);
                     setActivationDateReset(false);
                   }}
-                  disabled={canResumeExistingTerm && activationMode === "resume"}
+                  disabled={
+                    providerControlsSchedule ||
+                    (canResumeExistingTerm && activationMode === "resume")
+                  }
                   className={inputClass}
                 />
+                {providerControlsSchedule && (
+                  <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                    The provider billing period controls this date. Unlink the record to edit the schedule manually.
+                  </p>
+                )}
                 {isActivating && activationMode === "repurchase" && (
                   <p className={`mt-1 text-xs ${activationDateReset ? "text-emerald-700" : "text-gray-500"}`}>
                     Reset to today to avoid charging evaluation time. Change it only to the actual purchase date.
@@ -419,7 +542,7 @@ export default function AddSubscriptionModal({
                       setActivationDateReset(false);
                     }}
                   />
-                  <span><strong>Resume paid-through term</strong> — keep the existing cadence and wait until its next renewal to charge.</span>
+                  <span><strong>Resume paid-through term</strong> — align to the linked provider period, or keep the existing manual cadence, and wait until renewal to charge.</span>
                 </label>
               </fieldset>
             )}
@@ -428,7 +551,20 @@ export default function AddSubscriptionModal({
               <input
                 type="checkbox"
                 checked={autoRenew}
-                onChange={(e) => setAutoRenew(e.target.checked)}
+                onChange={(e) => {
+                  const checked = e.target.checked;
+                  setAutoRenew(checked);
+                  if (
+                    checked &&
+                    editSubscription?.effectiveStatus === "expired" &&
+                    selectedLinkedBillingRecord?.currentPeriodStart &&
+                    isLinkCandidate(selectedLinkedBillingRecord)
+                  ) {
+                    setStartDate(
+                      selectedLinkedBillingRecord.currentPeriodStart.slice(0, 10)
+                    );
+                  }
+                }}
                 className="rounded border-gray-300"
               />
               Auto-renews
