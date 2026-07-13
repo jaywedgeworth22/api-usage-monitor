@@ -9,6 +9,7 @@ import type { ExternalBillingRecord } from "@/components/ExternalBillingDetails"
 import ProviderIntegrationInfo, { publicConfigFieldNames } from "@/components/ProviderIntegrationInfo";
 import PaidServicesPanel from "@/components/PaidServicesPanel";
 import type { SubscriptionRow } from "@/components/SubscriptionsPanel";
+import type { ProviderCostCoverage } from "@/components/ProviderCard";
 
 interface Provider {
   id: string;
@@ -27,6 +28,11 @@ interface Provider {
   projectedEomUsd?: number;
   snapshotCostUsd?: number | null;
   pushedMonthToDateUsd?: number;
+  pushedCostCoverage: ProviderCostCoverage;
+  pushedPricedEventCount: number;
+  pushedUnpricedEventCount: number;
+  pushedUnclassifiedCostEventCount: number;
+  spendCoverage: ProviderCostCoverage;
   subscriptionMonthToDateUsd?: number;
   fixedAccruedUsd?: number;
   linkedFixedDedupeUsd?: number;
@@ -198,6 +204,16 @@ export default function ProviderDetailPage() {
   );
   const canonicalSpendUsd =
     provider.spentUsd ?? provider.estimatedMonthlyCostUsd;
+  const spendCoverage: ProviderCostCoverage =
+    provider.spendCoverage ??
+    (provider.spentUsd != null || provider.latestSnapshot?.totalCost != null
+      ? "complete"
+      : "unknown");
+  const hasKnownSpend =
+    spendCoverage === "complete" || spendCoverage === "partial";
+  const unpricedEventCount =
+    (provider.pushedUnpricedEventCount ?? 0) +
+    (provider.pushedUnclassifiedCostEventCount ?? 0);
   const reconciledFixedUsd = provider.fixedAccruedUsd ?? 0;
   const reconciledMeteredUsd = Math.max(
     0,
@@ -293,21 +309,43 @@ export default function ProviderDetailPage() {
           />
         </div>
         <div className="rounded-xl border border-gray-200 bg-white p-4 dark:border-gray-700 dark:bg-gray-800">
-          <p className="mb-1 text-xs text-gray-500 dark:text-gray-400">Tracked spend this month</p>
+          <p className="mb-1 text-xs text-gray-500 dark:text-gray-400">
+            {spendCoverage === "partial"
+              ? "Known spend this month"
+              : "Tracked spend this month"}
+          </p>
           <p className="text-lg font-semibold text-amber-600 dark:text-amber-300">
-            {formatUsd(provider.spentUsd ?? provider.estimatedMonthlyCostUsd)}
+            {hasKnownSpend ? formatUsd(canonicalSpendUsd) : "Cost not reported"}
           </p>
-          <p className="text-[10px] text-gray-500 dark:text-gray-400">
-            {provider.spentUsd == null ? "provider-report fallback" : "poll + telemetry + subscriptions"}
-          </p>
+          {spendCoverage === "partial" && unpricedEventCount > 0 ? (
+            <p className="text-[10px] text-amber-600 dark:text-amber-300">
+              {unpricedEventCount} unpriced event{unpricedEventCount === 1 ? "" : "s"}
+            </p>
+          ) : !hasKnownSpend && unpricedEventCount > 0 ? (
+            <p className="text-[10px] text-amber-600 dark:text-amber-300">
+              {unpricedEventCount} usage event{unpricedEventCount === 1 ? "" : "s"} without cost
+            </p>
+          ) : (
+            <p className="text-[10px] text-gray-500 dark:text-gray-400">
+              {spendCoverage === "complete"
+                ? "complete cost coverage"
+                : "cost coverage unknown"}
+            </p>
+          )}
         </div>
         <div className="rounded-xl border border-gray-200 bg-white p-4 dark:border-gray-700 dark:bg-gray-800">
-          <p className="mb-1 text-xs text-gray-500 dark:text-gray-400">Projected end of month</p>
+          <p className="mb-1 text-xs text-gray-500 dark:text-gray-400">
+            {spendCoverage === "partial"
+              ? "Known-cost projection"
+              : "Projected end of month"}
+          </p>
           <p className="text-lg font-semibold text-gray-900 dark:text-gray-100">
-            {formatUsd(provider.projectedEomUsd ?? provider.estimatedMonthlyCostUsd)}
+            {hasKnownSpend
+              ? formatUsd(provider.projectedEomUsd ?? provider.estimatedMonthlyCostUsd)
+              : "Unavailable"}
           </p>
           <p className="text-[10px] uppercase text-gray-400 dark:text-gray-500">
-            {provider.billingMode}
+            {spendCoverage === "partial" ? "excludes unpriced usage" : provider.billingMode}
           </p>
         </div>
         {hasCredits && (
@@ -379,14 +417,20 @@ export default function ProviderDetailPage() {
         <summary className="cursor-pointer px-4 py-3 text-sm font-semibold text-gray-700 hover:bg-gray-50 dark:text-gray-200 dark:hover:bg-gray-700/40">
           Spend reconciliation
         </summary>
-        <dl className="grid grid-cols-2 gap-4 border-t border-gray-100 px-4 py-4 text-sm dark:border-gray-700 sm:grid-cols-3 lg:grid-cols-5">
+        <dl className="grid grid-cols-2 gap-4 border-t border-gray-100 px-4 py-4 text-sm dark:border-gray-700 sm:grid-cols-3 lg:grid-cols-6">
           <div>
-            <dt className="text-xs text-gray-500 dark:text-gray-400">Canonical tracked MTD</dt>
-            <dd className="mt-1 font-medium text-gray-900 dark:text-gray-100">{formatUsd(canonicalSpendUsd)}</dd>
+            <dt className="text-xs text-gray-500 dark:text-gray-400">
+              {spendCoverage === "partial" ? "Canonical known MTD" : "Canonical tracked MTD"}
+            </dt>
+            <dd className="mt-1 font-medium text-gray-900 dark:text-gray-100">
+              {hasKnownSpend ? formatUsd(canonicalSpendUsd) : "Cost not reported"}
+            </dd>
           </div>
           <div>
             <dt className="text-xs text-gray-500 dark:text-gray-400">Metered after max-dedupe</dt>
-            <dd className="mt-1 font-medium text-gray-900 dark:text-gray-100">{formatUsd(reconciledMeteredUsd)}</dd>
+            <dd className="mt-1 font-medium text-gray-900 dark:text-gray-100">
+              {hasKnownSpend ? formatUsd(reconciledMeteredUsd) : "Unknown"}
+            </dd>
           </div>
           <div>
             <dt className="text-xs text-gray-500 dark:text-gray-400">Fixed after link-dedupe</dt>
@@ -404,9 +448,20 @@ export default function ProviderDetailPage() {
                 : formatUsd(0)}
             </dd>
           </div>
+          <div>
+            <dt className="text-xs text-gray-500 dark:text-gray-400">Pushed cost coverage</dt>
+            <dd className="mt-1 font-medium capitalize text-gray-900 dark:text-gray-100">
+              {(provider.pushedCostCoverage ?? "unknown").replace("_", " ")}
+            </dd>
+            <dd className="mt-0.5 text-[10px] text-gray-500 dark:text-gray-400">
+              {provider.pushedPricedEventCount ?? 0} priced · {provider.pushedUnpricedEventCount ?? 0} unpriced · {provider.pushedUnclassifiedCostEventCount ?? 0} unclassified
+            </dd>
+          </div>
         </dl>
         <p className="border-t border-gray-100 px-4 py-3 text-xs text-gray-500 dark:border-gray-700 dark:text-gray-400">
-          Canonical spend equals reconciled metered usage plus deduplicated fixed charges. The raw provider report is an overlapping input, not another amount to add.
+          {hasKnownSpend
+            ? "Canonical spend equals reconciled metered usage plus deduplicated fixed charges. The raw provider report is an overlapping input, not another amount to add."
+            : "Usage is present without authoritative cost, so no zero-dollar spend or projection is asserted."}
           {provider.fixedCostConflict ? " Review the active fixed-cost conflict alert." : ""}
         </p>
       </details>

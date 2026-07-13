@@ -9,6 +9,7 @@ import { parseUsageTelemetryBatch } from "@/lib/usage-telemetry";
 import { createRateLimiter, getClientIp } from "@/lib/rate-limit";
 import { isUsageIngestAuthorized } from "@/lib/ingest-auth";
 import { resolveProjectIdsByName } from "@/lib/project-resolver";
+import { canonicalProjectKey } from "@/lib/provider-identity";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -56,7 +57,7 @@ export async function POST(request: NextRequest) {
     persistResult = await persistExternalUsageEvents(
       events.map((event) => {
         const projectId = event.project
-          ? projectIdByName.get(event.project.trim().toLowerCase()) ?? null
+          ? projectIdByName.get(canonicalProjectKey(event.project)) ?? null
           : null;
         const metadata =
           event.project && !(event.metadata && "project" in event.metadata)

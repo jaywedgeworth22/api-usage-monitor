@@ -1,7 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
-import { summarizeExternalUsageEvents } from "@/lib/external-usage-events";
+import {
+  classifyCostCoverage,
+  summarizeExternalUsageEvents,
+} from "@/lib/external-usage-events";
 import { getExternalEventRawCutoff } from "@/lib/data-retention";
+import { resolveProviderIdentity } from "@/lib/provider-identity";
 
 export const dynamic = "force-dynamic";
 
@@ -17,17 +21,32 @@ export async function GET(request: NextRequest) {
   const since = new Date();
   since.setDate(since.getDate() - days);
 
-  const [summary, projects] = await Promise.all([
+  const [summary, projects, providers] = await Promise.all([
     summarizeExternalUsageEvents(since, getExternalEventRawCutoff()),
     prisma.project.findMany({ select: { id: true, name: true } }),
+    prisma.provider.findMany({
+      select: { id: true, name: true, displayName: true },
+    }),
   ]);
 
   const projectNameById = new Map(projects.map((p) => [p.id, p.name]));
 
-  let groups = summary.groups.map((group) => ({
-    ...group,
-    projectName: group.projectId ? projectNameById.get(group.projectId) ?? null : null,
-  }));
+  let groups = summary.groups.map((group) => {
+    const matchedProvider = resolveProviderIdentity(group.provider, providers);
+    return {
+      ...group,
+      projectName: group.projectId
+        ? projectNameById.get(group.projectId) ?? null
+        : null,
+      matchedProvider: matchedProvider
+        ? {
+            id: matchedProvider.id,
+            name: matchedProvider.name,
+            displayName: matchedProvider.displayName,
+          }
+        : null,
+    };
+  });
 
   if (projectFilter) {
     groups =
@@ -36,9 +55,21 @@ export async function GET(request: NextRequest) {
         : groups.filter((group) => group.projectId === projectFilter);
   }
 
+  const costCounts = groups.reduce(
+    (totals, group) => ({
+      pricedEventCount: totals.pricedEventCount + group.pricedEventCount,
+      unpricedEventCount: totals.unpricedEventCount + group.unpricedEventCount,
+      unclassifiedCostEventCount:
+        totals.unclassifiedCostEventCount + group.unclassifiedCostEventCount,
+    }),
+    { pricedEventCount: 0, unpricedEventCount: 0, unclassifiedCostEventCount: 0 }
+  );
+
   return NextResponse.json({
     days,
     totalCostUsd: groups.reduce((sum, group) => sum + group.totalCostUsd, 0),
+    ...costCounts,
+    costCoverage: classifyCostCoverage(costCounts),
     totalRequests: groups.reduce((sum, group) => sum + group.totalRequests, 0),
     eventCount: groups.reduce((sum, group) => sum + group.eventCount, 0),
     groups,

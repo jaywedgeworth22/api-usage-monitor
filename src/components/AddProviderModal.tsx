@@ -12,7 +12,7 @@ import {
 
 type BillingMode = "actual" | "estimated" | "manual";
 
-interface ProviderPlan {
+export interface ProviderPlan {
   billingMode: BillingMode;
   fixedMonthlyCostUsd: number | null;
   monthlyBudgetUsd: number | null;
@@ -25,6 +25,33 @@ interface ProviderPlan {
   notes: string | null;
 }
 
+export interface ProviderSecretConfigOperation {
+  path: string[];
+  action: "clear";
+}
+
+const GOOGLE_BILLING_CONFIG_FIELDS = [
+  "billingDataset",
+  "googleProjectId",
+  "billingTable",
+  "serviceAccountJson",
+] as const;
+
+export function actualUsageBillingPlan(plan: ProviderPlan): ProviderPlan {
+  return {
+    ...plan,
+    billingMode: "actual",
+  };
+}
+
+export function withoutGoogleBillingConfig(
+  config: Record<string, unknown>
+): Record<string, unknown> {
+  const remaining = { ...config };
+  for (const field of GOOGLE_BILLING_CONFIG_FIELDS) delete remaining[field];
+  return remaining;
+}
+
 interface Provider {
   id?: string;
   name: string;
@@ -32,6 +59,7 @@ interface Provider {
   type: string;
   config?: Record<string, unknown>;
   apiKey?: string;
+  secretConfigOperations?: ProviderSecretConfigOperation[];
   label?: string | null;
   refreshIntervalMin?: number;
   keyPreview?: string | null;
@@ -107,6 +135,7 @@ export default function AddProviderModal({
   const [extraFields, setExtraFields] = useState<Record<string, string>>(
     stringFieldsFromConfig(editProvider?.config)
   );
+  const [disconnectGoogleBilling, setDisconnectGoogleBilling] = useState(false);
 
   const selectedDef: ProviderDefinition | undefined = BUILT_IN_PROVIDERS.find(
     (provider) => provider.name === selectedBuiltin
@@ -192,6 +221,7 @@ export default function AddProviderModal({
     setRefreshIntervalMin(editProvider?.refreshIntervalMin ?? 60);
     setOriginalConfig(config);
     setExtraFields(stringConfig);
+    setDisconnectGoogleBilling(false);
     setCustomName(nextTab !== "builtin" ? editProvider?.name || "" : "");
     setCustomDisplayName(nextTab !== "builtin" ? editProvider?.displayName || "" : "");
     setCustomEndpoint(stringConfig.endpoint || "");
@@ -230,7 +260,7 @@ export default function AddProviderModal({
     return parsed;
   };
 
-  const buildPlan = () => ({
+  const buildPlan = (): ProviderPlan => ({
     billingMode,
     fixedMonthlyCostUsd: parseNumberField(
       fixedMonthlyCostUsd,
@@ -255,7 +285,7 @@ export default function AddProviderModal({
     setSaving(true);
 
     try {
-      const plan = buildPlan();
+      let plan = buildPlan();
       const allocationProjectIds = allocations.map((allocation) => allocation.projectId);
       if (allocationProjectIds.some((projectId) => !projectId)) {
         throw new Error("Select a project for every allocation");
@@ -279,10 +309,55 @@ export default function AddProviderModal({
           return;
         }
 
-        const config: Record<string, unknown> = { ...originalConfig };
+        let config: Record<string, unknown> = { ...originalConfig };
+        let secretConfigOperations: ProviderSecretConfigOperation[] | undefined;
         for (const [key, value] of Object.entries(extraFields)) {
           if (value.trim()) config[key] = value.trim();
           else delete config[key];
+        }
+        if (selectedDef.name === "cloudflare") {
+          const authMode = String(
+            config.authMode ?? (originalConfig.accountEmail ? "global_key" : "api_token")
+          );
+          if (authMode !== "api_token" && authMode !== "global_key") {
+            throw new Error("Select a supported Cloudflare authentication mode");
+          }
+          config.authMode = authMode;
+          if (authMode === "api_token") {
+            delete config.accountEmail;
+          } else if (!String(config.accountEmail ?? "").trim()) {
+            throw new Error("Account email is required for a Global API key");
+          }
+          plan = actualUsageBillingPlan(plan);
+        }
+        if (selectedDef.name === "google-ai") {
+          if (disconnectGoogleBilling) {
+            config = withoutGoogleBillingConfig(config);
+            secretConfigOperations = [
+              { path: ["serviceAccountJson"], action: "clear" },
+            ];
+          } else if (
+            String(config.billingDataset ?? "").trim() ||
+            hasConfiguredProviderField(
+              config,
+              "serviceAccountJson",
+              editProvider?.secretConfigMeta?.fields ?? []
+            )
+          ) {
+            if (!String(config.billingDataset ?? "").trim()) {
+              throw new Error("Billing export dataset is required with a service account");
+            }
+            if (
+              !hasConfiguredProviderField(
+                config,
+                "serviceAccountJson",
+                editProvider?.secretConfigMeta?.fields ?? []
+              )
+            ) {
+              throw new Error("Read-only service-account JSON is required with a billing dataset");
+            }
+            plan = actualUsageBillingPlan(plan);
+          }
         }
         if (selectedDef.needsAccountId && !String(config.accountId ?? "").trim()) {
           throw new Error(`${selectedDef.name === "twilio" ? "Account SID" : "Account ID"} is required`);
@@ -307,7 +382,11 @@ export default function AddProviderModal({
           displayName: builtinDisplayName.trim(),
           type: "builtin",
           apiKey: selectedDef.usesApiKey === false ? undefined : apiKey || undefined,
-          config: Object.keys(config).length > 0 ? config : undefined,
+          config:
+            Object.keys(config).length > 0 || disconnectGoogleBilling
+              ? config
+              : undefined,
+          secretConfigOperations,
           label: label.trim() || null,
           refreshIntervalMin,
           plan,
@@ -548,16 +627,45 @@ export default function AddProviderModal({
   const renderExtraFields = () => {
     if (!selectedDef) return null;
 
-    const fields: { key: string; label: string; placeholder: string; type?: string; required?: boolean }[] = [];
+    type ExtraField = {
+      key: string;
+      label: string;
+      placeholder: string;
+      type?: string;
+      required?: boolean;
+      advanced?: boolean;
+      options?: { value: string; label: string }[];
+    };
+    const fields: ExtraField[] = [];
 
     if (selectedDef.needsAccountId) {
       if (selectedDef.name === "cloudflare") {
         fields.push({ key: "accountId", label: "Account ID", placeholder: "Cloudflare Account ID" });
-        fields.push({ key: "accountEmail", label: "Account Email", placeholder: "Cloudflare Account Email", type: "email" });
-        fields.push({ key: "databaseId", label: "D1 Database ID (optional)", placeholder: "D1 database UUID" });
-        fields.push({ key: "r2BucketName", label: "R2 Bucket Name (optional)", placeholder: "R2 bucket name" });
-        fields.push({ key: "kvNamespaceId", label: "KV Namespace ID (optional)", placeholder: "KV namespace UUID" });
-        fields.push({ key: "queueId", label: "Queue ID (optional)", placeholder: "Queue UUID" });
+        fields.push({
+          key: "authMode",
+          label: "Authentication",
+          placeholder: "",
+          type: "select",
+          options: [
+            { value: "api_token", label: "API token (Billing Read) — recommended" },
+            { value: "global_key", label: "Legacy Global API key" },
+          ],
+        });
+        const cloudflareAuthMode =
+          extraFields.authMode ||
+          (originalConfig.accountEmail ? "global_key" : "api_token");
+        if (cloudflareAuthMode === "global_key") {
+          fields.push({
+            key: "accountEmail",
+            label: "Account email (Global API key only)",
+            placeholder: "Cloudflare account email",
+            type: "email",
+          });
+        }
+        fields.push({ key: "databaseId", label: "D1 Database ID (optional)", placeholder: "D1 database UUID", advanced: true });
+        fields.push({ key: "r2BucketName", label: "R2 Bucket Name (optional)", placeholder: "R2 bucket name", advanced: true });
+        fields.push({ key: "kvNamespaceId", label: "KV Namespace ID (optional)", placeholder: "KV namespace UUID", advanced: true });
+        fields.push({ key: "queueId", label: "Queue ID (optional)", placeholder: "Queue UUID", advanced: true });
       } else if (selectedDef.name === "twilio") {
         fields.push({ key: "accountId", label: "Account SID", placeholder: "Twilio Account SID" });
       }
@@ -576,33 +684,128 @@ export default function AddProviderModal({
     }
 
     const hasHelp = !!selectedDef.helpNote;
+    const primaryFields = fields.filter((field) => !field.advanced);
+    const advancedFields = fields.filter((field) => field.advanced);
+
+    const renderField = (field: ExtraField) => {
+      const configuredSecret =
+        editProvider?.secretConfigMeta?.fields.includes(field.key) ?? false;
+      const googleBillingFieldDisabled =
+        disconnectGoogleBilling &&
+        selectedDef.name === "google-ai" &&
+        GOOGLE_BILLING_CONFIG_FIELDS.includes(
+          field.key as (typeof GOOGLE_BILLING_CONFIG_FIELDS)[number]
+        );
+      const value =
+        field.key === "authMode"
+          ? extraFields[field.key] ||
+            (originalConfig.accountEmail ? "global_key" : "api_token")
+          : extraFields[field.key] || "";
+      return (
+        <div key={field.key}>
+          <label htmlFor={`provider-extra-${field.key}`} className="block text-sm font-medium text-gray-700 mb-1">
+            {field.label}
+          </label>
+          {field.type === "textarea" ? (
+            <textarea
+              id={`provider-extra-${field.key}`}
+              aria-label={field.label}
+              required={field.required}
+              disabled={googleBillingFieldDisabled}
+              value={value}
+              onChange={(event) =>
+                setExtraFields((previous) => ({ ...previous, [field.key]: event.target.value }))
+              }
+              placeholder={configuredSecret ? "Configured — paste a replacement only to rotate" : field.placeholder}
+              rows={7}
+              spellCheck={false}
+              className="w-full px-3 py-2 border border-gray-300 rounded-lg font-mono text-xs focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 disabled:cursor-not-allowed disabled:bg-gray-100"
+            />
+          ) : field.type === "select" ? (
+            <select
+              id={`provider-extra-${field.key}`}
+              aria-label={field.label}
+              disabled={googleBillingFieldDisabled}
+              value={value}
+              onChange={(event) =>
+                setExtraFields((previous) => ({ ...previous, [field.key]: event.target.value }))
+              }
+              className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 disabled:cursor-not-allowed disabled:bg-gray-100"
+            >
+              {field.options?.map((option) => (
+                <option key={option.value} value={option.value}>{option.label}</option>
+              ))}
+            </select>
+          ) : (
+            <input
+              id={`provider-extra-${field.key}`}
+              aria-label={field.label}
+              type={field.type || "text"}
+              required={field.required}
+              disabled={googleBillingFieldDisabled}
+              value={value}
+              onChange={(event) =>
+                setExtraFields((previous) => ({ ...previous, [field.key]: event.target.value }))
+              }
+              placeholder={configuredSecret ? "Configured — leave blank to keep current" : field.placeholder}
+              className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 disabled:cursor-not-allowed disabled:bg-gray-100"
+            />
+          )}
+          {configuredSecret && !value && (
+            <p className="mt-1 text-xs text-gray-500">Configured and encrypted; the value is never returned to this form.</p>
+          )}
+        </div>
+      );
+    };
 
     return fields.length > 0 || hasHelp ? (
       <div className="space-y-3">
-        {fields.length > 0 && (
+        {primaryFields.length > 0 && (
           <>
             <p className="text-xs font-medium text-gray-500">Extra Configuration</p>
-            {fields.map((f) => (
-              <div key={f.key}>
-                <label htmlFor={`provider-extra-${f.key}`} className="block text-sm font-medium text-gray-700 mb-1">
-                  {f.label}
-                </label>
-                <input
-                  id={`provider-extra-${f.key}`}
-                  aria-label={f.label}
-                  type={f.type || "text"}
-                  required={f.required}
-                  value={extraFields[f.key] || ""}
-                  onChange={(e) =>
-                    setExtraFields((prev) => ({ ...prev, [f.key]: e.target.value }))
-                  }
-                  placeholder={f.placeholder}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-                />
-              </div>
-            ))}
+            {primaryFields.map(renderField)}
           </>
         )}
+        {advancedFields.length > 0 && (
+          <details className="rounded-lg border border-gray-200 px-3 py-2">
+            <summary className="cursor-pointer text-sm font-medium text-gray-600">
+              Advanced optional configuration
+            </summary>
+            <div className="mt-3 space-y-3">{advancedFields.map(renderField)}</div>
+          </details>
+        )}
+        {selectedDef.name === "google-ai" &&
+          editProvider &&
+          (Boolean(originalConfig.billingDataset) ||
+            Boolean(originalConfig.googleProjectId) ||
+            Boolean(originalConfig.billingTable) ||
+            (editProvider.secretConfigMeta?.fields.includes(
+              "serviceAccountJson"
+            ) ?? false)) && (
+            <div className="rounded-lg border border-red-200 bg-red-50 px-3 py-2">
+              <label className="flex cursor-pointer items-start gap-2">
+                <input
+                  type="checkbox"
+                  checked={disconnectGoogleBilling}
+                  onChange={(event) =>
+                    setDisconnectGoogleBilling(event.target.checked)
+                  }
+                  className="mt-0.5 h-4 w-4 rounded border-gray-300 text-red-600 focus:ring-red-500"
+                />
+                <span>
+                  <span className="block text-sm font-medium text-red-800">
+                    Disconnect Google Cloud Billing
+                  </span>
+                  <span className="mt-0.5 block text-xs text-red-700">
+                    On save, remove the billing dataset, optional project/table,
+                    and encrypted service-account JSON. The Gemini API key,
+                    manual price, renewal date, and unrelated configuration stay
+                    unchanged.
+                  </span>
+                </span>
+              </label>
+            </div>
+          )}
         {hasHelp && (
           <div className="rounded-lg bg-blue-50 border border-blue-100 p-3">
             <p className="text-xs text-blue-800 leading-relaxed">{selectedDef.helpNote}</p>
@@ -779,6 +982,7 @@ export default function AddProviderModal({
                     setRefreshIntervalMin(def?.defaultRefreshIntervalMin ?? 60);
                     setOriginalConfig({});
                     setExtraFields({});
+                    setDisconnectGoogleBilling(false);
                     if (def?.creditBased && editProvider) {
                       // keep existing config
                       setOriginalConfig(editProvider.config || {});
@@ -857,7 +1061,11 @@ export default function AddProviderModal({
               {selectedDef?.usesApiKey !== false && (
               <div>
                 <label htmlFor="provider-builtin-api-key" className="block text-sm font-medium text-gray-700 mb-1">
-                  API Key
+                  {selectedDef?.name === "cloudflare"
+                    ? ((extraFields.authMode || (originalConfig.accountEmail ? "global_key" : "api_token")) === "global_key"
+                        ? "Global API key"
+                        : "API token (Account Billing Read)")
+                    : "API Key"}
                 </label>
                 <input
                   id="provider-builtin-api-key"

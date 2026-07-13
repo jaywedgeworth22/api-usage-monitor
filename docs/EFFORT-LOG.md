@@ -17,6 +17,7 @@ Protocol: /Users/jay/apps/EFFORT-LOG-PROTOCOL.md (canonical). Live board: this f
   exists specifically to make this section verifiable going forward instead of inferred.
 
 ## Completed
+- **Add MIT License (AG, S)** — COMPLETED (MERGED PR #122, 2026-07-13): Added MIT License file and updated package.json.
 - **Cross-App Status Integration (AG, M)** — COMPLETED (MERGED PR #90, 2026-07-11): Updating `/api/ingest/usage` to handle `quota_sync` and `credit_balance` metric types from Socratic.Trade and Congress.Trade status pages, addressing bulk insert idempotency bug and excluding status metrics from dashboard raw sum totals.
 - **App-wide production/status and improvement audit (CODEX, read-only, 2026-07-11) — delivered; no
   implementation PR applicable.** Current source/deploy, authenticated desktop/mobile UX, spend
@@ -183,7 +184,6 @@ Protocol: /Users/jay/apps/EFFORT-LOG-PROTOCOL.md (canonical). Live board: this f
 - **Resolve merge conflicts and merge open PRs (AG)** — COMPLETED (MERGED): PRs 94-101, 105, 106. Integrated and resolved all conflicts.
 
 ## In Progress
-- **Add MIT License (AG, S)** — IN PROGRESS (ag/add-mit-license): Adding MIT License to the repository, updating package.json, and verifying.
 - **Remaining-provider automatic enrichment implementation wave (CODEX + provider teams,
   owner-directed 2026-07-13) — IN PROGRESS.** Isolated branch
   `codex-provider-enrichment-wave`, worktree

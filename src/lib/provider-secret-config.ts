@@ -34,6 +34,7 @@ const ALWAYS_SECRET_KEYS = new Set([
   "secretkey",
   "sessioncookie",
   "sessionstorage",
+  "serviceaccountjson",
   "webhooksecret",
 ]);
 

@@ -29,6 +29,18 @@ interface CloudflareSubscription {
   state?: string;
 }
 
+interface SanitizedCloudflareSubscription {
+  id: string;
+  planId: string | null;
+  planName: string | null;
+  status: string;
+  price: number | null;
+  currency: string | null;
+  billingInterval: string | null;
+  currentPeriodStart: string | null;
+  currentPeriodEnd: string | null;
+}
+
 const SUBSCRIPTIONS_PER_PAGE = 50;
 const MAX_SUBSCRIPTION_PAGES = 1_000;
 
@@ -44,6 +56,47 @@ function isNonNegativeInteger(value: number | null): value is number {
 
 function isPositiveInteger(value: number | null): value is number {
   return value != null && Number.isSafeInteger(value) && value > 0;
+}
+
+function cleanOptionalString(value: unknown): string | null {
+  return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+function normalizedSubscriptionState(subscription: CloudflareSubscription): string {
+  return cleanOptionalString(subscription.state)?.toLowerCase() ?? "unknown";
+}
+
+function subscriptionPlanName(subscription: CloudflareSubscription): string | null {
+  return cleanOptionalString(subscription.rate_plan?.public_name) ??
+    cleanOptionalString(subscription.rate_plan?.id);
+}
+
+function sanitizeSubscription(
+  subscription: CloudflareSubscription
+): SanitizedCloudflareSubscription {
+  return {
+    id: subscription.id!,
+    planId: cleanOptionalString(subscription.rate_plan?.id),
+    planName: subscriptionPlanName(subscription),
+    status: normalizedSubscriptionState(subscription),
+    price: parseNumber(subscription.price),
+    currency: cleanOptionalString(subscription.currency)?.toUpperCase() ?? null,
+    billingInterval: cleanOptionalString(subscription.frequency),
+    currentPeriodStart: cleanOptionalString(subscription.current_period_start),
+    currentPeriodEnd: cleanOptionalString(subscription.current_period_end),
+  };
+}
+
+function cloudflareErrorCode(data: unknown): number | null {
+  if (!data || typeof data !== "object" || Array.isArray(data)) return null;
+  const errors = (data as { errors?: unknown }).errors;
+  if (!Array.isArray(errors)) return null;
+  for (const error of errors) {
+    if (!error || typeof error !== "object" || Array.isArray(error)) continue;
+    const code = parseNumber((error as { code?: unknown }).code);
+    if (code != null) return code;
+  }
+  return null;
 }
 
 async function fetchAllSubscriptions(
@@ -139,12 +192,22 @@ async function fetchAllSubscriptions(
 
 function makeHeaders(
   apiKey: string,
-  accountEmail?: string
+  accountEmail?: string,
+  authMode?: string
 ): Record<string, string> {
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
   };
-  if (accountEmail) {
+  if (authMode && authMode !== "api_token" && authMode !== "global_key") {
+    configurationError("Cloudflare authMode must be api_token or global_key");
+  }
+  // Preserve legacy email-implies-global-key rows until they are explicitly
+  // saved with authMode. New connections default to the least-privilege token.
+  const useGlobalKey = authMode === "global_key" || (!authMode && Boolean(accountEmail));
+  if (useGlobalKey) {
+    if (!accountEmail?.trim()) {
+      configurationError("Cloudflare accountEmail is required for a Global API key");
+    }
     headers["X-Auth-Email"] = accountEmail;
     headers["X-Auth-Key"] = apiKey;
   } else {
@@ -164,7 +227,8 @@ export async function fetchUsage(
   }
 
   const accountEmail = config?.accountEmail as string | undefined;
-  const headers = makeHeaders(apiKey, accountEmail);
+  const authMode = config?.authMode as string | undefined;
+  const headers = makeHeaders(apiKey, accountEmail, authMode);
   const baseUrl = `https://api.cloudflare.com/client/v4/accounts/${accountId}`;
   const rawData: Record<string, unknown> = {};
 
@@ -240,11 +304,15 @@ export async function fetchUsage(
   try {
     const { rows, pages } = await fetchAllSubscriptions(baseUrl, headers);
     successfulCalls++;
-    rawData.subscriptions = rows;
+    // Keep only the small set of fields needed to explain plan entitlements.
+    // Cloudflare's full response can contain zone names and component payloads,
+    // neither of which is needed for billing reconciliation.
+    rawData.subscriptions = rows.map(sanitizeSubscription);
 
     const nowMs = now.getTime();
     let billedThisMonthUsd = 0;
     let foundBilledSubscription = false;
+    let freeOrBaseEntitlementCount = 0;
     const billingRecords: AdapterExternalBillingRecord[] = [];
     for (const subscription of rows) {
       const price = parseNumber(subscription.price);
@@ -252,44 +320,47 @@ export async function fetchUsage(
       const periodStart = subscription.current_period_start
         ? Date.parse(subscription.current_period_start)
         : Number.NaN;
-      const normalizedState = (subscription.state ?? "unknown")
-        .trim()
-        .toLowerCase();
-      const isLive = ![
-        "cancelled",
-        "canceled",
-        "failed",
-        "expired",
-        "inactive",
-      ].includes(normalizedState);
+      const normalizedState = normalizedSubscriptionState(subscription);
+      const isPaid = normalizedState === "paid";
       if (
-        price != null &&
+        price != null && price > 0 &&
         currency === "USD" &&
-        isLive &&
+        normalizedState === "paid" &&
         periodStart >= monthStartMs &&
         periodStart <= nowMs
       ) {
         billedThisMonthUsd += price;
         foundBilledSubscription = true;
       }
+
+      // Zero-dollar Free/Base plans are useful entitlement metadata, but they
+      // are not paid services. The sanitized raw subscription list above keeps
+      // them visible without creating one recurring-cost inventory row per
+      // zone or base product.
+      if (price === 0) {
+        freeOrBaseEntitlementCount++;
+        continue;
+      }
+
+      const planName = subscriptionPlanName(subscription);
       billingRecords.push({
         externalId: subscription.id!,
         kind: "subscription",
-        serviceName: "Cloudflare subscription",
-        planName:
-          subscription.rate_plan?.public_name ??
-          subscription.rate_plan?.id ??
-          null,
+        serviceName: planName ?? "Cloudflare subscription",
+        planName,
         status: normalizedState || "unknown",
         amountUsd: currency == null ? null : price,
         currency,
         billingInterval: subscription.frequency ?? null,
         currentPeriodStart: subscription.current_period_start ?? null,
         currentPeriodEnd: subscription.current_period_end ?? null,
-        nextRenewalAt: isLive
+        nextRenewalAt: isPaid
           ? subscription.current_period_end ?? null
           : null,
-        rollupRole: "canonical",
+        // Cloudflare exposes trials, provisioned plans, and plans awaiting
+        // payment alongside paid subscriptions. Keep them visible as plan
+        // metadata without counting them as paid recurring services.
+        rollupRole: isPaid ? "canonical" : "metadata",
         dateKind: "renewal",
       });
     }
@@ -306,6 +377,8 @@ export async function fetchUsage(
       fixedSubscriptionBilledThisMonthUsd:
         foundBilledSubscription ? billedThisMonthUsd : null,
       subscriptionCount: rows.length,
+      paidOrUnpricedSubscriptionCount: billingRecords.length,
+      freeOrBaseEntitlementCount,
       subscriptionPages: pages,
       capabilities: {
         fixedSubscriptionPrice: true,
@@ -326,11 +399,27 @@ export async function fetchUsage(
   }
 
   // 4. PayGo billable usage is Cloudflare's billing-grade alpha endpoint.
-  // It is restricted to select self-serve accounts; a 403/404 is a capability
-  // miss, not a reason to discard otherwise valid subscription/analytics data.
+  // It is restricted to select self-serve accounts; a 403/404 or Cloudflare
+  // error 10000 is a capability miss, not a reason to discard otherwise valid
+  // subscription/analytics data.
   try {
-    const paygoResponse = await fetchJson(`${baseUrl}/paygo-usage`, { headers });
-    if (paygoResponse.ok) {
+    const paygoParams = new URLSearchParams({
+      from: new Date(monthStartMs).toISOString().slice(0, 10),
+      to: now.toISOString().slice(0, 10),
+    });
+    const paygoResponse = await fetchJson(
+      `${baseUrl}/paygo-usage?${paygoParams}`,
+      { headers }
+    );
+    const apiErrorCode = cloudflareErrorCode(paygoResponse.data);
+    if (apiErrorCode === 10000) {
+      rawData.paygoBillingCapability = {
+        available: false,
+        status: paygoResponse.status,
+        code: apiErrorCode,
+        note: "Alpha endpoint is unavailable or the token lacks access",
+      };
+    } else if (paygoResponse.ok) {
       if (
         !paygoResponse.data ||
         typeof paygoResponse.data !== "object" ||
@@ -345,6 +434,7 @@ export async function fetchUsage(
           BillingCurrency?: string;
           BillingPeriodStart?: string;
           ChargePeriodEnd?: string;
+          ChargePeriodStart?: string;
           ConsumedQuantity?: number;
           ConsumedUnit?: string;
           ContractedCost?: number;
@@ -358,10 +448,12 @@ export async function fetchUsage(
       }
       successfulCalls++;
       const rows = paygo.result.filter((row) => {
-        const periodStart = row.BillingPeriodStart
-          ? Date.parse(row.BillingPeriodStart)
+        const chargePeriodStart = row.ChargePeriodStart
+          ? Date.parse(row.ChargePeriodStart)
           : Number.NaN;
-        return Number.isFinite(periodStart) && periodStart >= monthStartMs && periodStart <= now.getTime();
+        return Number.isFinite(chargePeriodStart) &&
+          chargePeriodStart >= monthStartMs &&
+          chargePeriodStart <= now.getTime();
       });
       let paygoCostUsd = 0;
       let foundPaygoCost = false;
@@ -403,11 +495,22 @@ export async function fetchUsage(
         byService.set(key, aggregate);
       }
       if (foundPaygoCost) totalCost = (totalCost ?? 0) + paygoCostUsd;
-      const periodStart = rows[0]?.BillingPeriodStart ??
-        new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1)).toISOString();
+      const periodStart = rows.reduce<string | null>((earliest, row) => {
+        if (!row.ChargePeriodStart) return earliest;
+        if (earliest == null) return row.ChargePeriodStart;
+        return Date.parse(row.ChargePeriodStart) < Date.parse(earliest)
+          ? row.ChargePeriodStart
+          : earliest;
+      }, null) ?? new Date(monthStartMs).toISOString();
       const periodEnd = rows.reduce<string | null>((latest, row) => {
-        if (!row.ChargePeriodEnd) return latest;
-        return latest == null || row.ChargePeriodEnd > latest
+        if (
+          !row.ChargePeriodEnd ||
+          !Number.isFinite(Date.parse(row.ChargePeriodEnd))
+        ) {
+          return latest;
+        }
+        return latest == null ||
+          Date.parse(row.ChargePeriodEnd) > Date.parse(latest)
           ? row.ChargePeriodEnd
           : latest;
       }, null) ?? now.toISOString();

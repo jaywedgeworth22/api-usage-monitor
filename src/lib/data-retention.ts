@@ -75,6 +75,9 @@ interface ExternalRollupValues {
   confidence: string;
   projectId: string | null;
   eventCount: number;
+  pricedEventCount: number | null;
+  unpricedEventCount: number | null;
+  unclassifiedCostEventCount: number | null;
   totalCostUsd: number;
   totalRequests: number;
   totalQuantity: number;
@@ -276,6 +279,11 @@ function externalGroupKey(row: ExternalUsageEventRow): string {
 
 function applyExternalRow(group: ExternalRollupValues, row: ExternalUsageEventRow): void {
   group.eventCount += 1;
+  if (row.costUsd == null) {
+    group.unpricedEventCount = (group.unpricedEventCount ?? 0) + 1;
+  } else {
+    group.pricedEventCount = (group.pricedEventCount ?? 0) + 1;
+  }
   const isStatus = row.metricType === "quota_sync" || row.metricType === "credit_balance";
   
   if (!isStatus) {
@@ -322,6 +330,9 @@ function groupExternalRows(rows: ExternalUsageEventRow[]): ExternalRollupValues[
         confidence: row.confidence,
         projectId: row.projectId,
         eventCount: 0,
+        pricedEventCount: 0,
+        unpricedEventCount: 0,
+        unclassifiedCostEventCount: 0,
         totalCostUsd: 0,
         totalRequests: 0,
         totalQuantity: 0,
@@ -343,10 +354,25 @@ function mergeExternalRollup(
   if (!existing) return incoming;
   const isStatus = incoming.metricType === "quota_sync" || incoming.metricType === "credit_balance";
   const incomingIsLatest = incoming.latestOccurredAt.getTime() >= existing.latestOccurredAt.getTime();
+  const existingHasCoverageCounts =
+    existing.pricedEventCount != null ||
+    existing.unpricedEventCount != null ||
+    existing.unclassifiedCostEventCount != null;
+  const existingUnclassified = existingHasCoverageCounts
+    ? existing.unclassifiedCostEventCount ?? 0
+    : existing.eventCount;
   
   return {
     ...incoming,
     eventCount: existing.eventCount + incoming.eventCount,
+    pricedEventCount:
+      (existing.pricedEventCount ?? 0) + (incoming.pricedEventCount ?? 0),
+    unpricedEventCount:
+      (existing.unpricedEventCount ?? 0) + (incoming.unpricedEventCount ?? 0),
+    // A pre-migration rollup has null counters. Preserve every event in that
+    // row as unclassified while still recording exact coverage for new rows.
+    unclassifiedCostEventCount:
+      existingUnclassified + (incoming.unclassifiedCostEventCount ?? 0),
     totalCostUsd: isStatus ? (incomingIsLatest ? incoming.totalCostUsd : existing.totalCostUsd) : existing.totalCostUsd + incoming.totalCostUsd,
     totalRequests: isStatus ? (incomingIsLatest ? incoming.totalRequests : existing.totalRequests) : existing.totalRequests + incoming.totalRequests,
     totalQuantity: isStatus ? (incomingIsLatest ? incoming.totalQuantity : existing.totalQuantity) : existing.totalQuantity + incoming.totalQuantity,
@@ -515,6 +541,9 @@ async function pruneExternalUsageEvents(
             confidence: true,
             projectId: true,
             eventCount: true,
+            pricedEventCount: true,
+            unpricedEventCount: true,
+            unclassifiedCostEventCount: true,
             totalCostUsd: true,
             totalRequests: true,
             totalQuantity: true,
@@ -529,6 +558,9 @@ async function pruneExternalUsageEvents(
           create: merged,
           update: {
             eventCount: merged.eventCount,
+            pricedEventCount: merged.pricedEventCount,
+            unpricedEventCount: merged.unpricedEventCount,
+            unclassifiedCostEventCount: merged.unclassifiedCostEventCount,
             totalCostUsd: merged.totalCostUsd,
             totalRequests: merged.totalRequests,
             totalQuantity: merged.totalQuantity,

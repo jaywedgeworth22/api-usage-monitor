@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useCallback, useRef } from "react";
 import Link from "next/link";
-import ProviderCard from "@/components/ProviderCard";
+import ProviderCard, { type ProviderCostCoverage } from "@/components/ProviderCard";
 import SentryHealthCard from "@/components/SentryHealthCard";
 import DashboardSummaryCards from "@/components/DashboardSummaryCards";
 import DashboardCharts from "@/components/DashboardCharts";
@@ -27,6 +27,11 @@ interface Provider {
   estimatedMonthlyCostUsd: number;
   projectedEomUsd: number;
   spentUsd?: number;
+  spendCoverage: ProviderCostCoverage;
+  pushedCostCoverage: ProviderCostCoverage;
+  pushedPricedEventCount: number;
+  pushedUnpricedEventCount: number;
+  pushedUnclassifiedCostEventCount: number;
   externalBilling?: ExternalBillingRecord[];
   plan: {
     fixedMonthlyCostUsd: number | null;
@@ -163,6 +168,9 @@ export default function DashboardPage() {
     (sum, p) => sum + (p.projectedEomUsd || 0),
     0
   );
+  const incompleteCostProviderCount = providers.filter(
+    (provider) => provider.isActive && provider.spendCoverage !== "complete"
+  ).length;
   const totalCredits = providers.reduce(
     (sum, p) => sum + (p.latestSnapshot?.credits || 0),
     0
@@ -251,6 +259,7 @@ export default function DashboardPage() {
         totalBalance={totalBalance}
         totalProjectedMonthlyCost={totalProjectedMonthlyCost}
         totalCost={totalCost}
+        incompleteCostProviderCount={incompleteCostProviderCount}
         attentionItemsCount={attentionItems.length}
         criticalCount={criticalCount}
         hasAnyCredits={hasAnyCredits}
@@ -362,6 +371,11 @@ export default function DashboardPage() {
               estimatedMonthlyCostUsd={provider.estimatedMonthlyCostUsd}
               projectedEomUsd={provider.projectedEomUsd}
               spentUsd={provider.spentUsd}
+              spendCoverage={provider.spendCoverage}
+              pushedCostCoverage={provider.pushedCostCoverage}
+              pushedPricedEventCount={provider.pushedPricedEventCount}
+              pushedUnpricedEventCount={provider.pushedUnpricedEventCount}
+              pushedUnclassifiedCostEventCount={provider.pushedUnclassifiedCostEventCount}
               externalBilling={provider.externalBilling}
               billingMode={provider.billingMode}
               alerts={provider.alerts}

@@ -23,6 +23,7 @@ describe("provider secret config", () => {
         apiSecret: "alpaca-secret",
         apiToken: "future-secret",
         apiKeySid: "SK123",
+        serviceAccountJson: "{\"private_key\":\"hidden\"}",
         authUsername: "restricted-user",
         nested: { region: "us", password: "pw" },
         extraHeaders: { Authorization: "Bearer hidden" },
@@ -37,6 +38,7 @@ describe("provider secret config", () => {
         apiSecret: "alpaca-secret",
         apiToken: "future-secret",
         apiKeySid: "SK123",
+        serviceAccountJson: "{\"private_key\":\"hidden\"}",
         authUsername: "restricted-user",
         nested: { password: "pw" },
         extraHeaders: { Authorization: "Bearer hidden" },
@@ -70,6 +72,25 @@ describe("provider secret config", () => {
     });
     expect(JSON.stringify(result)).not.toContain("legacy");
     expect(JSON.stringify(result)).not.toContain("encrypted");
+  });
+
+  it("never returns a Google service-account document to the browser", () => {
+    const credential = JSON.stringify({
+      type: "service_account",
+      client_email: "usage@example.iam.gserviceaccount.com",
+      private_key: "must-not-leak",
+    });
+    const result = providerConfigForClient(
+      { billingDataset: "billing-project.billing_export" },
+      encryptJson({ serviceAccountJson: credential })
+    );
+
+    expect(result.config).toEqual({
+      billingDataset: "billing-project.billing_export",
+    });
+    expect(result.secretConfigMeta.fields).toContain("serviceAccountJson");
+    expect(JSON.stringify(result)).not.toContain("must-not-leak");
+    expect(JSON.stringify(result)).not.toContain("usage@example");
   });
 
   it("redacts legacy browser-sync session and storage payloads as opaque secrets", () => {

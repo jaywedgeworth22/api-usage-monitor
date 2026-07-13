@@ -6,6 +6,7 @@ import { parseProviderUpdateInput, readJsonBody } from "@/lib/provider-input";
 import { buildProviderAlertState } from "@/lib/provider-alerts";
 import { computeBudgetStatus } from "@/lib/budget-status";
 import { toPrismaProviderPlanData } from "@/lib/provider-plan";
+import { canonicalProviderKey } from "@/lib/provider-identity";
 import {
   decryptProviderSecretConfig,
   hasProviderSecrets,
@@ -106,7 +107,7 @@ export async function GET(
   const duplicateProviderIds = providerNames
     .filter(
       (entry) =>
-        entry.name.trim().toLowerCase() === provider.name.trim().toLowerCase()
+        canonicalProviderKey(entry.name) === canonicalProviderKey(provider.name)
     )
     .map((entry) => entry.id)
     .sort();
@@ -126,6 +127,14 @@ export async function GET(
     snapshotCostIncludesUnknownFixed:
       canonicalBudget?.snapshotCostIncludesUnknownFixed ?? false,
     pushedMonthToDateUsd: canonicalBudget?.pushedMonthToDateUsd ?? 0,
+    pushedCostCoverage: canonicalBudget?.pushedCostCoverage ?? "unknown",
+    pushedPricedEventCount: canonicalBudget?.pushedPricedEventCount ?? 0,
+    pushedUnpricedEventCount: canonicalBudget?.pushedUnpricedEventCount ?? 0,
+    pushedUnclassifiedCostEventCount:
+      canonicalBudget?.pushedUnclassifiedCostEventCount ?? 0,
+    spendCoverage:
+      canonicalBudget?.spendCoverage ??
+      (latestSnapshot?.totalCost != null ? "complete" : "unknown"),
     subscriptionMonthToDateUsd:
       canonicalBudget?.subscriptionMonthToDateUsd ?? 0,
     fixedMonthlyCostUsd: canonicalBudget?.fixedMonthlyCostUsd ?? 0,
@@ -171,39 +180,50 @@ export async function PUT(
     if (input.config === null) {
       updateData.config = Prisma.JsonNull;
       updateData.secretConfig = null;
-    } else {
-      const incoming = splitProviderConfig(input.config);
-      updateData.config = Object.keys(incoming.publicConfig).length > 0
-        ? (incoming.publicConfig as Prisma.InputJsonObject)
-        : Prisma.JsonNull;
-
-      // Hidden secret values are omitted by the edit UI, so updates merge any
-      // newly supplied values into the existing encrypted/legacy secret set.
-      // Explicit `config: null` above is the deliberate clear-all operation.
-      const legacySecrets = splitProviderConfig(existing.config).secretConfig;
-      let existingSecrets = legacySecrets;
-      if (existing.secretConfig) {
-        try {
-          existingSecrets = mergeProviderConfig(
-            legacySecrets,
-            decryptProviderSecretConfig(existing.secretConfig)
-          );
-        } catch {
-          return NextResponse.json(
-            { error: "Stored provider secret configuration cannot be decrypted" },
-            { status: 500 }
-          );
-        }
-      }
-
-      const mergedSecrets = mergeProviderConfig(
-        existingSecrets,
-        incoming.secretConfig
-      );
-      updateData.secretConfig = hasProviderSecrets(mergedSecrets)
-        ? encryptJson(mergedSecrets)
-        : null;
     }
+  }
+  const hasSecretConfigOperations =
+    (input.secretConfigOperations?.length ?? 0) > 0;
+  if (
+    input.config !== null &&
+    (input.config !== undefined || hasSecretConfigOperations)
+  ) {
+    const legacy = splitProviderConfig(existing.config);
+    const incoming = splitProviderConfig(input.config);
+    const publicConfig =
+      input.config !== undefined ? incoming.publicConfig : legacy.publicConfig;
+    updateData.config = Object.keys(publicConfig).length > 0
+      ? (publicConfig as Prisma.InputJsonObject)
+      : Prisma.JsonNull;
+
+    // Hidden secret values are omitted by the edit UI, so updates merge any
+    // newly supplied values into the existing encrypted/legacy secret set.
+    // Explicit per-field clear operations run last and cannot erase siblings.
+    let existingSecrets = legacy.secretConfig;
+    if (existing.secretConfig) {
+      try {
+        existingSecrets = mergeProviderConfig(
+          legacy.secretConfig,
+          decryptProviderSecretConfig(existing.secretConfig)
+        );
+      } catch {
+        return NextResponse.json(
+          { error: "Stored provider secret configuration cannot be decrypted" },
+          { status: 500 }
+        );
+      }
+    }
+
+    const mergedSecrets = mergeProviderConfig(
+      existingSecrets,
+      incoming.secretConfig
+    );
+    for (const operation of input.secretConfigOperations ?? []) {
+      delete mergedSecrets[operation.path[0]];
+    }
+    updateData.secretConfig = hasProviderSecrets(mergedSecrets)
+      ? encryptJson(mergedSecrets)
+      : null;
   }
   if (input.isActive !== undefined) updateData.isActive = input.isActive;
   if (input.refreshIntervalMin !== undefined) {

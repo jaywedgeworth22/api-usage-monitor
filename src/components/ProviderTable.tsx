@@ -63,6 +63,30 @@ function providerProfile(provider: Provider) {
   return getProviderIntegrationProfile(provider.name, provider.type);
 }
 
+function resolvedSpendCoverage(provider: Provider) {
+  return (
+    provider.spendCoverage ??
+    (provider.spentUsd != null || provider.latestSnapshot?.totalCost != null
+      ? "complete"
+      : "unknown")
+  );
+}
+
+function knownSpendUsd(provider: Provider) {
+  return (
+    provider.spentUsd ??
+    provider.latestSnapshot?.totalCost ??
+    provider.estimatedMonthlyCostUsd
+  );
+}
+
+function unpricedEventCount(provider: Provider) {
+  return (
+    (provider.pushedUnpricedEventCount ?? 0) +
+    (provider.pushedUnclassifiedCostEventCount ?? 0)
+  );
+}
+
 export default function ProviderTable({
   providers,
   actionLoading,
@@ -137,7 +161,7 @@ export default function ProviderTable({
         comparison = (a.isActive ? 1 : 0) - (b.isActive ? 1 : 0);
         break;
       case "spend":
-        comparison = (a.spentUsd ?? a.estimatedMonthlyCostUsd) - (b.spentUsd ?? b.estimatedMonthlyCostUsd);
+        comparison = knownSpendUsd(a) - knownSpendUsd(b);
         break;
       case "alerts":
         comparison = countProviderAlerts(a).open - countProviderAlerts(b).open;
@@ -204,8 +228,14 @@ export default function ProviderTable({
           )
             .sort(([categoryA], [categoryB]) => categoryA.localeCompare(categoryB))
             .map(([category, groupProviders]) => {
-              const groupSpend = groupProviders.reduce((sum, p) => sum + (p.spentUsd ?? p.estimatedMonthlyCostUsd ?? 0), 0);
+              const groupSpend = groupProviders.reduce(
+                (sum, provider) => sum + knownSpendUsd(provider),
+                0
+              );
               const groupBudget = groupProviders.reduce((sum, p) => sum + (p.plan?.monthlyBudgetUsd ?? 0), 0);
+              const incompleteGroupCount = groupProviders.filter(
+                (provider) => resolvedSpendCoverage(provider) !== "complete"
+              ).length;
               
               const isCollapsed = collapsedGroups[category] || false;
               
@@ -237,7 +267,10 @@ export default function ProviderTable({
                           </span>
                         </div>
                         <span className="text-xs font-medium text-gray-500 dark:text-gray-400">
-                          Group Spend: {formatUsd(groupSpend)} {groupBudget > 0 && ` / ${formatUsd(groupBudget)}`}
+                          {incompleteGroupCount > 0 ? "Known group spend" : "Group spend"}: {formatUsd(groupSpend)} {groupBudget > 0 && ` / ${formatUsd(groupBudget)}`}
+                          {incompleteGroupCount > 0
+                            ? ` · ${incompleteGroupCount} incomplete`
+                            : ""}
                         </span>
                       </button>
                     </td>
@@ -253,6 +286,8 @@ export default function ProviderTable({
                       )
                     ).length;
                     const fetchedDate = formatDateObject(provider.latestSnapshot?.fetchedAt ?? null);
+                    const spendCoverage = resolvedSpendCoverage(provider);
+                    const unpricedCount = unpricedEventCount(provider);
 
                     return (
                       <tr
@@ -320,11 +355,30 @@ export default function ProviderTable({
                 <td data-label="Spend / Budget" className="px-6 py-4">
                   <div className="text-xs">
                     <p className="font-medium text-gray-900 dark:text-gray-100">
-                      {formatUsd(provider.spentUsd ?? provider.estimatedMonthlyCostUsd)} MTD
+                      {spendCoverage === "unknown" || spendCoverage === "legacy_unknown"
+                        ? "Cost not reported"
+                        : `${formatUsd(knownSpendUsd(provider))}${spendCoverage === "partial" ? " known" : ""} MTD`}
                     </p>
-                    {provider.projectedEomUsd != null && (
+                    {spendCoverage === "complete" && provider.projectedEomUsd != null ? (
                       <p className="text-gray-600 dark:text-gray-300">Projected {formatUsd(provider.projectedEomUsd)}</p>
+                    ) : spendCoverage === "partial" && provider.projectedEomUsd != null ? (
+                      <p className="text-gray-600 dark:text-gray-300">
+                        Known-cost projection {formatUsd(provider.projectedEomUsd)}
+                      </p>
+                    ) : (
+                      <p className="text-gray-500 dark:text-gray-400">Projection unavailable</p>
                     )}
+                    {spendCoverage === "partial" && unpricedCount > 0 && (
+                      <p className="text-amber-600 dark:text-amber-300">
+                        {unpricedCount} unpriced event{unpricedCount === 1 ? "" : "s"}
+                      </p>
+                    )}
+                    {(spendCoverage === "unknown" || spendCoverage === "legacy_unknown") &&
+                      unpricedCount > 0 && (
+                        <p className="text-amber-600 dark:text-amber-300">
+                          {unpricedCount} usage event{unpricedCount === 1 ? "" : "s"} without cost
+                        </p>
+                      )}
                     <p className="text-gray-600 dark:text-gray-300">
                       Budget {formatUsd(provider.plan?.monthlyBudgetUsd)}
                     </p>

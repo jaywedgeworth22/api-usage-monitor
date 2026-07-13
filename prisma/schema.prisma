@@ -205,34 +205,39 @@ model ExternalUsageEvent {
 }
 
 model ExternalUsageEventDailyRollup {
-  id               String   @id @default(uuid())
-  day              DateTime
-  groupKey         String
-  sourceApp        String
-  environment      String?
-  provider         String
-  service          String?
-  label            String?
-  keyRef           String?
-  billingMode      String
-  metricType       String
-  unit             String?
-  limitWindow      String?
-  tier             String?
-  confidence       String
+  id                         String   @id @default(uuid())
+  day                        DateTime
+  groupKey                   String
+  sourceApp                  String
+  environment                String?
+  provider                   String
+  service                    String?
+  label                      String?
+  keyRef                     String?
+  billingMode                String
+  metricType                 String
+  unit                       String?
+  limitWindow                String?
+  tier                       String?
+  confidence                 String
   // Denormalized project dimension so per-project cost survives the raw-event
   // retention cutoff. Folded into groupKey (see data-retention.ts's
   // externalGroupKey) so rollup buckets never merge across projects.
-  projectId        String?
-  eventCount       Int      @default(0)
-  totalCostUsd     Float    @default(0)
-  totalRequests    Int      @default(0)
-  totalQuantity    Float    @default(0)
-  totalCredits     Float    @default(0)
-  maxLimit         Float?
-  latestOccurredAt DateTime
-  createdAt        DateTime @default(now())
-  updatedAt        DateTime @updatedAt
+  projectId                  String?
+  eventCount                 Int      @default(0)
+  // Nullable so rows created before cost-coverage tracking remain explicitly
+  // unclassified instead of being misreported as authoritative zero-cost.
+  pricedEventCount           Int?
+  unpricedEventCount         Int?
+  unclassifiedCostEventCount Int?
+  totalCostUsd               Float    @default(0)
+  totalRequests              Int      @default(0)
+  totalQuantity              Float    @default(0)
+  totalCredits               Float    @default(0)
+  maxLimit                   Float?
+  latestOccurredAt           DateTime
+  createdAt                  DateTime @default(now())
+  updatedAt                  DateTime @updatedAt
 
   @@unique([day, groupKey])
   @@index([sourceApp, day])

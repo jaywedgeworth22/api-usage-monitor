@@ -14,6 +14,7 @@ describe("project attribution (integration)", () => {
   let persistExternalUsageEvents: typeof import("../external-usage-events").persistExternalUsageEvents;
   let computeProjectBudgetStatus: typeof import("../budget-status").computeProjectBudgetStatus;
   let resolveProjectIdsByName: typeof import("../project-resolver").resolveProjectIdsByName;
+  let createProject: typeof import("@/app/api/projects/route").POST;
 
   const NOW = new Date("2026-07-15T12:00:00.000Z");
   const occurredAt = new Date("2026-07-10T00:00:00.000Z");
@@ -28,6 +29,7 @@ describe("project attribution (integration)", () => {
     ({ persistExternalUsageEvents } = await import("../external-usage-events"));
     ({ computeProjectBudgetStatus } = await import("../budget-status"));
     ({ resolveProjectIdsByName } = await import("../project-resolver"));
+    ({ POST: createProject } = await import("@/app/api/projects/route"));
   }, 60_000);
 
   afterAll(async () => {
@@ -50,8 +52,82 @@ describe("project attribution (integration)", () => {
     // Producer sends a differently-cased name; it still resolves (keyed by
     // nameKey / lowercased name). An unrelated name does not resolve.
     const map = await resolveProjectIdsByName(["SOCRATIC TRADE", "unknown-app"]);
-    expect(map.get("socratic trade")).toBe(project.id);
+    expect(map.get("socratic-trade")).toBe(project.id);
     expect(map.has("unknown-app")).toBe(false);
+  });
+
+  it("resolves producer slugs to canonical dotted project names", async () => {
+    const socratic = await prisma.project.create({
+      data: { name: "SocraticTrade.com", nameKey: "socratictrade.com" },
+    });
+    const congress = await prisma.project.create({
+      data: { name: "Congress.Trade", nameKey: "congress.trade" },
+    });
+
+    const map = await resolveProjectIdsByName(["socratic-trade", "congress-trade"]);
+    expect(map.get("socratic-trade")).toBe(socratic.id);
+    expect(map.get("congress-trade")).toBe(congress.id);
+  });
+
+  it("rejects canonically equivalent project aliases at creation", async () => {
+    const first = await createProject(
+      new Request("http://localhost/api/projects", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ name: "Congress.Trade" }),
+      })
+    );
+    const duplicate = await createProject(
+      new Request("http://localhost/api/projects", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ name: "congress-trade" }),
+      })
+    );
+
+    expect(first.status).toBe(200);
+    expect(duplicate.status).toBe(400);
+    expect(await prisma.project.findMany({ select: { name: true, nameKey: true } })).toEqual([
+      { name: "Congress.Trade", nameKey: "congress-trade" },
+    ]);
+  });
+
+  it("uses the same oldest canonical project for ingest and legacy budgets", async () => {
+    const first = await prisma.project.create({
+      data: {
+        id: "a-oldest-canonical-project",
+        name: "Congress.Trade",
+        nameKey: "legacy-congress-dot",
+        monthlyBudgetUsd: 100,
+        createdAt: new Date("2026-01-01T00:00:00.000Z"),
+      },
+    });
+    const duplicate = await prisma.project.create({
+      data: {
+        id: "z-newer-canonical-project",
+        name: "congress-trade",
+        nameKey: "legacy-congress-dash",
+        monthlyBudgetUsd: 100,
+        createdAt: new Date("2026-01-02T00:00:00.000Z"),
+      },
+    });
+    const resolved = await resolveProjectIdsByName(["congress-trade"]);
+    await persistExternalUsageEvents([
+      {
+        idempotencyKey: "canonical-project-oldest",
+        sourceApp: "congress-trade",
+        provider: "openai",
+        billingMode: "actual",
+        metricType: "cost",
+        costUsd: 4,
+        occurredAt,
+      },
+    ]);
+
+    const status = await computeProjectBudgetStatus(NOW);
+    expect(resolved.get("congress-trade")).toBe(first.id);
+    expect(status.projects.find((project) => project.id === first.id)?.directUsd).toBe(4);
+    expect(status.projects.find((project) => project.id === duplicate.id)?.directUsd).toBe(0);
   });
 
   it("rejects case-variant project names at the database level (closes the create race)", async () => {
@@ -89,6 +165,63 @@ describe("project attribution (integration)", () => {
     ).toEqual({ projectId: project.id });
   });
 
+  it("adds project metadata and attribution when replaying a legacy event", async () => {
+    const event = {
+      idempotencyKey: "legacy-project-backfill",
+      sourceApp: "socratic-trade",
+      provider: "openai",
+      projectId: null,
+      billingMode: "actual",
+      metricType: "cost",
+      costUsd: 3,
+      occurredAt,
+      metadata: { lane: "rag" },
+    };
+    await persistExternalUsageEvents([event]);
+    const project = await prisma.project.create({ data: { name: "Socratic Trade" } });
+
+    await expect(
+      persistExternalUsageEvents([
+        {
+          ...event,
+          projectId: project.id,
+          metadata: { ...event.metadata, project: "Socratic Trade" },
+        },
+      ])
+    ).resolves.toBeDefined();
+
+    expect(
+      await prisma.externalUsageEvent.findUniqueOrThrow({
+        where: { idempotencyKey: event.idempotencyKey },
+        select: { projectId: true, metadata: true },
+      })
+    ).toEqual({
+      projectId: project.id,
+      metadata: { lane: "rag", project: "Socratic Trade" },
+    });
+  });
+
+  it("rejects replay attribution to a different raw project name", async () => {
+    const event = {
+      idempotencyKey: "raw-project-name-collision",
+      sourceApp: "socratic-trade",
+      provider: "openai",
+      projectId: null,
+      billingMode: "actual",
+      metricType: "cost",
+      costUsd: 3,
+      occurredAt,
+      metadata: { project: "Socratic Trade" },
+    };
+    await persistExternalUsageEvents([event]);
+
+    await expect(
+      persistExternalUsageEvents([
+        { ...event, metadata: { project: "Congress Trade" } },
+      ])
+    ).rejects.toMatchObject({ name: "ExternalUsageIdempotencyCollisionError" });
+  });
+
   it("rejects reuse of one idempotency key across two resolved projects", async () => {
     const first = await prisma.project.create({ data: { name: "First Project" } });
     const second = await prisma.project.create({ data: { name: "Second Project" } });
@@ -108,6 +241,62 @@ describe("project attribution (integration)", () => {
     await expect(
       persistExternalUsageEvents([{ ...event, projectId: second.id }])
     ).rejects.toMatchObject({ name: "ExternalUsageIdempotencyCollisionError" });
+  });
+
+  it("merges richer project attribution for duplicates in the same batch", async () => {
+    const project = await prisma.project.create({ data: { name: "SocraticTrade.com" } });
+    const base = {
+      idempotencyKey: "same-batch-project-backfill",
+      sourceApp: "socratic-trade",
+      provider: "openai",
+      projectId: null,
+      billingMode: "actual",
+      metricType: "cost",
+      costUsd: 2,
+      occurredAt,
+      metadata: { lane: "rag" },
+    };
+
+    await persistExternalUsageEvents([
+      base,
+      {
+        ...base,
+        projectId: project.id,
+        metadata: { ...base.metadata, project: "socratic-trade" },
+      },
+    ]);
+
+    expect(
+      await prisma.externalUsageEvent.findUniqueOrThrow({
+        where: { idempotencyKey: base.idempotencyKey },
+        select: { projectId: true, metadata: true },
+      })
+    ).toEqual({
+      projectId: project.id,
+      metadata: { lane: "rag", project: "socratic-trade" },
+    });
+  });
+
+  it("rejects conflicting project attribution inside one batch", async () => {
+    const first = await prisma.project.create({ data: { name: "First Project" } });
+    const second = await prisma.project.create({ data: { name: "Second Project" } });
+    const base = {
+      idempotencyKey: "same-batch-project-collision",
+      sourceApp: "socratic-trade",
+      provider: "openai",
+      billingMode: "actual",
+      metricType: "cost",
+      costUsd: 2,
+      occurredAt,
+    };
+
+    await expect(
+      persistExternalUsageEvents([
+        { ...base, projectId: first.id, metadata: { project: "First Project" } },
+        { ...base, projectId: second.id, metadata: { project: "Second Project" } },
+      ])
+    ).rejects.toMatchObject({ name: "ExternalUsageIdempotencyCollisionError" });
+    expect(await prisma.externalUsageEvent.count()).toBe(0);
   });
 
   it("attributes projectId-tagged cost directly and never double-counts under allocation", async () => {
@@ -168,6 +357,149 @@ describe("project attribution (integration)", () => {
     expect(status.summary).toMatchObject({
       totalSpentUsd: 14,
       unassignedSpentUsd: 0,
+    });
+  });
+
+  it("uses identical duplicate-provider priority for spend and attribution", async () => {
+    await prisma.provider.create({
+      data: {
+        id: "a-provider-without-plan",
+        name: "duplicate-provider",
+        displayName: "Duplicate without plan",
+        type: "builtin",
+      },
+    });
+    const planned = await prisma.provider.create({
+      data: {
+        id: "z-provider-with-plan",
+        name: "duplicate-provider",
+        displayName: "Duplicate with plan",
+        type: "builtin",
+        plan: { create: { billingMode: "manual" } },
+      },
+    });
+    const project = await prisma.project.create({
+      data: { name: "Priority Project", monthlyBudgetUsd: 100 },
+    });
+    await prisma.providerProjectAllocation.create({
+      data: { providerId: planned.id, projectId: project.id, percentage: 100 },
+    });
+    await persistExternalUsageEvents([
+      {
+        idempotencyKey: "duplicate-provider-priority",
+        sourceApp: "producer",
+        provider: "duplicate-provider",
+        projectId: project.id,
+        billingMode: "actual",
+        metricType: "cost",
+        costUsd: 10,
+        occurredAt,
+      },
+    ]);
+
+    const status = await computeProjectBudgetStatus(NOW);
+    expect(status.providers.find((provider) => provider.id === planned.id)?.spentUsd).toBe(10);
+    expect(status.projects.find((row) => row.id === project.id)).toMatchObject({
+      directUsd: 10,
+      allocatedUsd: 0,
+      spentUsd: 10,
+    });
+  });
+
+  it("joins producer provider/project aliases without rewriting the raw event", async () => {
+    const provider = await prisma.provider.create({
+      data: { name: "google-ai", displayName: "Google AI", type: "builtin" },
+    });
+    const project = await prisma.project.create({
+      data: { name: "SocraticTrade.com", monthlyBudgetUsd: 100 },
+    });
+    await persistExternalUsageEvents([
+      {
+        idempotencyKey: "legacy-gemini-project-alias",
+        sourceApp: "socratic-trade",
+        provider: "gemini",
+        billingMode: "actual",
+        metricType: "cost",
+        costUsd: 8,
+        occurredAt,
+      },
+    ]);
+
+    const status = await computeProjectBudgetStatus(NOW);
+    expect(status.providers.find((row) => row.id === provider.id)).toMatchObject({
+      pushedMonthToDateUsd: 8,
+      pushedCostCoverage: "complete",
+      spendCoverage: "complete",
+    });
+    expect(status.projects.find((row) => row.id === project.id)).toMatchObject({
+      directUsd: 8,
+      spentUsd: 8,
+    });
+    expect(
+      await prisma.externalUsageEvent.findUniqueOrThrow({
+        where: { idempotencyKey: "legacy-gemini-project-alias" },
+        select: { provider: true, sourceApp: true },
+      })
+    ).toEqual({ provider: "gemini", sourceApp: "socratic-trade" });
+  });
+
+  it("routes an exact custom provider name before a built-in alias", async () => {
+    const custom = await prisma.provider.create({
+      data: { name: "gemini", displayName: "Custom Gemini", type: "custom" },
+    });
+    const builtin = await prisma.provider.create({
+      data: { name: "google-ai", displayName: "Google AI", type: "builtin" },
+    });
+    await persistExternalUsageEvents([
+      {
+        idempotencyKey: "exact-provider-before-alias",
+        sourceApp: "producer",
+        provider: "gemini",
+        billingMode: "actual",
+        metricType: "cost",
+        costUsd: 7,
+        occurredAt,
+      },
+    ]);
+
+    const status = await computeProjectBudgetStatus(NOW);
+    expect(status.providers.find((row) => row.id === custom.id)?.pushedMonthToDateUsd).toBe(7);
+    expect(status.providers.find((row) => row.id === builtin.id)?.pushedMonthToDateUsd).toBe(0);
+  });
+
+  it("reports omitted pushed cost as unknown instead of authoritative zero", async () => {
+    const provider = await prisma.provider.create({
+      data: { name: "google-ai", displayName: "Google AI", type: "builtin" },
+    });
+    const project = await prisma.project.create({
+      data: { name: "Congress.Trade", monthlyBudgetUsd: 100 },
+    });
+    await persistExternalUsageEvents([
+      {
+        idempotencyKey: "gemini-unpriced-request",
+        sourceApp: "congress-trade",
+        provider: "gemini",
+        billingMode: "estimated",
+        metricType: "request",
+        requests: 1,
+        occurredAt,
+      },
+    ]);
+
+    const status = await computeProjectBudgetStatus(NOW);
+    expect(status.providers.find((row) => row.id === provider.id)).toMatchObject({
+      spentUsd: 0,
+      pushedPricedEventCount: 0,
+      pushedUnpricedEventCount: 1,
+      pushedCostCoverage: "unknown",
+      spendCoverage: "unknown",
+    });
+    expect(status.projects.find((row) => row.id === project.id)).toMatchObject({
+      spentUsd: 0,
+      spendCoverage: "unknown",
+      pricedEventCount: 0,
+      unpricedEventCount: 1,
+      unclassifiedCostEventCount: 0,
     });
   });
 });

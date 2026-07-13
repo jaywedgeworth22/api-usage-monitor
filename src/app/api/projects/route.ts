@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { computeProjectBudgetStatus } from "@/lib/budget-status";
+import { canonicalProjectKey } from "@/lib/provider-identity";
 
 export async function GET(request: NextRequest) {
   try {
@@ -37,11 +38,11 @@ export async function POST(request: Request) {
     // resolution ambiguous. The app-level check gives a friendly message; the
     // unique `nameKey` column is the real guarantee (it closes the race two
     // app-level checks can't — both would pass, but the second insert fails).
-    const nameKey = String(name).trim().toLowerCase();
+    const nameKey = canonicalProjectKey(String(name));
     const existing = await prisma.project.findMany({ select: { name: true } });
-    if (existing.some((p) => p.name.trim().toLowerCase() === nameKey)) {
+    if (existing.some((p) => canonicalProjectKey(p.name) === nameKey)) {
       return NextResponse.json(
-        { error: "Project name already exists (names are case-insensitive)" },
+        { error: "Project name already exists or is an equivalent attribution alias" },
         { status: 400 }
       );
     }
@@ -59,7 +60,7 @@ export async function POST(request: Request) {
   } catch (error) {
     if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002") {
       return NextResponse.json(
-        { error: "Project name already exists (names are case-insensitive)" },
+        { error: "Project name already exists or is an equivalent attribution alias" },
         { status: 409 }
       );
     }
