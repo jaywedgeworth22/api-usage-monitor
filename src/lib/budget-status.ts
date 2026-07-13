@@ -1,8 +1,16 @@
 import { prisma } from "@/lib/prisma";
 import {
+  classifyCostCoverage,
   sumMonthToDateExternalCostByProvider,
   sumMonthToDateExternalCostAttribution,
+  type CostCoverage,
+  type ProviderPushedCost,
 } from "@/lib/external-usage-events";
+import {
+  canonicalProjectKey,
+  resolveProviderIdentity,
+} from "@/lib/provider-identity";
+import { buildCanonicalProjectIdMap } from "@/lib/project-resolver";
 import { buildProviderAlertState, type ProviderAlert } from "@/lib/provider-alerts";
 import { getExternalEventRawCutoff } from "@/lib/data-retention";
 import { calculateEomForecast } from "@/lib/forecasting";
@@ -40,6 +48,11 @@ export interface ProviderBudgetStatus {
   snapshotFixedCostIncludedUsd: number;
   snapshotCostIncludesUnknownFixed: boolean;
   pushedMonthToDateUsd: number;
+  pushedCostCoverage: CostCoverage;
+  pushedPricedEventCount: number;
+  pushedUnpricedEventCount: number;
+  pushedUnclassifiedCostEventCount: number;
+  spendCoverage: CostCoverage;
   subscriptionMonthToDateUsd: number;
   fixedAccruedUsd: number;
   linkedFixedDedupeUsd: number;
@@ -280,29 +293,30 @@ export async function computeBudgetStatus(now: Date = new Date()): Promise<Budge
     }
   }
 
-  // Case-insensitive provider name → month-to-date pushed cost (split into
-  // usage-like vs subscription — see sumMonthToDateExternalCostByProvider).
-  const pushedMap = pushedByProvider;
-
-  // External events identify providers by case-insensitive name, while the
-  // settings table can contain legacy duplicate Provider rows. Assign each
-  // name-keyed pushed/subscription total to exactly one deterministic owner so
-  // duplicates cannot multiply spend. Prefer the row with a configured budget,
-  // then any plan, then lexical id for a stable tie-break.
-  const canonicalProviderIdByName = new Map<string, string>();
-  for (const provider of providers) {
-    const key = provider.name.toLowerCase();
-    const currentId = canonicalProviderIdByName.get(key);
-    if (!currentId) {
-      canonicalProviderIdByName.set(key, provider.id);
-      continue;
-    }
-    const current = providers.find((candidate) => candidate.id === currentId)!;
-    const rank = (candidate: typeof provider) =>
-      (candidate.plan?.monthlyBudgetUsd != null ? 4 : 0) + (candidate.plan ? 2 : 0);
-    if (rank(provider) > rank(current) || (rank(provider) === rank(current) && provider.id < current.id)) {
-      canonicalProviderIdByName.set(key, provider.id);
-    }
+  const providerIdentityCandidates = providers.map((provider) => ({
+    id: provider.id,
+    name: provider.name,
+    identityPriority:
+      (provider.plan?.monthlyBudgetUsd != null ? 4 : 0) +
+      (provider.plan ? 2 : 0),
+  }));
+  const pushedByProviderId = new Map<string, ProviderPushedCost>();
+  for (const [producerName, pushed] of pushedByProvider) {
+    const owner = resolveProviderIdentity(producerName, providerIdentityCandidates);
+    if (!owner) continue;
+    const bucket = pushedByProviderId.get(owner.id) ?? {
+      usagePushed: 0,
+      subscriptionPushed: 0,
+      pricedEventCount: 0,
+      unpricedEventCount: 0,
+      unclassifiedCostEventCount: 0,
+    };
+    bucket.usagePushed += pushed.usagePushed;
+    bucket.subscriptionPushed += pushed.subscriptionPushed;
+    bucket.pricedEventCount += pushed.pricedEventCount;
+    bucket.unpricedEventCount += pushed.unpricedEventCount;
+    bucket.unclassifiedCostEventCount += pushed.unclassifiedCostEventCount;
+    pushedByProviderId.set(owner.id, bucket);
   }
 
   const providerStatuses: ProviderBudgetStatus[] = providers.map((p) => {
@@ -318,11 +332,15 @@ export async function computeBudgetStatus(now: Date = new Date()): Promise<Budge
         snapshotCostUsd ?? 0
       )
     );
-    const ownsNameKeyedSpend = canonicalProviderIdByName.get(p.name.toLowerCase()) === p.id;
-    const pushed = ownsNameKeyedSpend
-      ? pushedMap.get(p.name.toLowerCase()) ?? { usagePushed: 0, subscriptionPushed: 0 }
-      : { usagePushed: 0, subscriptionPushed: 0 };
+    const pushed = pushedByProviderId.get(p.id) ?? {
+      usagePushed: 0,
+      subscriptionPushed: 0,
+      pricedEventCount: 0,
+      unpricedEventCount: 0,
+      unclassifiedCostEventCount: 0,
+    };
     const pushedMonthToDateUsd = pushed.usagePushed + pushed.subscriptionPushed;
+    const pushedCostCoverage = classifyCostCoverage(pushed);
     // Usage-like pushed cost is deduped against the variable portion of the
     // poll snapshot via max(); fixed representations are reconciled below.
     const snapshotVariableCostUsd = Math.max(
@@ -389,6 +407,25 @@ export async function computeBudgetStatus(now: Date = new Date()): Promise<Budge
       snapshotFixedCostIncludedUsd -
       linkedFixedDedupeUsd;
     const spentUsd = fixedAccruedUsd + usageCost;
+    const hasPushedEvents =
+      pushed.pricedEventCount +
+        pushed.unpricedEventCount +
+        pushed.unclassifiedCostEventCount >
+      0;
+    const hasKnownVariableCost = pushed.pricedEventCount > 0 || snapshotCostUsd != null;
+    const hasUnknownCost =
+      pushed.unpricedEventCount > 0 || pushed.unclassifiedCostEventCount > 0;
+    const spendCoverage: CostCoverage = hasUnknownCost
+      ? hasKnownVariableCost || fixedAccruedUsd > 0
+        ? "partial"
+        : pushed.unclassifiedCostEventCount > 0
+          ? "legacy_unknown"
+          : "unknown"
+      : hasPushedEvents || snapshotCostUsd != null
+        ? "complete"
+        : fixedAccruedUsd > 0
+          ? "partial"
+          : "unknown";
     const forecastedSubscriptionRenewalsUsd = forecastSubscriptionRenewals(
       p.subscriptions,
       now
@@ -455,6 +492,11 @@ export async function computeBudgetStatus(now: Date = new Date()): Promise<Budge
       snapshotFixedCostIncludedUsd,
       snapshotCostIncludesUnknownFixed,
       pushedMonthToDateUsd,
+      pushedCostCoverage,
+      pushedPricedEventCount: pushed.pricedEventCount,
+      pushedUnpricedEventCount: pushed.unpricedEventCount,
+      pushedUnclassifiedCostEventCount: pushed.unclassifiedCostEventCount,
+      spendCoverage,
       subscriptionMonthToDateUsd: pushed.subscriptionPushed,
       fixedAccruedUsd,
       linkedFixedDedupeUsd,
@@ -501,6 +543,11 @@ export interface ProjectBudgetStatus {
   monthlyBudgetUsd: number | null;
   spentUsd: number;
   projectedEomUsd: number;
+  spendCoverage: CostCoverage;
+  pricedEventCount: number;
+  unpricedEventCount: number;
+  unclassifiedCostEventCount: number;
+  incompleteAllocatedProviderCount: number;
   // Cost attributed directly to this project — events carrying its projectId
   // (incl. materialized subscription charges) plus the legacy fallback where an
   // untagged event's sourceApp matches this project's name.
@@ -533,7 +580,7 @@ export interface ProjectBudgetStatusResponse {
 }
 
 export async function computeProjectBudgetStatus(now: Date = new Date()): Promise<ProjectBudgetStatusResponse> {
-  const [providerStatus, projects, attribution] = await Promise.all([
+  const [providerStatus, projects, attribution, identityProviders] = await Promise.all([
     computeBudgetStatus(now),
     prisma.project.findMany({
       include: {
@@ -542,10 +589,19 @@ export async function computeProjectBudgetStatus(now: Date = new Date()): Promis
       orderBy: { name: "asc" }
     }),
     sumMonthToDateExternalCostAttribution(monthStartUtc(now), getExternalEventRawCutoff(now)),
+    prisma.provider.findMany({
+      select: {
+        id: true,
+        name: true,
+        plan: { select: { monthlyBudgetUsd: true } },
+      },
+    }),
   ]);
 
-  // Lowercased Project.name -> id, for the legacy sourceApp-name fallback.
-  const projectIdByName = new Map(projects.map((p) => [p.name.toLowerCase(), p.id]));
+  // Use the same oldest-row canonical resolver as ingest for the legacy
+  // sourceApp-name fallback. Existing alias duplicates are therefore stable
+  // even before an operator consolidates them.
+  const projectIdByName = buildCanonicalProjectIdMap(projects);
 
   // Slice the (provider, sourceApp, projectId) triples into:
   //   directByProjectId  — cost attributed to a specific project. A row counts
@@ -558,23 +614,59 @@ export async function computeProjectBudgetStatus(now: Date = new Date()): Promis
   //     for the old code, which subtracted a differently-keyed pushed total).
   const directByProjectId = new Map<string, number>();
   const directFixedByProjectId = new Map<string, number>();
-  const attributedByProvider = new Map<string, number>();
-  const attributedFixedByProvider = new Map<string, number>();
+  const directCoverageByProjectId = new Map<
+    string,
+    {
+      pricedEventCount: number;
+      unpricedEventCount: number;
+      unclassifiedCostEventCount: number;
+    }
+  >();
+  const attributedByProviderId = new Map<string, number>();
+  const attributedFixedByProviderId = new Map<string, number>();
+  const projectProviderCandidates = identityProviders.map((provider) => ({
+    id: provider.id,
+    name: provider.name,
+    identityPriority:
+      (provider.plan?.monthlyBudgetUsd != null ? 4 : 0) +
+      (provider.plan ? 2 : 0),
+  }));
   for (const row of attribution) {
-    const projectId = row.projectId ?? projectIdByName.get(row.sourceApp.toLowerCase()) ?? null;
+    const projectId =
+      row.projectId ?? projectIdByName.get(canonicalProjectKey(row.sourceApp)) ?? null;
     if (!projectId) continue;
+    const directCoverage = directCoverageByProjectId.get(projectId) ?? {
+      pricedEventCount: 0,
+      unpricedEventCount: 0,
+      unclassifiedCostEventCount: 0,
+    };
+    directCoverage.pricedEventCount += row.pricedEventCount;
+    directCoverage.unpricedEventCount += row.unpricedEventCount;
+    directCoverage.unclassifiedCostEventCount +=
+      row.unclassifiedCostEventCount;
+    directCoverageByProjectId.set(projectId, directCoverage);
     directByProjectId.set(projectId, (directByProjectId.get(projectId) ?? 0) + row.costUsd);
-    const providerKey = row.provider.toLowerCase();
-    attributedByProvider.set(providerKey, (attributedByProvider.get(providerKey) ?? 0) + row.costUsd);
+    const providerOwner = resolveProviderIdentity(
+      row.provider,
+      projectProviderCandidates
+    );
+    if (providerOwner) {
+      attributedByProviderId.set(
+        providerOwner.id,
+        (attributedByProviderId.get(providerOwner.id) ?? 0) + row.costUsd
+      );
+    }
     if (row.metricType === "subscription") {
       directFixedByProjectId.set(
         projectId,
         (directFixedByProjectId.get(projectId) ?? 0) + row.costUsd
       );
-      attributedFixedByProvider.set(
-        providerKey,
-        (attributedFixedByProvider.get(providerKey) ?? 0) + row.costUsd
-      );
+      if (providerOwner) {
+        attributedFixedByProviderId.set(
+          providerOwner.id,
+          (attributedFixedByProviderId.get(providerOwner.id) ?? 0) + row.costUsd
+        );
+      }
     }
   }
 
@@ -590,19 +682,66 @@ export async function computeProjectBudgetStatus(now: Date = new Date()): Promis
     // usage, and any untagged pushed telemetry).
     let allocatedUsd = 0;
     let allocatedFixedUsd = 0;
+    let allocatedHasKnownCost = false;
+    let allocatedHasCurrentUnknownCost = false;
+    let allocatedHasLegacyUnknownCost = false;
+    let incompleteAllocatedProviderCount = 0;
     for (const alloc of proj.allocations) {
       const provider = providerById.get(alloc.providerId);
       if (!provider) continue;
-      const attributed = attributedByProvider.get(provider.name.toLowerCase()) ?? 0;
+      const attributed = attributedByProviderId.get(provider.id) ?? 0;
       const residual = Math.max(0, provider.spentUsd - attributed);
-      const attributedFixed = attributedFixedByProvider.get(provider.name.toLowerCase()) ?? 0;
+      const attributedFixed = attributedFixedByProviderId.get(provider.id) ?? 0;
       const fixedResidual = Math.max(0, provider.fixedAccruedUsd - attributedFixed);
       const ratio = Math.max(0, Math.min(100, alloc.percentage)) / 100;
+      if (ratio <= 0) continue;
       allocatedUsd += residual * ratio;
       allocatedFixedUsd += Math.min(residual, fixedResidual) * ratio;
+      if (provider.spendCoverage === "complete") {
+        allocatedHasKnownCost = true;
+      } else {
+        incompleteAllocatedProviderCount += 1;
+        if (provider.spendCoverage === "partial") {
+          allocatedHasKnownCost = true;
+        }
+        if (
+          provider.spendCoverage === "legacy_unknown" ||
+          provider.pushedUnclassifiedCostEventCount > 0
+        ) {
+          allocatedHasLegacyUnknownCost = true;
+        }
+        if (
+          provider.spendCoverage !== "legacy_unknown" ||
+          provider.pushedUnpricedEventCount > 0
+        ) {
+          allocatedHasCurrentUnknownCost = true;
+        }
+      }
     }
 
     const spentUsd = directUsd + allocatedUsd;
+    const directCoverage = directCoverageByProjectId.get(proj.id) ?? {
+      pricedEventCount: 0,
+      unpricedEventCount: 0,
+      unclassifiedCostEventCount: 0,
+    };
+    const hasKnownCost =
+      directCoverage.pricedEventCount > 0 || allocatedHasKnownCost;
+    const hasCurrentUnknownCost =
+      directCoverage.unpricedEventCount > 0 || allocatedHasCurrentUnknownCost;
+    const hasLegacyUnknownCost =
+      directCoverage.unclassifiedCostEventCount > 0 ||
+      allocatedHasLegacyUnknownCost;
+    const hasUnknownCost = hasCurrentUnknownCost || hasLegacyUnknownCost;
+    const spendCoverage: CostCoverage = hasUnknownCost
+      ? hasKnownCost
+        ? "partial"
+        : hasLegacyUnknownCost && !hasCurrentUnknownCost
+          ? "legacy_unknown"
+          : "unknown"
+      : hasKnownCost
+        ? "complete"
+        : "unknown";
 
     let status: BudgetStatusLevel;
     let remainingUsd: number | null;
@@ -633,6 +772,9 @@ export async function computeProjectBudgetStatus(now: Date = new Date()): Promis
         Math.min(spentUsd, directFixedUsd + allocatedFixedUsd),
         now
       ),
+      spendCoverage,
+      ...directCoverage,
+      incompleteAllocatedProviderCount,
       directUsd,
       allocatedUsd,
       remainingUsd,

@@ -1,5 +1,11 @@
 import type { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
+import {
+  canonicalProjectKey,
+  canonicalProviderKey,
+  normalizedProviderName,
+  resolveProviderIdentity,
+} from "@/lib/provider-identity";
 
 export const STATUS_METRIC_TYPES = new Set(["quota_sync", "credit_balance"]);
 
@@ -55,17 +61,38 @@ export interface ExternalUsageEventSummaryGroup {
   sourceApp: string;
   environment: string | null;
   provider: string;
+  canonicalProvider: string;
   service: string | null;
   projectId: string | null;
   metricType: string;
   unit: string | null;
   eventCount: number;
+  pricedEventCount: number;
+  unpricedEventCount: number;
+  unclassifiedCostEventCount: number;
+  costCoverage: CostCoverage;
   totalCostUsd: number;
   totalRequests: number;
   totalQuantity: number;
   limit: number | null;
   limitWindow: string | null;
   latestAt: string;
+}
+
+export type CostCoverage = "complete" | "partial" | "unknown" | "legacy_unknown";
+
+export function classifyCostCoverage(counts: {
+  pricedEventCount: number;
+  unpricedEventCount: number;
+  unclassifiedCostEventCount: number;
+}): CostCoverage {
+  const { pricedEventCount, unpricedEventCount, unclassifiedCostEventCount } = counts;
+  if (pricedEventCount > 0) {
+    return unpricedEventCount > 0 || unclassifiedCostEventCount > 0
+      ? "partial"
+      : "complete";
+  }
+  return unclassifiedCostEventCount > 0 ? "legacy_unknown" : "unknown";
 }
 
 // One month-to-date cost total per (provider, sourceApp, projectId) triple,
@@ -79,6 +106,9 @@ export interface ExternalCostAttributionRow {
   projectId: string | null;
   metricType: string;
   costUsd: number;
+  pricedEventCount: number;
+  unpricedEventCount: number;
+  unclassifiedCostEventCount: number;
 }
 
 function toCreateData(event: ExternalUsageEventInput): Prisma.ExternalUsageEventUncheckedCreateInput {
@@ -137,6 +167,27 @@ function stableJson(value: unknown): string {
     .join(",")}}`;
 }
 
+function stringProjectMetadata(value: unknown): string | null {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    return null;
+  }
+  const project = (value as Record<string, unknown>).project;
+  return typeof project === "string" && project.trim()
+    ? project.trim()
+    : null;
+}
+
+function metadataWithoutStringProject(value: unknown): unknown {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    return value;
+  }
+  const record = value as Record<string, unknown>;
+  if (typeof record.project !== "string") return value;
+  const rest = { ...record };
+  delete rest.project;
+  return Object.keys(rest).length > 0 ? rest : null;
+}
+
 function comparableEvent(event: ExternalUsageEventInput | ExistingExternalUsageEvent) {
   const value = event as ExternalUsageEventInput & ExistingExternalUsageEvent;
   const iso = (date: Date | undefined | null) => date?.toISOString() ?? null;
@@ -166,7 +217,11 @@ function comparableEvent(event: ExternalUsageEventInput | ExistingExternalUsageE
     windowStart: iso(value.windowStart),
     windowEnd: iso(value.windowEnd),
     occurredAt: value.occurredAt.toISOString(),
-    metadata: stableJson(value.metadata ?? null),
+    // `project` is intentionally excluded from the shared idempotency-key
+    // basis. Compare it separately so an old event can gain attribution on a
+    // replay without weakening collision checks for every other metadata
+    // field (or allowing one project name to be replaced by another).
+    metadata: stableJson(metadataWithoutStringProject(value.metadata ?? null)),
   };
 }
 
@@ -175,6 +230,38 @@ function sameEvent(
   right: ExternalUsageEventInput | ExistingExternalUsageEvent
 ): boolean {
   return stableJson(comparableEvent(left)) === stableJson(comparableEvent(right));
+}
+
+function assertCompatibleProjectAttribution(
+  left: ExternalUsageEventInput | ExistingExternalUsageEvent,
+  right: ExternalUsageEventInput | ExistingExternalUsageEvent,
+  idempotencyKey: string
+): void {
+  if (left.projectId && right.projectId && left.projectId !== right.projectId) {
+    throw new ExternalUsageIdempotencyCollisionError(idempotencyKey);
+  }
+  const leftName = stringProjectMetadata(left.metadata);
+  const rightName = stringProjectMetadata(right.metadata);
+  if (
+    leftName &&
+    rightName &&
+    canonicalProjectKey(leftName) !== canonicalProjectKey(rightName)
+  ) {
+    throw new ExternalUsageIdempotencyCollisionError(idempotencyKey);
+  }
+}
+
+function mergeBatchProjectAttribution(
+  left: ExternalUsageEventInput,
+  right: ExternalUsageEventInput
+): ExternalUsageEventInput {
+  const leftName = stringProjectMetadata(left.metadata);
+  const rightName = stringProjectMetadata(right.metadata);
+  return {
+    ...left,
+    projectId: left.projectId ?? right.projectId ?? null,
+    metadata: !leftName && rightName ? right.metadata : left.metadata,
+  };
 }
 
 export async function persistExternalUsageEventsInTransaction(
@@ -190,10 +277,18 @@ export async function persistExternalUsageEventsInTransaction(
   const uniqueByKey = new Map<string, ExternalUsageEventInput>();
   for (const event of events) {
     const prior = uniqueByKey.get(event.idempotencyKey);
-    if (prior && !sameEvent(prior, event)) {
-      throw new ExternalUsageIdempotencyCollisionError(event.idempotencyKey);
+    if (prior) {
+      assertCompatibleProjectAttribution(prior, event, event.idempotencyKey);
+      if (!sameEvent(prior, event)) {
+        throw new ExternalUsageIdempotencyCollisionError(event.idempotencyKey);
+      }
+      uniqueByKey.set(
+        event.idempotencyKey,
+        mergeBatchProjectAttribution(prior, event)
+      );
+    } else {
+      uniqueByKey.set(event.idempotencyKey, event);
     }
-    if (!prior) uniqueByKey.set(event.idempotencyKey, event);
   }
   let uniqueEvents = Array.from(uniqueByKey.values());
 
@@ -235,20 +330,34 @@ export async function persistExternalUsageEventsInTransaction(
   for (const event of activeEvents) {
     const existing = existingByKey.get(event.idempotencyKey);
     if (existing) {
-      if (
-        existing.projectId &&
-        event.projectId &&
-        existing.projectId !== event.projectId
-      ) {
-        throw new ExternalUsageIdempotencyCollisionError(event.idempotencyKey);
-      }
+      const existingProjectName = stringProjectMetadata(existing.metadata);
+      const incomingProjectName = stringProjectMetadata(event.metadata);
+      assertCompatibleProjectAttribution(existing, event, event.idempotencyKey);
       if (!sameEvent(existing, event)) {
         throw new ExternalUsageIdempotencyCollisionError(event.idempotencyKey);
       }
-      if (!existing.projectId && event.projectId) {
+      const projectId = !existing.projectId && event.projectId
+        ? event.projectId
+        : undefined;
+      const metadata = !existingProjectName && incomingProjectName
+        ? {
+            ...(
+              existing.metadata &&
+              typeof existing.metadata === "object" &&
+              !Array.isArray(existing.metadata)
+                ? existing.metadata as Record<string, unknown>
+                : {}
+            ),
+            project: incomingProjectName,
+          } as Prisma.InputJsonObject
+        : undefined;
+      if (projectId || metadata) {
         await tx.externalUsageEvent.update({
           where: { id: existing.id },
-          data: { projectId: event.projectId },
+          data: {
+            ...(projectId ? { projectId } : {}),
+            ...(metadata ? { metadata } : {}),
+          },
         });
       }
       continue;
@@ -297,6 +406,10 @@ function mergeSummaryGroup(
   }
 
   existing.eventCount += group.eventCount;
+  existing.pricedEventCount += group.pricedEventCount;
+  existing.unpricedEventCount += group.unpricedEventCount;
+  existing.unclassifiedCostEventCount += group.unclassifiedCostEventCount;
+  existing.costCoverage = classifyCostCoverage(existing);
   existing.totalCostUsd += group.totalCostUsd;
   existing.totalRequests += group.totalRequests;
   existing.totalQuantity += group.totalQuantity;
@@ -357,11 +470,16 @@ export async function summarizeExternalUsageEvents(
         sourceApp: event.sourceApp,
         environment: event.environment,
         provider: event.provider,
+        canonicalProvider: canonicalProviderKey(event.provider),
         service: event.service,
         projectId: event.projectId,
         metricType: event.metricType,
         unit: event.unit,
         eventCount: 1,
+        pricedEventCount: event.costUsd == null ? 0 : 1,
+        unpricedEventCount: event.costUsd == null ? 1 : 0,
+        unclassifiedCostEventCount: 0,
+        costCoverage: event.costUsd == null ? "unknown" : "complete",
         totalCostUsd: event.costUsd ?? 0,
         totalRequests: event.requests ?? 0,
         totalQuantity: event.quantity ?? 0,
@@ -395,6 +513,9 @@ export async function summarizeExternalUsageEvents(
             metricType: true,
             unit: true,
             eventCount: true,
+            pricedEventCount: true,
+            unpricedEventCount: true,
+            unclassifiedCostEventCount: true,
             totalCostUsd: true,
             totalRequests: true,
             totalQuantity: true,
@@ -406,15 +527,29 @@ export async function summarizeExternalUsageEvents(
       : [];
 
   for (const rollup of rollups) {
+    const hasCoverageCounts =
+      rollup.pricedEventCount != null ||
+      rollup.unpricedEventCount != null ||
+      rollup.unclassifiedCostEventCount != null;
+    const costCounts = {
+      pricedEventCount: rollup.pricedEventCount ?? 0,
+      unpricedEventCount: rollup.unpricedEventCount ?? 0,
+      unclassifiedCostEventCount: hasCoverageCounts
+        ? rollup.unclassifiedCostEventCount ?? 0
+        : rollup.eventCount,
+    };
     mergeSummaryGroup(groups, {
       sourceApp: rollup.sourceApp,
       environment: rollup.environment,
       provider: rollup.provider,
+      canonicalProvider: canonicalProviderKey(rollup.provider),
       service: rollup.service,
       projectId: rollup.projectId,
       metricType: rollup.metricType,
       unit: rollup.unit,
       eventCount: rollup.eventCount,
+      ...costCounts,
+      costCoverage: classifyCostCoverage(costCounts),
       totalCostUsd: rollup.totalCostUsd,
       totalRequests: rollup.totalRequests,
       totalQuantity: rollup.totalQuantity,
@@ -446,6 +581,9 @@ export const SUBSCRIPTION_METRIC_TYPE = "subscription";
 export interface ProviderPushedCost {
   usagePushed: number;
   subscriptionPushed: number;
+  pricedEventCount: number;
+  unpricedEventCount: number;
+  unclassifiedCostEventCount: number;
 }
 
 export async function sumMonthToDateExternalCostByProvider(
@@ -459,10 +597,10 @@ export async function sumMonthToDateExternalCostByProvider(
       by: ["provider", "metricType"],
       where: { 
         occurredAt: { gte: rawSince }, 
-        costUsd: { not: null },
         metricType: { notIn: Array.from(STATUS_METRIC_TYPES) }
       },
       _sum: { costUsd: true },
+      _count: { _all: true, costUsd: true },
     }),
     monthStart < rawCutoff
       ? prisma.externalUsageEventDailyRollup.findMany({
@@ -473,6 +611,10 @@ export async function sumMonthToDateExternalCostByProvider(
           select: {
             provider: true,
             metricType: true,
+            eventCount: true,
+            pricedEventCount: true,
+            unpricedEventCount: true,
+            unclassifiedCostEventCount: true,
             totalCostUsd: true,
           },
         })
@@ -480,22 +622,54 @@ export async function sumMonthToDateExternalCostByProvider(
   ]);
 
   const totals = new Map<string, ProviderPushedCost>();
-  const add = (provider: string, metricType: string, cost: number) => {
-    const key = provider.toLowerCase();
-    const bucket = totals.get(key) ?? { usagePushed: 0, subscriptionPushed: 0 };
+  const add = (
+    provider: string,
+    metricType: string,
+    cost: number,
+    counts: {
+      pricedEventCount: number;
+      unpricedEventCount: number;
+      unclassifiedCostEventCount: number;
+    }
+  ) => {
+    const key = normalizedProviderName(provider);
+    const bucket = totals.get(key) ?? {
+      usagePushed: 0,
+      subscriptionPushed: 0,
+      pricedEventCount: 0,
+      unpricedEventCount: 0,
+      unclassifiedCostEventCount: 0,
+    };
     if (metricType === SUBSCRIPTION_METRIC_TYPE) {
       bucket.subscriptionPushed += cost;
     } else {
       bucket.usagePushed += cost;
     }
+    bucket.pricedEventCount += counts.pricedEventCount;
+    bucket.unpricedEventCount += counts.unpricedEventCount;
+    bucket.unclassifiedCostEventCount += counts.unclassifiedCostEventCount;
     totals.set(key, bucket);
   };
 
   for (const row of rawGroups) {
-    add(row.provider, row.metricType, row._sum.costUsd ?? 0);
+    add(row.provider, row.metricType, row._sum.costUsd ?? 0, {
+      pricedEventCount: row._count.costUsd,
+      unpricedEventCount: row._count._all - row._count.costUsd,
+      unclassifiedCostEventCount: 0,
+    });
   }
   for (const rollup of rollups) {
-    add(rollup.provider, rollup.metricType, rollup.totalCostUsd);
+    const hasCoverageCounts =
+      rollup.pricedEventCount != null ||
+      rollup.unpricedEventCount != null ||
+      rollup.unclassifiedCostEventCount != null;
+    add(rollup.provider, rollup.metricType, rollup.totalCostUsd, {
+      pricedEventCount: rollup.pricedEventCount ?? 0,
+      unpricedEventCount: rollup.unpricedEventCount ?? 0,
+      unclassifiedCostEventCount: hasCoverageCounts
+        ? rollup.unclassifiedCostEventCount ?? 0
+        : rollup.eventCount,
+    });
   }
   return totals;
 }
@@ -520,10 +694,10 @@ export async function sumMonthToDateExternalCostAttribution(
       by: ["provider", "sourceApp", "projectId", "metricType"],
       where: { 
         occurredAt: { gte: rawSince }, 
-        costUsd: { not: null },
         metricType: { notIn: Array.from(STATUS_METRIC_TYPES) }
       },
       _sum: { costUsd: true },
+      _count: { _all: true, costUsd: true },
     }),
     monthStart < rawCutoff
       ? prisma.externalUsageEventDailyRollup.findMany({
@@ -536,6 +710,10 @@ export async function sumMonthToDateExternalCostAttribution(
             sourceApp: true,
             projectId: true,
             metricType: true,
+            eventCount: true,
+            pricedEventCount: true,
+            unpricedEventCount: true,
+            unclassifiedCostEventCount: true,
             totalCostUsd: true,
           },
         })
@@ -548,27 +726,64 @@ export async function sumMonthToDateExternalCostAttribution(
     sourceApp: string,
     projectId: string | null,
     metricType: string,
-    cost: number
+    cost: number,
+    counts: {
+      pricedEventCount: number;
+      unpricedEventCount: number;
+      unclassifiedCostEventCount: number;
+    }
   ) => {
-    const key = `${provider.toLowerCase()}|${sourceApp.toLowerCase()}|${projectId ?? ""}|${metricType}`;
+    const key = `${normalizedProviderName(provider)}|${sourceApp.toLowerCase()}|${projectId ?? ""}|${metricType}`;
     const existing = rows.get(key);
     if (existing) {
       existing.costUsd += cost;
+      existing.pricedEventCount += counts.pricedEventCount;
+      existing.unpricedEventCount += counts.unpricedEventCount;
+      existing.unclassifiedCostEventCount += counts.unclassifiedCostEventCount;
     } else {
-      rows.set(key, { provider, sourceApp, projectId, metricType, costUsd: cost });
+      rows.set(key, {
+        provider,
+        sourceApp,
+        projectId,
+        metricType,
+        costUsd: cost,
+        ...counts,
+      });
     }
   };
 
   for (const row of rawGroups) {
-    add(row.provider, row.sourceApp, row.projectId, row.metricType, row._sum.costUsd ?? 0);
+    add(
+      row.provider,
+      row.sourceApp,
+      row.projectId,
+      row.metricType,
+      row._sum.costUsd ?? 0,
+      {
+        pricedEventCount: row._count.costUsd,
+        unpricedEventCount: row._count._all - row._count.costUsd,
+        unclassifiedCostEventCount: 0,
+      }
+    );
   }
   for (const rollup of rollups) {
+    const hasCoverageCounts =
+      rollup.pricedEventCount != null ||
+      rollup.unpricedEventCount != null ||
+      rollup.unclassifiedCostEventCount != null;
     add(
       rollup.provider,
       rollup.sourceApp,
       rollup.projectId,
       rollup.metricType,
-      rollup.totalCostUsd
+      rollup.totalCostUsd,
+      {
+        pricedEventCount: rollup.pricedEventCount ?? 0,
+        unpricedEventCount: rollup.unpricedEventCount ?? 0,
+        unclassifiedCostEventCount: hasCoverageCounts
+          ? rollup.unclassifiedCostEventCount ?? 0
+          : rollup.eventCount,
+      }
     );
   }
   return Array.from(rows.values());
@@ -578,20 +793,16 @@ export async function syncStatusToUsageSnapshot(events: ExternalUsageEventInput[
   const statusEvents = events.filter((e) => STATUS_METRIC_TYPES.has(e.metricType));
   if (statusEvents.length === 0) return;
 
-  const providerNames = new Set(statusEvents.map((e) => e.provider.toLowerCase()));
   const allProviders = await prisma.provider.findMany({
     select: { id: true, name: true },
   });
-  const providers = allProviders.filter((p) => providerNames.has(p.name.toLowerCase()));
-
-  const providerIdByName = new Map(providers.map((p) => [p.name.toLowerCase(), p.id]));
 
   for (const event of statusEvents) {
-    const providerId = providerIdByName.get(event.provider.toLowerCase());
-    if (!providerId) continue;
+    const provider = resolveProviderIdentity(event.provider, allProviders);
+    if (!provider) continue;
 
     const data: Prisma.UsageSnapshotCreateInput = {
-      provider: { connect: { id: providerId } },
+      provider: { connect: { id: provider.id } },
       fetchedAt: event.occurredAt,
     };
 

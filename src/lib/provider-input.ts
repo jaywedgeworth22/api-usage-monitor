@@ -17,12 +17,18 @@ export interface ProviderUpdateInput {
   displayName?: string;
   apiKey?: string;
   config?: Record<string, unknown> | null;
+  secretConfigOperations?: ProviderSecretConfigOperationInput[];
   isActive?: boolean;
   refreshIntervalMin?: number;
   groupId?: string | null;
   label?: string | null;
   plan?: ProviderPlanInput;
   allocations?: { projectId: string; percentage: number }[];
+}
+
+export interface ProviderSecretConfigOperationInput {
+  path: string[];
+  action: "clear";
 }
 
 export interface ProviderPlanInput {
@@ -41,6 +47,7 @@ export interface ProviderPlanInput {
 const MAX_REFRESH_INTERVAL_MIN = 60 * 24 * 7;
 const BILLING_MODES = new Set(["actual", "estimated", "manual"]);
 const BILLING_INTERVALS = new Set(SUBSCRIPTION_INTERVALS);
+const GOOGLE_SERVICE_ACCOUNT_SECRET_PATH = "serviceAccountJson";
 
 function asRecord(value: unknown): Record<string, unknown> | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
@@ -56,6 +63,51 @@ function cleanOptionalString(value: unknown): string | undefined {
 function cleanNullableString(value: unknown): string | null | undefined {
   if (value === null) return null;
   return cleanOptionalString(value);
+}
+
+function parseSecretConfigOperations(
+  value: unknown
+): ProviderSecretConfigOperationInput[] | undefined {
+  if (value === undefined) return undefined;
+  if (!Array.isArray(value)) {
+    throw new Error("secretConfigOperations must be an array");
+  }
+
+  const seenPaths = new Set<string>();
+  return value.map((raw, index) => {
+    const operation = asRecord(raw);
+    if (!operation) {
+      throw new Error(`secretConfigOperations[${index}] must be an object`);
+    }
+    if (
+      !Array.isArray(operation.path) ||
+      operation.path.length !== 1 ||
+      operation.path[0] !== GOOGLE_SERVICE_ACCOUNT_SECRET_PATH
+    ) {
+      throw new Error(
+        `secretConfigOperations[${index}].path only supports serviceAccountJson`
+      );
+    }
+    if (operation.action !== "clear") {
+      throw new Error(
+        `secretConfigOperations[${index}].action only supports clear`
+      );
+    }
+    if (operation.value !== undefined) {
+      throw new Error(
+        `secretConfigOperations[${index}].value must be omitted for clear`
+      );
+    }
+    const pathKey = JSON.stringify(operation.path);
+    if (seenPaths.has(pathKey)) {
+      throw new Error("secretConfigOperations contains a duplicate path");
+    }
+    seenPaths.add(pathKey);
+    return {
+      path: [GOOGLE_SERVICE_ACCOUNT_SECRET_PATH],
+      action: "clear" as const,
+    };
+  });
 }
 
 function parseRefreshInterval(value: unknown, fallback = 60): number {
@@ -245,6 +297,12 @@ export function parseProviderCreateInput(body: Record<string, unknown>): Provide
     config = parsedConfig;
   }
 
+  if (body.secretConfigOperations !== undefined) {
+    throw new Error(
+      "secretConfigOperations are only supported when updating a provider"
+    );
+  }
+
   return {
     name: name.toLowerCase(),
     displayName,
@@ -282,6 +340,15 @@ export function parseProviderUpdateInput(
       if (!config) throw new Error("config must be an object");
       update.config = config;
     }
+  }
+
+  update.secretConfigOperations = parseSecretConfigOperations(
+    body.secretConfigOperations
+  );
+  if (update.config === null && update.secretConfigOperations?.length) {
+    throw new Error(
+      "secretConfigOperations cannot be combined with config: null"
+    );
   }
 
   if (body.isActive !== undefined) {

@@ -83,6 +83,10 @@ describe("summarizeExternalUsageEvents", () => {
       groups: [
         expect.objectContaining({
           eventCount: 1_007,
+          pricedEventCount: 1_002,
+          unpricedEventCount: 0,
+          unclassifiedCostEventCount: 5,
+          costCoverage: "partial",
           totalCostUsd: 1_007,
           totalRequests: 1_007,
           totalQuantity: 2_014,
@@ -139,8 +143,73 @@ describe("summarizeExternalUsageEvents", () => {
     expect(result.groups).toEqual(
       expect.arrayContaining([
         expect.objectContaining({ unit: "token", totalQuantity: 10_000, limit: 20_000 }),
-        expect.objectContaining({ unit: "request", totalRequests: 10, limit: 100 }),
+        expect.objectContaining({
+          unit: "request",
+          totalRequests: 10,
+          limit: 100,
+          costCoverage: "unknown",
+          unpricedEventCount: 1,
+        }),
       ])
     );
+  });
+
+  it("treats explicit zero as priced while preserving legacy rollups as unclassified", async () => {
+    prismaMock.externalUsageEvent.findMany.mockResolvedValueOnce([
+      {
+        id: "zero-cost",
+        sourceApp: "congress-trade",
+        environment: "prod",
+        provider: "gemini",
+        service: "gemini-3.5-flash",
+        projectId: null,
+        metricType: "request",
+        unit: "request",
+        quantity: 1,
+        costUsd: 0,
+        requests: 1,
+        limit: null,
+        limitWindow: null,
+        occurredAt: new Date("2026-07-13T00:00:00.000Z"),
+      },
+    ]);
+    prismaMock.externalUsageEventDailyRollup.findMany.mockResolvedValue([
+      {
+        sourceApp: "congress-trade",
+        environment: "prod",
+        provider: "gemini",
+        service: "gemini-3.5-flash",
+        projectId: null,
+        metricType: "request",
+        unit: "request",
+        eventCount: 3,
+        pricedEventCount: null,
+        unpricedEventCount: null,
+        unclassifiedCostEventCount: null,
+        totalCostUsd: 0,
+        totalRequests: 3,
+        totalQuantity: 3,
+        maxLimit: null,
+        limitWindow: null,
+        latestOccurredAt: new Date("2026-06-30T00:00:00.000Z"),
+      },
+    ]);
+
+    const result = await summarizeExternalUsageEvents(
+      new Date("2026-06-01T00:00:00.000Z"),
+      new Date("2026-07-01T00:00:00.000Z")
+    );
+
+    expect(result.groups).toEqual([
+      expect.objectContaining({
+        provider: "gemini",
+        canonicalProvider: "google-ai",
+        totalCostUsd: 0,
+        pricedEventCount: 1,
+        unpricedEventCount: 0,
+        unclassifiedCostEventCount: 3,
+        costCoverage: "partial",
+      }),
+    ]);
   });
 });

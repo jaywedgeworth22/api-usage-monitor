@@ -5,6 +5,12 @@ import BalanceBadge from "./BalanceBadge";
 import { isExternalBillingStale, type ExternalBillingRecord } from "./ExternalBillingDetails";
 import ProviderIntegrationInfo, { publicConfigFieldNames } from "./ProviderIntegrationInfo";
 
+export type ProviderCostCoverage =
+  | "complete"
+  | "partial"
+  | "unknown"
+  | "legacy_unknown";
+
 interface ProviderCardProps {
   id: string;
   name: string;
@@ -19,6 +25,11 @@ interface ProviderCardProps {
   estimatedMonthlyCostUsd?: number;
   projectedEomUsd?: number;
   spentUsd?: number;
+  spendCoverage?: ProviderCostCoverage;
+  pushedCostCoverage?: ProviderCostCoverage;
+  pushedPricedEventCount?: number;
+  pushedUnpricedEventCount?: number;
+  pushedUnclassifiedCostEventCount?: number;
   externalBilling?: ExternalBillingRecord[];
   billingMode?: "actual" | "estimated" | "manual";
   alerts?: {
@@ -78,6 +89,9 @@ export default function ProviderCard({
   estimatedMonthlyCostUsd = 0,
   projectedEomUsd = 0,
   spentUsd,
+  spendCoverage,
+  pushedUnpricedEventCount = 0,
+  pushedUnclassifiedCostEventCount = 0,
   externalBilling = [],
   billingMode = "manual",
   alerts = [],
@@ -91,6 +105,13 @@ export default function ProviderCard({
   const openAlerts = alerts.filter((alert) => alert.severity !== "info");
   const hasCritical = openAlerts.some((alert) => alert.severity === "critical");
   const connectedBilling = externalBilling[0];
+  const resolvedSpendCoverage: ProviderCostCoverage =
+    spendCoverage ??
+    (spentUsd != null || latestSnapshot?.totalCost != null ? "complete" : "unknown");
+  const knownSpendUsd =
+    spentUsd ?? latestSnapshot?.totalCost ?? estimatedMonthlyCostUsd;
+  const unpricedEventCount =
+    pushedUnpricedEventCount + pushedUnclassifiedCostEventCount;
   const staleBillingCount = externalBilling.filter((record) =>
     isExternalBillingStale(
       record,
@@ -197,10 +218,43 @@ export default function ProviderCard({
           </p>
         </div>
         <div className={(isCreditBased || hasCredits) ? "col-span-2" : ""}>
-          <p className="mb-1 text-xs text-gray-500 dark:text-gray-400">Tracked MTD / projected EOM</p>
-          <p className="text-sm font-medium text-gray-900 dark:text-gray-100">
-            {formatUsd(spentUsd ?? estimatedMonthlyCostUsd)} <span className="font-normal text-gray-400 dark:text-gray-500">/ {formatUsd(projectedEomUsd)}</span>
+          <p className="mb-1 text-xs text-gray-500 dark:text-gray-400">
+            {resolvedSpendCoverage === "complete"
+              ? "Tracked MTD / projected EOM"
+              : resolvedSpendCoverage === "partial"
+                ? "Known MTD / known-cost projection"
+                : "Tracked MTD / projection"}
           </p>
+          <p className="text-sm font-medium text-gray-900 dark:text-gray-100">
+            {resolvedSpendCoverage === "unknown" || resolvedSpendCoverage === "legacy_unknown" ? (
+              <>
+                Cost not reported{" "}
+                <span className="font-normal text-gray-400 dark:text-gray-500">
+                  / Projection unavailable
+                </span>
+              </>
+            ) : (
+              <>
+                {formatUsd(knownSpendUsd)}
+                {resolvedSpendCoverage === "partial" ? " known" : ""}{" "}
+                <span className="font-normal text-gray-400 dark:text-gray-500">
+                  / {formatUsd(projectedEomUsd)}
+                  {resolvedSpendCoverage === "partial" ? " from known costs" : ""}
+                </span>
+              </>
+            )}
+          </p>
+          {resolvedSpendCoverage === "partial" && unpricedEventCount > 0 && (
+            <p className="text-xs text-amber-600 dark:text-amber-300">
+              {unpricedEventCount} unpriced event{unpricedEventCount === 1 ? "" : "s"}
+            </p>
+          )}
+          {(resolvedSpendCoverage === "unknown" || resolvedSpendCoverage === "legacy_unknown") &&
+            unpricedEventCount > 0 && (
+              <p className="text-xs text-amber-600 dark:text-amber-300">
+                {unpricedEventCount} usage event{unpricedEventCount === 1 ? "" : "s"} without cost
+              </p>
+            )}
           <p className="text-xs uppercase text-gray-400">{billingMode}</p>
         </div>
       </div>

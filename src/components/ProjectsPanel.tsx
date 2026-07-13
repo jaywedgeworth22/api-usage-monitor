@@ -1,5 +1,6 @@
 import React from "react";
 import Link from "next/link";
+import type { ProviderCostCoverage } from "@/components/ProviderCard";
 
 export interface ProjectBudgetStatus {
   id: string;
@@ -7,6 +8,12 @@ export interface ProjectBudgetStatus {
   description: string | null;
   monthlyBudgetUsd: number | null;
   spentUsd: number;
+  projectedEomUsd?: number;
+  spendCoverage: ProviderCostCoverage;
+  pricedEventCount: number;
+  unpricedEventCount: number;
+  unclassifiedCostEventCount: number;
+  incompleteAllocatedProviderCount: number;
   directUsd?: number;
   allocatedUsd?: number;
   remainingUsd: number | null;
@@ -55,6 +62,12 @@ export default function ProjectsPanel({ projects, summary }: ProjectsPanelProps)
       <div className="divide-y divide-gray-100">
         {projects.map((project) => {
           const usagePercent = project.percentUsed != null ? project.percentUsed * 100 : null;
+          const spendCoverage = project.spendCoverage ?? "unknown";
+          const hasKnownSpend =
+            spendCoverage === "complete" || spendCoverage === "partial";
+          const unpricedEventCount =
+            (project.unpricedEventCount ?? 0) +
+            (project.unclassifiedCostEventCount ?? 0);
           return (
             <div key={project.id} className="px-6 py-4">
               <div className="flex items-start justify-between gap-4">
@@ -66,13 +79,27 @@ export default function ProjectsPanel({ projects, summary }: ProjectsPanelProps)
                 </div>
                 <div className="text-right shrink-0">
                   <p className="text-sm font-semibold text-gray-900">
-                    {formatUsd(project.spentUsd)}
+                    {hasKnownSpend
+                      ? `${formatUsd(project.spentUsd)}${spendCoverage === "partial" ? " known" : ""}`
+                      : spendCoverage === "legacy_unknown"
+                        ? "Historical cost unknown"
+                        : "Cost not reported"}
                   </p>
-                  {(project.directUsd != null || project.allocatedUsd != null) && (
+                  {hasKnownSpend && (project.directUsd != null || project.allocatedUsd != null) && (
                     <p className="text-[10px] text-gray-500">
                       {formatUsd(project.directUsd ?? 0)} direct
                       {" · "}
                       {formatUsd(project.allocatedUsd ?? 0)} allocated
+                    </p>
+                  )}
+                  {unpricedEventCount > 0 && (
+                    <p className="text-[10px] text-amber-600">
+                      {unpricedEventCount} unpriced event{unpricedEventCount === 1 ? "" : "s"}
+                    </p>
+                  )}
+                  {(project.incompleteAllocatedProviderCount ?? 0) > 0 && (
+                    <p className="text-[10px] text-amber-600">
+                      {project.incompleteAllocatedProviderCount} allocated provider cost{project.incompleteAllocatedProviderCount === 1 ? "" : "s"} incomplete
                     </p>
                   )}
                   {project.monthlyBudgetUsd != null && (
@@ -82,11 +109,11 @@ export default function ProjectsPanel({ projects, summary }: ProjectsPanelProps)
                   )}
                 </div>
               </div>
-              {usagePercent != null && (
+              {usagePercent != null && hasKnownSpend && (
                 <div className="mt-3">
                   <div
                     role="progressbar"
-                    aria-label={`${project.name} monthly budget used`}
+                    aria-label={`${project.name} ${spendCoverage === "partial" ? "known " : ""}monthly budget used`}
                     aria-valuemin={0}
                     aria-valuemax={100}
                     aria-valuenow={Math.min(usagePercent, 100)}

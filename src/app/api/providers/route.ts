@@ -6,6 +6,7 @@ import { parseProviderCreateInput, readJsonBody } from "@/lib/provider-input";
 import { buildProviderAlertState } from "@/lib/provider-alerts";
 import { computeBudgetStatus } from "@/lib/budget-status";
 import { toPrismaProviderPlanData } from "@/lib/provider-plan";
+import { canonicalProviderKey } from "@/lib/provider-identity";
 import {
   hasProviderSecrets,
   providerConfigForClient,
@@ -110,12 +111,12 @@ export async function GET() {
   const budgetByProviderId = new Map(
     budget.providers.map((entry) => [entry.id, entry])
   );
-  const duplicateIdsByName = new Map<string, string[]>();
+  const duplicateIdsByCanonicalName = new Map<string, string[]>();
   for (const provider of providers) {
-    const key = provider.name.trim().toLowerCase();
-    const ids = duplicateIdsByName.get(key) ?? [];
+    const key = canonicalProviderKey(provider.name);
+    const ids = duplicateIdsByCanonicalName.get(key) ?? [];
     ids.push(provider.id);
-    duplicateIdsByName.set(key, ids);
+    duplicateIdsByCanonicalName.set(key, ids);
   }
 
   // Flatten latest snapshot into the provider object
@@ -130,8 +131,8 @@ export async function GET() {
       latestSnapshot,
     });
     const canonicalBudget = budgetByProviderId.get(p.id);
-    const duplicateProviderIds = duplicateIdsByName.get(
-      p.name.trim().toLowerCase()
+    const duplicateProviderIds = duplicateIdsByCanonicalName.get(
+      canonicalProviderKey(p.name)
     ) ?? [];
 
     return {
@@ -149,6 +150,14 @@ export async function GET() {
       snapshotCostIncludesUnknownFixed:
         canonicalBudget?.snapshotCostIncludesUnknownFixed ?? false,
       pushedMonthToDateUsd: canonicalBudget?.pushedMonthToDateUsd ?? 0,
+      pushedCostCoverage: canonicalBudget?.pushedCostCoverage ?? "unknown",
+      pushedPricedEventCount: canonicalBudget?.pushedPricedEventCount ?? 0,
+      pushedUnpricedEventCount: canonicalBudget?.pushedUnpricedEventCount ?? 0,
+      pushedUnclassifiedCostEventCount:
+        canonicalBudget?.pushedUnclassifiedCostEventCount ?? 0,
+      spendCoverage:
+        canonicalBudget?.spendCoverage ??
+        (latestSnapshot?.totalCost != null ? "complete" : "unknown"),
       subscriptionMonthToDateUsd:
         canonicalBudget?.subscriptionMonthToDateUsd ?? 0,
       fixedMonthlyCostUsd: canonicalBudget?.fixedMonthlyCostUsd ?? 0,

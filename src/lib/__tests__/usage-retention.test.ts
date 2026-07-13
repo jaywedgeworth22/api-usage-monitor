@@ -208,6 +208,15 @@ describe("usage-retention wrapper", () => {
     );
     expect(prismaMock.usageSnapshotDailyRollup.upsert).toHaveBeenCalledTimes(1);
     expect(prismaMock.externalUsageEventDailyRollup.upsert).toHaveBeenCalledTimes(1);
+    expect(prismaMock.externalUsageEventDailyRollup.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        create: expect.objectContaining({
+          pricedEventCount: 2,
+          unpricedEventCount: 0,
+          unclassifiedCostEventCount: 0,
+        }),
+      })
+    );
     expect(prismaMock.externalUsageEventTombstone.upsert).toHaveBeenCalledTimes(2);
     expect(prismaMock.externalUsageEventTombstone.deleteMany).not.toHaveBeenCalled();
     expect(prismaMock.usageSnapshot.deleteMany).toHaveBeenCalledWith({

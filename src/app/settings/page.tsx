@@ -3,7 +3,9 @@
 import { Suspense, useState, useEffect, useCallback, useRef } from "react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
-import AddProviderModal from "@/components/AddProviderModal";
+import AddProviderModal, {
+  type ProviderSecretConfigOperation,
+} from "@/components/AddProviderModal";
 import AddProjectModal, { Project } from "@/components/AddProjectModal";
 import AddSubscriptionModal, { type SubscriptionFormValue } from "@/components/AddSubscriptionModal";
 import SubscriptionsPanel, { type SubscriptionRow } from "@/components/SubscriptionsPanel";
@@ -11,6 +13,7 @@ import ProviderTable from "@/components/ProviderTable";
 import ProjectTable from "@/components/ProjectTable";
 import type { ExternalBillingRecord } from "@/components/ExternalBillingDetails";
 import PaidServicesPanel from "@/components/PaidServicesPanel";
+import type { ProviderCostCoverage } from "@/components/ProviderCard";
 
 export type BillingMode = "actual" | "estimated" | "manual";
 type SettingsTab = "connections" | "services" | "projects";
@@ -52,6 +55,11 @@ export interface Provider {
   estimatedMonthlyCostUsd: number;
   spentUsd?: number;
   projectedEomUsd?: number;
+  spendCoverage: ProviderCostCoverage;
+  pushedCostCoverage: ProviderCostCoverage;
+  pushedPricedEventCount: number;
+  pushedUnpricedEventCount: number;
+  pushedUnclassifiedCostEventCount: number;
   billingMode: BillingMode;
   createdAt: string;
   latestSnapshot: {
@@ -155,6 +163,7 @@ function SettingsPageContent() {
     type: string;
     apiKey?: string;
     config?: Record<string, unknown>;
+    secretConfigOperations?: ProviderSecretConfigOperation[];
     label?: string | null;
     refreshIntervalMin?: number;
     plan?: ProviderPlan | null;
@@ -168,6 +177,7 @@ function SettingsPageContent() {
           displayName: provider.displayName,
           apiKey: provider.apiKey,
           config: provider.config,
+          secretConfigOperations: provider.secretConfigOperations,
           label: provider.label,
           refreshIntervalMin: provider.refreshIntervalMin,
           plan: provider.plan,
@@ -299,7 +309,21 @@ function SettingsPageContent() {
       const res = await fetch(`/api/providers/${id}/fetch`, {
         method: "POST",
       });
-      if (!res.ok) throw new Error("Failed to fetch");
+      if (!res.ok) {
+        const body = (await res.json().catch(() => null)) as {
+          error?: unknown;
+          code?: unknown;
+        } | null;
+        const message =
+          typeof body?.error === "string" && body.error.trim()
+            ? body.error.trim()
+            : "Failed to fetch provider";
+        const code =
+          typeof body?.code === "string" && body.code.trim()
+            ? body.code.trim()
+            : null;
+        throw new Error(code ? `${message} (${code})` : message);
+      }
       await fetchProviders();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to fetch");

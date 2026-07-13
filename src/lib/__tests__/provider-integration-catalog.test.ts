@@ -43,6 +43,16 @@ describe("provider integration catalog", () => {
     expect(getProviderIntegrationProfile("unknown").name).toBe("generic");
   });
 
+  it("documents Cloudflare Billing Read auth and restricted PayGo behavior", () => {
+    const cloudflare = getProviderIntegrationProfile("cloudflare");
+
+    expect(cloudflare.billing.visibility).toBe("actual");
+    expect(cloudflare.credentialInputs.join(" ")).toMatch(/Account ID/i);
+    expect(cloudflare.credentialInputs.join(" ")).toMatch(/scoped API token/i);
+    expect(cloudflare.cannotAdd.join(" ")).toMatch(/error 10000/i);
+    expect(cloudflare.limitations.join(" ")).toMatch(/Global API key/i);
+  });
+
   it("exposes required adapter config and does not solicit unused blind-adapter keys", () => {
     const byName = new Map(BUILT_IN_PROVIDERS.map((provider) => [provider.name, provider]));
     expect(byName.get("langfuse")?.needsConfig?.fields.map((field) => field.key)).toEqual([
@@ -59,6 +69,15 @@ describe("provider integration catalog", () => {
       "projectId",
       "host",
     ]);
+    expect(byName.get("google-ai")?.needsConfig?.fields.map((field) => field.key)).toEqual([
+      "billingDataset",
+      "serviceAccountJson",
+      "googleProjectId",
+      "billingTable",
+    ]);
+    expect(
+      byName.get("google-ai")?.needsConfig?.fields.find((field) => field.key === "serviceAccountJson")?.type
+    ).toBe("textarea");
 
     for (const name of [
       "voyage",

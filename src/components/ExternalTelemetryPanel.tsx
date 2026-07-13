@@ -2,16 +2,28 @@
 
 import { useState } from "react";
 
+export type ExternalCostCoverage = "complete" | "partial" | "unknown" | "legacy_unknown";
+
 export interface ExternalUsageGroup {
   sourceApp: string;
   environment: string | null;
   provider: string;
+  canonicalProvider: string;
   service: string | null;
   projectId: string | null;
   metricType: string;
   unit: string | null;
   projectName?: string | null;
+  matchedProvider?: {
+    id: string;
+    name: string;
+    displayName: string;
+  } | null;
   eventCount: number;
+  pricedEventCount: number;
+  unpricedEventCount: number;
+  unclassifiedCostEventCount: number;
+  costCoverage: ExternalCostCoverage;
   totalCostUsd: number;
   totalRequests: number;
   totalQuantity: number;
@@ -23,6 +35,10 @@ export interface ExternalUsageGroup {
 export interface ExternalUsageSummary {
   days: number;
   totalCostUsd: number;
+  pricedEventCount: number;
+  unpricedEventCount: number;
+  unclassifiedCostEventCount: number;
+  costCoverage: ExternalCostCoverage;
   totalRequests: number;
   eventCount: number;
   groups: ExternalUsageGroup[];
@@ -30,6 +46,34 @@ export interface ExternalUsageSummary {
 
 interface ExternalTelemetryPanelProps {
   usageSummary: ExternalUsageSummary;
+}
+
+const usd = new Intl.NumberFormat("en-US", {
+  style: "currency",
+  currency: "USD",
+});
+
+function costLabel(
+  totalCostUsd: number,
+  coverage: ExternalCostCoverage,
+  unpricedEventCount: number,
+  unclassifiedCostEventCount: number
+): string {
+  if (coverage === "complete") return usd.format(totalCostUsd);
+  if (coverage === "partial") {
+    const unknownEvents = unpricedEventCount + unclassifiedCostEventCount;
+    return `${usd.format(totalCostUsd)} known · ${unknownEvents} unpriced`;
+  }
+  if (coverage === "legacy_unknown") {
+    return totalCostUsd !== 0
+      ? `${usd.format(totalCostUsd)} recorded · historical coverage unknown`
+      : "Historical cost unknown";
+  }
+  return "Cost not reported";
+}
+
+function identityToken(value: string): string {
+  return value.trim().toLowerCase().replace(/[^a-z0-9]+/g, "");
 }
 
 export default function ExternalTelemetryPanel({ usageSummary }: ExternalTelemetryPanelProps) {
@@ -51,10 +95,12 @@ export default function ExternalTelemetryPanel({ usageSummary }: ExternalTelemet
         </div>
         <div className="text-right shrink-0">
           <p className="text-sm font-semibold text-gray-900 dark:text-gray-100">
-            {new Intl.NumberFormat("en-US", {
-              style: "currency",
-              currency: "USD",
-            }).format(externalCost)}
+            {costLabel(
+              externalCost,
+              usageSummary.costCoverage,
+              usageSummary.unpricedEventCount,
+              usageSummary.unclassifiedCostEventCount
+            )}
           </p>
           <p className="text-xs text-gray-500 dark:text-gray-400">
             {new Intl.NumberFormat("en-US").format(externalRequests)} requests
@@ -124,18 +170,25 @@ export default function ExternalTelemetryPanel({ usageSummary }: ExternalTelemet
                       <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">
                         {group.service || "API"} · {displayedUnit}
                       </p>
+                      {group.matchedProvider &&
+                        identityToken(group.matchedProvider.name) !==
+                          identityToken(group.provider) && (
+                        <p className="text-[10px] text-blue-600 dark:text-blue-400 mt-1">
+                          Matched to {group.matchedProvider.displayName}
+                        </p>
+                      )}
                     </td>
                     <td className="px-6 py-4 text-right" data-label="Usage">
                       <p className="text-sm font-semibold text-gray-900 dark:text-gray-100">
                         {new Intl.NumberFormat("en-US").format(displayedUsage)}
                       </p>
                       <p className="text-xs text-gray-500 dark:text-gray-400">
-                        {group.totalCostUsd !== 0
-                          ? new Intl.NumberFormat("en-US", {
-                              style: "currency",
-                              currency: "USD",
-                            }).format(group.totalCostUsd)
-                          : `${group.eventCount} events`}
+                        {costLabel(
+                          group.totalCostUsd,
+                          group.costCoverage,
+                          group.unpricedEventCount,
+                          group.unclassifiedCostEventCount
+                        )}
                       </p>
                     </td>
                     <td className="px-6 py-4" data-label="Quota">

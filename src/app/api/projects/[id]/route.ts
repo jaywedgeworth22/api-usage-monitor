@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { readJsonBody } from "@/lib/provider-input";
+import { canonicalProjectKey } from "@/lib/provider-identity";
 
 function cleanOptionalString(value: unknown): string | undefined {
   if (typeof value !== "string") return undefined;
@@ -41,14 +42,14 @@ export async function PUT(
     // route + project-resolver.ts for why case-insensitive uniqueness matters).
     // The unique `nameKey` column is the atomic guarantee; this is the friendly
     // pre-check. A P2002 from the update is caught below as a backstop.
-    const nameKey = name.trim().toLowerCase();
+    const nameKey = canonicalProjectKey(name);
     const others = await prisma.project.findMany({
       where: { id: { not: id } },
       select: { name: true },
     });
-    if (others.some((p) => p.name.trim().toLowerCase() === nameKey)) {
+    if (others.some((p) => canonicalProjectKey(p.name) === nameKey)) {
       return NextResponse.json(
-        { error: "Project name already exists (names are case-insensitive)" },
+        { error: "Project name already exists or is an equivalent attribution alias" },
         { status: 409 }
       );
     }

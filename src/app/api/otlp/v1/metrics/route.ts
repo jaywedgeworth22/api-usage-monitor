@@ -10,6 +10,7 @@ import { mapClaudeCodeMetrics } from "@/lib/otlp/claude-code-mapper";
 import { mapSystemMetrics } from "@/lib/otlp/system-mapper";
 import { ensureAnthropicProviderSeeded } from "@/lib/otlp/ensure-anthropic-provider";
 import { resolveProjectIdsByName } from "@/lib/project-resolver";
+import { canonicalProjectKey } from "@/lib/provider-identity";
 import {
   OtlpMetricStateCapacityError,
   persistOtlpUsageEvents,
@@ -158,7 +159,7 @@ export async function POST(request: NextRequest) {
             provider: event.provider,
             service: event.service,
             projectId: event.projectName
-              ? projectIdByName.get(event.projectName.trim().toLowerCase()) ?? null
+              ? projectIdByName.get(canonicalProjectKey(event.projectName)) ?? null
               : null,
             label: event.label,
             keyRef: event.keyRef,

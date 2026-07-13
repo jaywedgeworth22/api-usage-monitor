@@ -1,4 +1,28 @@
 import { prisma } from "@/lib/prisma";
+import { canonicalProjectKey } from "@/lib/provider-identity";
+
+export interface ProjectIdentityCandidate {
+  id: string;
+  name: string;
+  createdAt: Date | string;
+}
+
+/** Oldest canonical project wins, with id as a total-order tie-break. */
+export function buildCanonicalProjectIdMap(
+  projects: readonly ProjectIdentityCandidate[]
+): Map<string, string> {
+  const ordered = [...projects].sort((left, right) => {
+    const byCreatedAt =
+      new Date(left.createdAt).getTime() - new Date(right.createdAt).getTime();
+    return byCreatedAt || left.id.localeCompare(right.id);
+  });
+  const byName = new Map<string, string>();
+  for (const project of ordered) {
+    const key = canonicalProjectKey(project.name);
+    if (key && !byName.has(key)) byName.set(key, project.id);
+  }
+  return byName;
+}
 
 // Resolves producer-supplied project identifiers (a plain name/key sent via
 // OTEL_RESOURCE_ATTRIBUTES `project` for Claude Code, or the top-level
@@ -18,7 +42,7 @@ export async function resolveProjectIdsByName(
 ): Promise<Map<string, string>> {
   const wanted = new Set<string>();
   for (const name of names) {
-    const key = name.trim().toLowerCase();
+    const key = canonicalProjectKey(name);
     if (key) wanted.add(key);
   }
   if (wanted.size === 0) return new Map();
@@ -30,13 +54,10 @@ export async function resolveProjectIdsByName(
   // deterministically — with id as a total-order tiebreak so even identical
   // createdAt timestamps can't make resolution non-deterministic.
   const projects = await prisma.project.findMany({
-    select: { id: true, name: true, nameKey: true },
+    select: { id: true, name: true, createdAt: true },
     orderBy: [{ createdAt: "asc" }, { id: "asc" }],
   });
-  const byName = new Map<string, string>();
-  for (const project of projects) {
-    const key = project.nameKey ?? project.name.trim().toLowerCase();
-    if (wanted.has(key) && !byName.has(key)) byName.set(key, project.id);
-  }
-  return byName;
+  return new Map(
+    [...buildCanonicalProjectIdMap(projects)].filter(([key]) => wanted.has(key))
+  );
 }

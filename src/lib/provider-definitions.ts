@@ -17,6 +17,8 @@ export interface ProviderDefinition {
       placeholder: string;
       required?: boolean;
       type?: string;
+      advanced?: boolean;
+      options?: { value: string; label: string }[];
     }[];
   };
 }
@@ -36,7 +38,12 @@ export function hasConfiguredProviderField(
 const DEFINITIONS = [
   { name: "openai", displayName: "OpenAI", type: "builtin", category: "LLM/AI", helpNote: "For authoritative organization cost, add an Organization Admin key below. It is encrypted separately from the normal API key.", needsConfig: { fields: [{ key: "adminApiKey", label: "Organization Admin key (optional)", placeholder: "sk-admin-...", type: "password" }] } },
   { name: "anthropic", displayName: "Anthropic", type: "builtin", category: "LLM/AI", helpNote: "The Usage & Cost API requires an organization Admin API key. A standard Messages API key cannot read billing.", needsConfig: { fields: [{ key: "adminApiKey", label: "Organization Admin API key (optional)", placeholder: "sk-ant-admin...", type: "password" }] } },
-  { name: "google-ai", displayName: "Google AI", type: "builtin", category: "LLM/AI", helpNote: "Google AI Studio has no public usage API. Usage is visible at aistudio.google.com/app/apikey. Configure Google Cloud Billing for spend tracking." },
+  { name: "google-ai", displayName: "Google AI", type: "builtin", category: "LLM/AI", helpNote: "For actual Gemini API spend, enter the standard Cloud Billing export dataset plus one read-only service-account JSON credential. The query project is inferred; project/table fields are only needed when discovery is ambiguous. AI Studio prepaid balance, tier, and renewal are not exposed programmatically.", needsConfig: { fields: [
+    { key: "billingDataset", label: "Billing export dataset (optional)", placeholder: "billing-project.billing_export" },
+    { key: "serviceAccountJson", label: "Read-only service-account JSON (optional)", placeholder: "Paste the complete service-account JSON", type: "textarea" },
+    { key: "googleProjectId", label: "Gemini project ID (optional)", placeholder: "Only needed when multiple projects have Gemini costs", advanced: true },
+    { key: "billingTable", label: "Standard billing table ID (optional)", placeholder: "gcp_billing_export_v1_...", advanced: true },
+  ] } },
   { name: "deepseek", displayName: "DeepSeek", type: "builtin", category: "LLM/AI", helpNote: "Reads the official prepaid/granted balance endpoint; DeepSeek does not expose invoice or subscription status here." },
   { name: "xai", displayName: "xAI (Grok)", type: "builtin", category: "LLM/AI", helpNote: "Reads prepaid balance, postpaid invoice preview, billing cycle, and spending limits through the Management API.", needsConfig: { fields: [{ key: "teamId", label: "Team ID", placeholder: "xAI team ID", required: true }, { key: "managementKey", label: "Management API key (optional)", placeholder: "Management API key", type: "password" }] } },
   { name: "mistral", displayName: "Mistral AI", type: "builtin", category: "LLM/AI", helpNote: "Reads organization usage, payment/limit status, spend cap, and rate limits with a Backoffice Admin key.", needsConfig: { fields: [{ key: "adminApiKey", label: "Backoffice Admin API key (optional)", placeholder: "Admin API key", type: "password" }] } },
