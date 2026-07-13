@@ -69,6 +69,25 @@ async function main() {
         : "Schema migrated successfully."
     );
   } catch (err) {
+    const outputText = `${err.stdout || ""}\n${err.stderr || ""}`;
+    const bulletLines = outputText.split("\n").filter(l => /^\s*[•\-*]/.test(l));
+    const onlyLitestreamWarnings = bulletLines.length > 0 && bulletLines.every(l => l.includes("_litestream_"));
+
+    if (onlyLitestreamWarnings) {
+      log("Data loss warning is strictly confined to Litestream internal tables (_litestream_*). Retrying with --accept-data-loss...");
+      try {
+        const forceOutput = run("npx prisma db push --accept-data-loss");
+        process.stdout.write(forceOutput);
+        log("Schema migrated successfully (with --accept-data-loss for Litestream tables).");
+        return;
+      } catch (forceErr) {
+        error("prisma db push --accept-data-loss failed:");
+        if (forceErr.stdout) console.error(forceErr.stdout);
+        if (forceErr.stderr) console.error(forceErr.stderr);
+        process.exit(1);
+      }
+    }
+
     error("prisma db push refused to apply the schema changes:");
     if (err.stdout) console.error(err.stdout);
     if (err.stderr) console.error(err.stderr);
