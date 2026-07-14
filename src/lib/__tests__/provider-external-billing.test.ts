@@ -103,4 +103,102 @@ describe("reconcileProviderExternalBilling", () => {
     expect(rows).toHaveLength(1);
     expect(rows[0]).toMatchObject({ externalId: "sub_2", status: "canceled" });
   });
+
+  it("replaces stale Google pending identities after a complete empty query", async () => {
+    await reconcileProviderExternalBilling(providerId, {
+      source: "google-cloud-billing-export",
+      authoritative: false,
+      records: [
+        {
+          externalId: "gemini-mtd:unattributed",
+          kind: "billing_period",
+          serviceName: "Gemini API",
+          status: "pending",
+          amountUsd: null,
+        },
+        {
+          externalId: "gemini-sku:unattributed:sku-old:requests",
+          kind: "billing_period",
+          serviceName: "Gemini API",
+          status: "active",
+          amountUsd: 4.25,
+        },
+      ],
+    });
+
+    await reconcileProviderExternalBilling(providerId, {
+      source: "google-cloud-billing-export",
+      authoritative: true,
+      records: [
+        {
+          externalId: "gemini-mtd:gen-lang-client-0280782620",
+          kind: "billing_period",
+          serviceName: "Gemini API",
+          planName: "Cloud Billing export",
+          status: "pending",
+          amountUsd: null,
+        },
+      ],
+    });
+
+    expect(await prisma.providerExternalBilling.findMany()).toEqual([
+      expect.objectContaining({
+        source: "google-cloud-billing-export",
+        externalId: "gemini-mtd:gen-lang-client-0280782620",
+        status: "pending",
+        amountUsd: null,
+      }),
+    ]);
+  });
+
+  it("preserves prior Google rows while export table discovery is incomplete", async () => {
+    await reconcileProviderExternalBilling(providerId, {
+      source: "google-cloud-billing-export",
+      authoritative: true,
+      records: [
+        {
+          externalId: "gemini-mtd:project-a",
+          kind: "billing_period",
+          serviceName: "Gemini API",
+          status: "active",
+          amountUsd: 8.25,
+        },
+      ],
+    });
+
+    await reconcileProviderExternalBilling(providerId, {
+      source: "google-cloud-billing-export",
+      authoritative: false,
+      records: [
+        {
+          externalId: "gemini-mtd:pending",
+          kind: "billing_period",
+          serviceName: "Gemini API",
+          status: "pending",
+          amountUsd: null,
+        },
+      ],
+    });
+
+    expect(
+      (await prisma.providerExternalBilling.findMany({
+        orderBy: { externalId: "asc" },
+      })).map((row) => ({
+        externalId: row.externalId,
+        status: row.status,
+        amountUsd: row.amountUsd,
+      }))
+    ).toEqual([
+      {
+        externalId: "gemini-mtd:pending",
+        status: "pending",
+        amountUsd: null,
+      },
+      {
+        externalId: "gemini-mtd:project-a",
+        status: "active",
+        amountUsd: 8.25,
+      },
+    ]);
+  });
 });

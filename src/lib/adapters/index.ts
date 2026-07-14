@@ -4,7 +4,7 @@ import {
   mergeProviderConfig,
   splitProviderConfig,
 } from "@/lib/provider-secret-config";
-import { unsupportedError } from "./helpers";
+import { configurationError, unsupportedError } from "./helpers";
 import type { Provider } from "@prisma/client";
 import type { BuiltInProviderName } from "@/lib/provider-definitions";
 import type { UsageResult } from "./openai";
@@ -143,19 +143,19 @@ export async function fetchProviderUsage(
 
   if (providerType === "custom") {
     adapter = adapters["custom"];
-  } else if (providerType === "generic") {
+  } else if (providerType === "generic" || providerType === "push") {
     unsupportedError(
-      `${provider.name}: generic providers are manual-only and have no poll adapter`
+      `${provider.name}: ${providerType} providers are manual/push-only and have no poll adapter`
     );
   } else if (providerType === "builtin") {
     const builtinAdapter =
       providerName === "custom" ? undefined : adapters[providerName];
     if (!builtinAdapter) {
-      unsupportedError(`No built-in adapter found for provider: ${provider.name}`);
+      configurationError(`No built-in adapter found for provider: ${provider.name}`);
     }
     adapter = builtinAdapter;
   } else {
-    unsupportedError(`Unsupported provider type: ${provider.type}`);
+    configurationError(`Unsupported provider type: ${provider.type}`);
   }
 
   const apiKey = provider.apiKey ? decrypt(provider.apiKey) : "";

@@ -480,6 +480,43 @@ describe("buildBillingInventory", () => {
     expect(inventory.summary.automaticRecords).toBe(0);
   });
 
+  it("does not count a pending provider billing placeholder as an active service", () => {
+    const inventory = buildBillingInventory(
+      [
+        provider({
+          externalBilling: [
+            {
+              source: "google-cloud-billing-export",
+              externalId: "gemini-mtd:project-a",
+              kind: "billing_period",
+              serviceName: "Gemini API",
+              planName: "Cloud Billing export",
+              status: "pending",
+              amountUsd: null,
+              currency: "USD",
+              billingInterval: null,
+              currentPeriodStart: "2026-07-01T00:00:00.000Z",
+              currentPeriodEnd: null,
+              nextRenewalAt: null,
+              requestLimit: null,
+              requestLimitWindow: null,
+              spendLimitUsd: null,
+              spendLimitWindow: null,
+              syncedAt: "2026-07-12T11:00:00.000Z",
+            },
+          ],
+        }),
+      ],
+      [],
+      NOW
+    );
+
+    expect(inventory.items).toHaveLength(1);
+    expect(inventory.items[0].status).toBe("pending");
+    expect(inventory.summary.automaticRecords).toBe(1);
+    expect(inventory.summary.activeServices).toBe(0);
+  });
+
   it("classifies providers with automatic capability but no synced record separately from manual providers", () => {
     const inventory = buildBillingInventory(
       [

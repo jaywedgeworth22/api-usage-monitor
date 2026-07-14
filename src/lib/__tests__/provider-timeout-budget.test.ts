@@ -101,6 +101,34 @@ describe("fetchAllDueProviders per-provider timeout budget", () => {
     ]);
   });
 
+  it("classifies an intentionally unsupported push-only poll as skipped", async () => {
+    findMany.mockResolvedValue([providerRow("push-only")]);
+    const { AdapterError } = await import("@/lib/adapters/helpers");
+    fetchProviderUsage.mockRejectedValue(
+      new AdapterError("Use pushed telemetry or a manual plan.", {
+        code: "UNSUPPORTED",
+      })
+    );
+
+    const { fetchAllDueProviders } = await import("@/lib/usage-recorder");
+    const result = await fetchAllDueProviders();
+
+    expect(result).toMatchObject({
+      total: 1,
+      successes: 0,
+      failures: 0,
+      skipped: 1,
+      errors: [],
+    });
+    expect(result.outcomes).toEqual([
+      expect.objectContaining({
+        name: "push-only",
+        status: "skipped",
+        errorCode: "UNSUPPORTED",
+      }),
+    ]);
+  });
+
   it("rolls back a late result after a newer attempt supersedes it", async () => {
     let resolveFirst: ((value: unknown) => void) | undefined;
     let resolveSecond: ((value: unknown) => void) | undefined;

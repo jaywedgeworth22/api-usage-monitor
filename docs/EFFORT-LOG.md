@@ -184,8 +184,14 @@ Protocol: /Users/jay/apps/EFFORT-LOG-PROTOCOL.md (canonical). Live board: this f
 - **Resolve merge conflicts and merge open PRs (AG)** — COMPLETED (MERGED): PRs 94-101, 105, 106. Integrated and resolved all conflicts.
 
 ## In Progress
+- **Live provider reconciliation cleanup (CODEX + verifier, owner-directed 2026-07-13) — IN PROGRESS.** Branch
+  `codex-live-provider-reconciliation`, isolated worktree
+  `/Users/jay/apps/api-usage-monitor-live-reconciliation`, based on deployed `f6310c62`.
+  Scope is limited to pruning obsolete Google Cloud Billing pending identities after a complete
+  zero-row query and classifying intentionally unsupported push/manual polls as scheduler skips;
+  no broker adapter, billing, or subscription changes.
 - **Remaining-provider automatic enrichment implementation wave (CODEX + provider teams,
-  owner-directed 2026-07-13) — DRAFT PR #168; CI IN PROGRESS.** Branch
+  owner-directed 2026-07-13) — LIVE.** Branch
   `codex-provider-enrichment-wave`, PR
   https://github.com/jaywedgeworth22/api-usage-monitor/pull/168, isolated
   worktree `/Users/jay/apps/api-usage-monitor-provider-enrichment-wave`, based on fetched
@@ -195,7 +201,13 @@ Protocol: /Users/jay/apps/EFFORT-LOG-PROTOCOL.md (canonical). Live board: this f
   Only official account/control-plane endpoints are in scope. Implementation plus adversarial
   completeness/pruning hardening is complete and rebased onto the verified production receiver.
   Full Node 24 `npm run verify` PASS: ESLint, TypeScript, 73 files / 431 tests, migrate-safe 3/3,
-  SQLite backup, startup config, and production build. Awaiting remote checks and review.
+  SQLite backup, startup config, and production build. GitHub CI, CodeQL, and gitleaks passed;
+  PR #168 merged as `f6310c62`, Render on-commit deploy `dep-d9aprtr7uimc73a1j45g` is live,
+  and production `/api/health` + `/api/ready` report that exact revision. Live refresh verified
+  Twelve Data's separate day/minute quotas and Resend account/rate metadata; Pinecone correctly
+  reports HTTP 401 until its saved API key is replaced. Google Cloud billing remains pending
+  because the export table still has zero rows; the visible Congress Gemini `$4.22` is pushed
+  telemetry, not a direct billing snapshot.
 - **Remaining-provider automatic billing feasibility audit (CODEX-MONEY, owner-directed 2026-07-13) — DONE.** Read-only official-doc review of all 22 not-fully-covered built-ins. Newly feasible: FinTech Studios `/me` (free account tier/credits/quota reset; `/usage` remains fixture-gated), Resend quota headers, LlamaIndex beta usage metrics, whole-account Render inventory, broader Hetzner paid-resource run-rate inventory, Pinecone backup/collection/assistant inventory, exact-calendar Sentry category usage, Langfuse billable-unit counts, and current Twelve Data body quotas. Brokerage billing/subscription work is intentionally excluded by the owner. Intrinio and Pushover are already at the safe public-API ceiling. Voyage/FMP/Finnhub/Alpha Vantage/Marketstack/Tiingo/Massive/FRED/Robinhood remain dashboard-only, free/no-billing, or require quota-bearing product/interactive calls. Runtime implementation is proceeding as a bounded, tested wave with authoritative-pagination and double-count guards.
 - **Favicon/brand icon refresh (CODEX, owner-directed 2026-07-13) — WIP.** Using an orange palette for both the in-app/header chart mark and the Jay signature favicon through Next's app icon convention; unrelated active lanes untouched.
 - **Automatic Cloudflare + Google Cloud billing and zero-cost remediation (CODEX + expert team, owner-directed 2026-07-13) — LIVE.** PR https://github.com/jaywedgeworth22/api-usage-monitor/pull/119 merged to `main` as `3243126a`; the Litestream-safe migration follow-up landed as `9b9e1008`. Render auto-deploy is On Commit and deploy `dep-d9amq0e8bjmc73ci9qv0` is live; `/api/health` and `/api/ready` passed. Cloudflare now auto-discovers Workers Paid at $5/month for Congress.Trade with a 2026-07-16 renewal; its former manual term is canceled with history preserved. Google Cloud Standard Billing Export is connected to `jays-services-finops.billing_export` with a dedicated read-only service account. Google has created the expected partitioned export table, but it currently contains zero rows, so the live provider correctly reports `Gemini API · pending` and `Cost not reported` until Google populates it. Scope: Cloudflare subscription discovery/token auth/calendar PayGo, Gemini spend from Google Cloud Billing export with provisioning/partition safeguards, safe manual-plan handoff and credential disconnect, exact-name-before-alias provider routing, canonical project ingest resolution, same-batch replay protection, and explicit unknown/partial/complete cost coverage. Node 24 `npm run verify` PASS: ESLint, TypeScript, 69 files / 391 tests, migrate-safe 3/3, SQLite backup, startup config, and production build. Congress.Trade remains preview-first in the separately claimed telemetry lane.

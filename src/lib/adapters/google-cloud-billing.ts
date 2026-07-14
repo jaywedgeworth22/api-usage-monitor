@@ -564,7 +564,12 @@ export async function fetchGoogleCloudBilling(
     rows,
     externalBilling: {
       source: "google-cloud-billing-export",
-      authoritative: status === "ready",
+      // A successfully completed query is a complete inventory even when the
+      // export has not populated any rows yet. Keep the spend unknown/pending,
+      // but allow reconciliation to prune stale project identities and
+      // previous-period SKU components. Table discovery still uses the
+      // non-authoritative provisioning path above because no query ran there.
+      authoritative: true,
       records: [
         {
           externalId: `gemini-mtd:${scopeId}`,

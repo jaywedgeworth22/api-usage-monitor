@@ -271,7 +271,10 @@ describe("google-ai billing adapter", () => {
         rollupRole: "canonical",
       }),
     ]);
-    expect(result.externalBilling?.authoritative).toBe(false);
+    // The completed query is authoritative about the record inventory even
+    // though an empty export cannot prove zero spend. This lets reconciliation
+    // prune stale project-scoped placeholders without inventing $0.
+    expect(result.externalBilling?.authoritative).toBe(true);
     expect(result.rawData).toMatchObject({
       billing: { configured: true, status: "pending" },
       capabilities: { billingCost: false },
