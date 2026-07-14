@@ -184,12 +184,16 @@ Protocol: /Users/jay/apps/EFFORT-LOG-PROTOCOL.md (canonical). Live board: this f
 - **Resolve merge conflicts and merge open PRs (AG)** — COMPLETED (MERGED): PRs 94-101, 105, 106. Integrated and resolved all conflicts.
 
 ## In Progress
-- **Live provider reconciliation cleanup (CODEX + verifier, owner-directed 2026-07-13) — IN PROGRESS.** Branch
-  `codex-live-provider-reconciliation`, isolated worktree
+- **Live provider reconciliation cleanup (CODEX + verifier, owner-directed 2026-07-13) — DRAFT PR #171; CI IN PROGRESS.** Branch
+  `codex-live-provider-reconciliation`, PR
+  https://github.com/jaywedgeworth22/api-usage-monitor/pull/171, isolated worktree
   `/Users/jay/apps/api-usage-monitor-live-reconciliation`, based on deployed `f6310c62`.
   Scope is limited to pruning obsolete Google Cloud Billing pending identities after a complete
   zero-row query and classifying intentionally unsupported push/manual polls as scheduler skips;
-  no broker adapter, billing, or subscription changes.
+  pending placeholders no longer inflate active-service totals, while malformed adapter routing
+  remains a configuration failure. No broker adapter, billing, or subscription changes. Node 24
+  full verify passed (73 files / 436 tests plus all build/migration/startup gates); final focused
+  suite passed 7 files / 39 tests with ESLint and TypeScript, and independent review found no blockers.
 - **Remaining-provider automatic enrichment implementation wave (CODEX + provider teams,
   owner-directed 2026-07-13) — LIVE.** Branch
   `codex-provider-enrichment-wave`, PR
