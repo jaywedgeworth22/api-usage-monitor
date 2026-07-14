@@ -111,6 +111,48 @@ describe("GET /api/ready", () => {
     });
   });
 
+  it("can soften only the HTTP status for a database-only Render compatibility window", async () => {
+    vi.stubEnv("RENDER_READINESS_HTTP_COMPATIBILITY", "true");
+    vi.spyOn(process, "uptime").mockReturnValue(301);
+    mocks.queryRawUnsafe.mockRejectedValue(new Error("database busy"));
+
+    const response = await GET();
+    const body = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(body).toMatchObject({
+      ok: false,
+      status: "not_ready",
+      checks: {
+        database: {
+          ok: false,
+          coldStartGraceActive: false,
+          healthCheckCompatibilityActive: true,
+        },
+      },
+    });
+  });
+
+  it("does not let Render compatibility mask a non-database readiness failure", async () => {
+    vi.stubEnv("RENDER_READINESS_HTTP_COMPATIBILITY", "true");
+    vi.stubEnv("LITESTREAM_REQUIRED", "true");
+    vi.stubEnv("LITESTREAM_ACTIVE", "false");
+    vi.spyOn(process, "uptime").mockReturnValue(301);
+    mocks.queryRawUnsafe.mockRejectedValue(new Error("database busy"));
+
+    const response = await GET();
+    const body = await response.json();
+
+    expect(response.status).toBe(503);
+    expect(body).toMatchObject({
+      ok: false,
+      checks: {
+        database: { healthCheckCompatibilityActive: false },
+        backup: { ok: false },
+      },
+    });
+  });
+
   it("reuses a timed-out SQLite probe instead of queueing more uncancelled queries", async () => {
     vi.useFakeTimers();
     vi.spyOn(process, "uptime").mockReturnValue(301);

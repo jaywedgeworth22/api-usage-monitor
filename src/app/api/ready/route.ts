@@ -81,18 +81,26 @@ export async function GET() {
   const backupReady = !backup.required || backup.active;
   const startupReady = !startup.required || startup.active;
   const ok = database.ok && schedulerReady && backupReady && startupReady;
+  const databaseOnlyFailure =
+    !database.ok && schedulerReady && backupReady && startupReady;
   // Render currently points its process health check at this strict dependency
   // endpoint. Give a newly-started process a bounded window to finish opening a
   // large SQLite/Litestream database without creating a restart loop. The grace
   // applies only to a database-only failure, ends after five minutes, and can
   // never reactivate after this process has completed one successful probe.
   const databaseColdStartGraceActive =
-    !database.ok &&
+    databaseOnlyFailure &&
     !databaseProbeHasSucceeded &&
-    process.uptime() * 1_000 < DATABASE_COLD_START_GRACE_MS &&
-    schedulerReady &&
-    backupReady &&
-    startupReady;
+    process.uptime() * 1_000 < DATABASE_COLD_START_GRACE_MS;
+  // Temporary operational bridge for services whose runtime health-check path
+  // still points at /api/ready. The response body remains strictly not-ready,
+  // so dependency monitors that inspect `ok` continue to alert; only the HTTP
+  // status is softened to prevent Render from restarting the sole SQLite
+  // process during transient database I/O. Disable this after the live Render
+  // healthCheckPath is corrected to /api/health.
+  const databaseHealthCheckCompatibilityActive =
+    databaseOnlyFailure &&
+    process.env.RENDER_READINESS_HTTP_COMPATIBILITY === "true";
   const status = ok
     ? "ready"
     : databaseColdStartGraceActive
@@ -109,6 +117,8 @@ export async function GET() {
         database: {
           ...database,
           coldStartGraceActive: databaseColdStartGraceActive,
+          healthCheckCompatibilityActive:
+            databaseHealthCheckCompatibilityActive,
         },
         scheduler: {
           ok: schedulerReady,
@@ -128,7 +138,12 @@ export async function GET() {
       },
     },
     {
-      status: ok || databaseColdStartGraceActive ? 200 : 503,
+      status:
+        ok ||
+        databaseColdStartGraceActive ||
+        databaseHealthCheckCompatibilityActive
+          ? 200
+          : 503,
       headers: { "Cache-Control": "no-store" },
     }
   );
