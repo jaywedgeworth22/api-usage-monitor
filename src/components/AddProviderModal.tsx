@@ -891,10 +891,28 @@ export default function AddProviderModal({
               const nextProject = projects.find(
                 (project) => !allocations.some((allocation) => allocation.projectId === project.id)
               );
-              setAllocations((current) => [
-                ...current,
-                { projectId: nextProject?.id || "", percentage: 0 },
-              ]);
+              setAllocations((current) => {
+                const newLength = current.length + 1;
+                const defaultPercentage = Number((100 / newLength).toFixed(2));
+                
+                const newAllocations = current.map(item => ({
+                  ...item,
+                  percentage: defaultPercentage
+                }));
+                
+                newAllocations.push({
+                  projectId: nextProject?.id || "",
+                  percentage: defaultPercentage
+                });
+                
+                // Adjust the first one to ensure exact 100% sum if there are rounding errors
+                const sum = newAllocations.reduce((acc, curr) => acc + curr.percentage, 0);
+                if (sum !== 100) {
+                  newAllocations[0].percentage = Number((newAllocations[0].percentage + (100 - sum)).toFixed(2));
+                }
+                
+                return newAllocations;
+              });
             }}
             className="text-sm text-blue-600 hover:text-blue-800 font-medium mt-1 disabled:cursor-not-allowed disabled:text-gray-400"
           >
