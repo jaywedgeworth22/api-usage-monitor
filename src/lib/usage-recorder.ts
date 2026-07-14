@@ -1,7 +1,10 @@
 import { prisma } from "@/lib/prisma";
 import { fetchProviderUsage } from "@/lib/adapters";
 import { AdapterError, type AdapterErrorCode } from "@/lib/adapters/helpers";
-import { runUsageMaintenance } from "@/lib/usage-maintenance";
+import {
+  isUsageMaintenanceHealthy,
+  runUsageMaintenance,
+} from "@/lib/usage-maintenance";
 import { ensureAgentSyncProviderSeeded } from "@/lib/ensure-agent-sync-provider";
 import {
   markSchedulerStarted,
@@ -271,26 +274,38 @@ export async function fetchAllDueProviders(): Promise<FetchAllProvidersResult> {
 const POLL_INTERVAL_MS = 15 * 60 * 1000; // matches the old external cron's */15 schedule exactly - don't change the cadence, only where it runs
 let schedulerStarted = false;
 
+export interface UsagePollingSchedulerTickDependencies {
+  fetchProviders?: typeof fetchAllDueProviders;
+  runMaintenance?: typeof runUsageMaintenance;
+  markTickStarted?: typeof markSchedulerTickStarted;
+  markTickCompleted?: typeof markSchedulerTickCompleted;
+}
+
+export async function runUsagePollingSchedulerTick(
+  dependencies: UsagePollingSchedulerTickDependencies = {}
+): Promise<void> {
+  const markTickStarted = dependencies.markTickStarted ?? markSchedulerTickStarted;
+  const markTickCompleted = dependencies.markTickCompleted ?? markSchedulerTickCompleted;
+  markTickStarted();
+  try {
+    const result = await (dependencies.fetchProviders ?? fetchAllDueProviders)();
+    const maintenance = await (dependencies.runMaintenance ?? runUsageMaintenance)();
+    markTickCompleted(isUsageMaintenanceHealthy(maintenance), {
+      total: result.total,
+      successes: result.successes,
+      failures: result.failures,
+      skipped: result.skipped,
+    });
+  } catch (error) {
+    markTickCompleted(false, null);
+    console.error("[usage-scheduler] tick failed", error);
+  }
+}
+
 export function startUsagePollingScheduler(): void {
   if (schedulerStarted) return; // instrumentation.register() can fire more than once in some Next.js scenarios - guard against double-scheduling
   schedulerStarted = true;
   markSchedulerStarted();
-  const tick = async () => {
-    markSchedulerTickStarted();
-    try {
-      const result = await fetchAllDueProviders();
-      await runUsageMaintenance();
-      markSchedulerTickCompleted(true, {
-        total: result.total,
-        successes: result.successes,
-        failures: result.failures,
-        skipped: result.skipped,
-      });
-    } catch (error) {
-      markSchedulerTickCompleted(false, null);
-      console.error("[usage-scheduler] tick failed", error);
-    }
-  };
-  setInterval(tick, POLL_INTERVAL_MS);
-  void tick(); // also run once immediately on boot, don't wait a full interval
+  setInterval(() => void runUsagePollingSchedulerTick(), POLL_INTERVAL_MS);
+  void runUsagePollingSchedulerTick(); // also run once immediately on boot, don't wait a full interval
 }

@@ -34,9 +34,12 @@ async function run() {
   });
 
   if (plan?.mustKeepFunded) {
-    await prisma.providerPlan.update({
-      where: { providerId: anthropic.id },
-      data: { mustKeepFunded: false },
+    await prisma.provider.update({
+      where: { id: anthropic.id },
+      data: {
+        alertConfigGeneration: { increment: 1 },
+        plan: { update: { mustKeepFunded: false } },
+      },
     });
     console.log("Successfully set mustKeepFunded to false for Anthropic.");
   } else {

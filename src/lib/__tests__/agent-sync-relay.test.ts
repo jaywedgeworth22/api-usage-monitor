@@ -103,6 +103,7 @@ describe("ensureAgentSyncProviderSeeded", () => {
     expect(provider?.displayName).toBe("Agent Sync Relay");
     expect(provider?.type).toBe("builtin");
     expect(provider?.refreshIntervalMin).toBe(15);
+    expect(provider?.alertConfigGeneration).toBe(0);
   });
 
   it("does not create a duplicate if provider already exists", async () => {
@@ -117,5 +118,21 @@ describe("ensureAgentSyncProviderSeeded", () => {
       where: { name: "agent-sync-relay" },
     });
     expect(countAfterSecond).toBe(1);
+  });
+
+  it("increments the alert revision when disabling an existing active relay", async () => {
+    const provider = await prisma.provider.create({
+      data: {
+        name: "agent-sync-relay",
+        displayName: "Agent Sync Relay",
+        isActive: true,
+      },
+    });
+
+    await ensureAgentSyncProviderSeeded();
+
+    expect(
+      await prisma.provider.findUniqueOrThrow({ where: { id: provider.id } })
+    ).toMatchObject({ isActive: false, alertConfigGeneration: 1 });
   });
 });

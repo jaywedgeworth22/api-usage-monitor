@@ -1,9 +1,16 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { AlertDeliveryResult } from "../alert-delivery";
+import {
+  AlertNotificationSummaryPersistenceTimeout,
+  type AlertDeliveryResult,
+} from "../alert-delivery";
 import type { ScheduledRetentionSkipped } from "../data-retention";
 import type { RollForwardProviderRenewalsResult } from "../provider-renewals";
 import type { MaterializeSubscriptionsResult } from "../subscription-materializer";
-import { runUsageMaintenance, type UsageMaintenanceDependencies } from "../usage-maintenance";
+import {
+  isUsageMaintenanceHealthy,
+  runUsageMaintenance,
+  type UsageMaintenanceDependencies,
+} from "../usage-maintenance";
 
 const subscriptions: MaterializeSubscriptionsResult = {
   examined: 2,
@@ -22,6 +29,7 @@ const deliveredAlerts: AlertDeliveryResult = {
   resolved: 1,
   skipped: 0,
   errors: [],
+  persistenceDegraded: [],
 };
 
 function dependencies(
@@ -35,41 +43,47 @@ function dependencies(
   };
 }
 
+function summaryTimeout(
+  message = "SQLite socket timeout",
+  partialResult: AlertDeliveryResult = deliveredAlerts
+): AlertNotificationSummaryPersistenceTimeout {
+  const error = Object.assign(new Error(message), {
+    code: "P1008",
+    meta: { modelName: "ProviderAlertNotification" },
+  });
+  return new AlertNotificationSummaryPersistenceTimeout(error, partialResult);
+}
+
 beforeEach(() => {
   vi.restoreAllMocks();
 });
 
 describe("runUsageMaintenance", () => {
   it("returns a structured degraded alert result without failing completed money-path stages", async () => {
-    const error = Object.assign(new Error("SQLite socket timeout"), {
-      code: "P1008",
-      meta: { modelName: "ProviderAlertNotification" },
-    });
+    const error = summaryTimeout();
     const deliverAlerts = vi.fn(async () => {
       throw error;
     });
     const deps = dependencies(deliverAlerts);
     const log = vi.spyOn(console, "error").mockImplementation(() => undefined);
 
-    await expect(runUsageMaintenance(deps)).resolves.toEqual({
+    const result = await runUsageMaintenance(deps);
+    expect(result).toEqual({
       subscriptions,
       providerRenewals,
       retention,
       alerts: {
-        evaluatedProviders: 0,
-        activeAlerts: 0,
-        sent: 0,
-        resolved: 0,
-        skipped: 0,
-        errors: [],
+        ...deliveredAlerts,
         deferredError: {
           stage: "alerts",
+          operation: "post_send_notification_summary",
           code: "P1008",
           model: "ProviderAlertNotification",
           message: "SQLite socket timeout",
         },
       },
     });
+    expect(isUsageMaintenanceHealthy(result)).toBe(false);
     expect(deliverAlerts).toHaveBeenCalledOnce();
     expect(log).toHaveBeenCalledOnce();
   });
@@ -77,12 +91,7 @@ describe("runUsageMaintenance", () => {
   it("does not retry in the same cycle and retries normally on the next invocation", async () => {
     const deliverAlerts = vi
       .fn<() => Promise<AlertDeliveryResult>>()
-      .mockRejectedValueOnce(
-        Object.assign(new Error("busy"), {
-          code: "P1008",
-          meta: { modelName: "ProviderAlertNotification" },
-        })
-      )
+      .mockRejectedValueOnce(summaryTimeout("busy"))
       .mockResolvedValueOnce(deliveredAlerts);
     const deps = dependencies(deliverAlerts);
     vi.spyOn(console, "error").mockImplementation(() => undefined);
@@ -93,7 +102,33 @@ describe("runUsageMaintenance", () => {
 
     const second = await runUsageMaintenance(deps);
     expect(second.alerts).toEqual({ ...deliveredAlerts, deferredError: null });
+    expect(isUsageMaintenanceHealthy(second)).toBe(true);
     expect(deliverAlerts).toHaveBeenCalledTimes(2);
+  });
+
+  it("marks channel-state persistence degradation unhealthy without a summary timeout", async () => {
+    const degraded: AlertDeliveryResult = {
+      ...deliveredAlerts,
+      persistenceDegraded: [
+        {
+          stage: "channel_state",
+          operation: "trigger_success_outcome",
+          code: "P1008",
+          model: "ProviderAlertChannelDelivery",
+          providerId: "provider-1",
+          alertCode: "balance_low",
+          channel: "webhook",
+          message: "channel state timed out",
+        },
+      ],
+    };
+    const result = await runUsageMaintenance(
+      dependencies(vi.fn(async () => degraded))
+    );
+
+    expect(result.alerts.deferredError).toBeNull();
+    expect(result.alerts.persistenceDegraded).toHaveLength(1);
+    expect(isUsageMaintenanceHealthy(result)).toBe(false);
   });
 
   it("coalesces concurrent callers into one degraded alert pass and clears in-flight state", async () => {
@@ -110,12 +145,7 @@ describe("runUsageMaintenance", () => {
     const first = runUsageMaintenance(deps);
     const second = runUsageMaintenance(deps);
     await vi.waitFor(() => expect(rejectAlerts).toBeTypeOf("function"));
-    rejectAlerts?.(
-      Object.assign(new Error("locked"), {
-        code: "P1008",
-        meta: { modelName: "ProviderAlertNotification" },
-      })
-    );
+    rejectAlerts?.(summaryTimeout("locked"));
 
     const [firstResult, secondResult] = await Promise.all([first, second]);
     expect(firstResult).toEqual(secondResult);
@@ -164,6 +194,10 @@ describe("runUsageMaintenance", () => {
     Object.assign(new Error("channel state timeout"), {
       code: "P1008",
       meta: { modelName: "ProviderAlertChannelDelivery" },
+    }),
+    Object.assign(new Error("notification read timeout"), {
+      code: "P1008",
+      meta: { modelName: "ProviderAlertNotification" },
     }),
   ])("keeps non-bookkeeping alert failures fatal", async (failure) => {
     const deliverAlerts = vi.fn(async () => {

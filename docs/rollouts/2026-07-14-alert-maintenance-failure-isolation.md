@@ -1,5 +1,7 @@
 # Alert-maintenance failure isolation
 
+> Post-merge correction: the model/code-only classifier below was still broader than the safe operation boundary. PR #204 merged as `56d532ec` before root re-review completed. The isolated `codex/alert-persistence-config-generation` follow-up now narrows the boundary and adds incident/evidence/operation fencing, provider alert-config generations, cross-direction trigger/resolve invalidation, parent/child CAS, conservative PagerDuty migration, channel-specific ambiguity, and scheduler degradation propagation. See `docs/rollouts/2026-07-14-alert-persistence-corrective.md`.
+
 ## Incident evidence
 
 On exact production revision `2d50264`, the immediate scheduler cycle reached
