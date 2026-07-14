@@ -4,7 +4,7 @@
 
 Diagnosed and repaired a production restart livelock on the paid Render Starter service. Scheduled retention no longer performs a full SQLite `VACUUM` unless an operator explicitly opts in, the declared Render configuration uses database-independent liveness, and concurrent readiness requests reuse one outstanding database probe instead of queueing uncancellable Prisma queries.
 
-PR #178 merged as `d03b1b8`; PR #180 merged as `40afc02`; and PR #181 merged as `938af7f`. The live service now reports `healthCheckPath=/api/health`, and an exact-current-main redeploy applied that synchronized metadata. P1008 `SELECT 1` failures nevertheless continue every five seconds, proving that `/api/ready` is still polled in practice and that its per-process failure cache does not protect this production topology. The current follow-up skips the database probe only when `RENDER_READINESS_HTTP_COMPATIBILITY=true`; HTTP transport, top-level `ok/status`, `X-Readiness-Status`, and scheduler/backup/startup diagnostics retain #181 semantics.
+PR #178 merged as `d03b1b8`; PR #180 merged as `40afc02`; PR #181 merged as `938af7f`; and the no-probe bridge PR #188 merged as `27cf61a`. The live service reports `healthCheckPath=/api/health`. With `RENDER_READINESS_HTTP_COMPATIBILITY=true`, `/api/ready` no longer starts an uncancellable Prisma query, while HTTP transport, top-level `ok/status`, `X-Readiness-Status`, and scheduler/backup/startup diagnostics retain #181 semantics. Five-second P1008 failures still resumed after boot, proving readiness was a trigger but not the remaining database-lock cause.
 
 ## Why
 
@@ -12,11 +12,28 @@ Render reported the service as paid and `not_suspended`; the outage was not caus
 
 The repair separates liveness from readiness and keeps expensive whole-database compaction operator-controlled. `/api/ready` remains available for strict scheduler/backup/startup diagnostics; its database check is explicitly `probeSkipped` and not-ready only while the temporary compatibility flag is active. With the flag disabled, strict database probing resumes. The route is not an appropriate automatic process-restart signal for a single-instance SQLite service.
 
+## Litestream state follow-up
+
+Repeated production startup logs exposed a second defect: `prisma db push` saw
+Litestream's nonempty `_litestream_seq` table as unmanaged drift, and
+`migrate-safe.mjs` retried with `--accept-data-loss`, dropping that sequence row.
+Litestream then uploaded a fresh 60,858,513-byte LTX before the P1008 loop resumed.
+
+`prisma.config.ts` now marks `_litestream_seq` and `_litestream_lock` as external
+tables, and the startup migration script no longer has any automatic
+`--accept-data-loss` path. The migration regression uses arbitrary extra columns and
+opaque BLOB values to prove Prisma preserves both external schemas and rows exactly,
+while a destructive application-schema change still fails closed with the DB
+unchanged.
+
 ## Files
 
 - `.env.example`
 - `DEPLOY.md`
+- `prisma.config.ts`
 - `render.yaml`
+- `scripts/migrate-safe.mjs`
+- `scripts/test-migrate-safe-repro.mjs`
 - `scripts/test-startup-config.mjs`
 - `src/app/api/ready/route.ts`
 - `src/app/api/ready/__tests__/route.test.ts`
