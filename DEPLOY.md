@@ -101,6 +101,11 @@ not copied from the obsolete gray-cloud setup.
   opt-in compaction above)
 - `ADAPTER_HTTP_TIMEOUT_MS` / `ADAPTER_PROVIDER_TIMEOUT_MS` (optional bounded
   upstream-request and per-provider polling budgets)
+- `USAGE_SCHEDULER_ENABLED` (optional, defaults to `true`; emergency isolation
+  switch for the in-process provider polling scheduler). Setting it to `false`
+  stops automatic provider snapshots but does not disable pushed usage/OTLP
+  ingest. Use only to isolate scheduler/SQLite contention, and restore `true`
+  only after a complete provider tick plus DB-backed ingest/replay smoke succeeds.
 - `LITESTREAM_S3_*` (optional replica credentials; set all four required values
   together or none—partial configuration fails startup)
 - `LITESTREAM_REQUIRED` (`false` initially; set `true` only after credentials are
