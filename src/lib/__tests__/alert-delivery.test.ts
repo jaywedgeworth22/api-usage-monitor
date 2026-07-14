@@ -467,6 +467,8 @@ describe("alert delivery", () => {
           create: {
             billingMode: "actual",
             lowBalanceUsd: 10,
+            monthlyBudgetUsd: 10,
+            fixedMonthlyCostUsd: 15, // causes budget conflict/excess
           },
         },
       },
@@ -491,19 +493,23 @@ describe("alert delivery", () => {
       retryBaseMs: 0,
     };
 
-    // 1. Trigger the alert
+    // 1. Trigger both alerts (balance low + budget exceeded)
     const first = await deliverProviderAlerts({
       now: new Date("2026-07-20T12:00:00.000Z"),
       config,
       fetchImpl: fetchMock as unknown as typeof fetch,
     });
-    expect(first.sent).toBe(1);
-    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(first.sent).toBe(2);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
 
     const openNotification = await prisma.providerAlertNotification.findUniqueOrThrow({
       where: { stateKey: `${provider.id}:balance_low` },
     });
     expect(openNotification.resolvedAt).toBeNull();
+    const openBudgetNotification = await prisma.providerAlertNotification.findUniqueOrThrow({
+      where: { stateKey: `${provider.id}:budget_exceeded` },
+    });
+    expect(openBudgetNotification.resolvedAt).toBeNull();
 
     // 2. Deactivate the provider
     await prisma.provider.update({
@@ -511,23 +517,31 @@ describe("alert delivery", () => {
       data: { isActive: false },
     });
 
-    // 3. Deliver alerts again; since the provider is now inactive, the alert is no longer active, so it should be resolved
+    // 3. Deliver alerts again; since the provider is now inactive, the alerts are no longer active, so they should be resolved
     const second = await deliverProviderAlerts({
       now: new Date("2026-07-20T13:00:00.000Z"),
       config,
       fetchImpl: fetchMock as unknown as typeof fetch,
     });
-    expect(second.resolved).toBe(1);
-    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(second.resolved).toBe(2);
+    expect(fetchMock).toHaveBeenCalledTimes(4);
 
-    const callArgs = fetchMock.mock.calls[1];
-    const body = JSON.parse(String(callArgs[1]?.body ?? "{}"));
-    expect(body.event_action).toBe("resolve");
-    expect(body.dedup_key).toBe(`api-usage-monitor:${provider.id}:balance_low`);
+    const resolveBodies = fetchMock.mock.calls
+      .slice(2, 4)
+      .map((call) => JSON.parse(String(call[1]?.body ?? "{}")));
+    expect(resolveBodies.every((payload) => payload.event_action === "resolve")).toBe(true);
+    
+    const resolveKeys = resolveBodies.map((payload) => payload.dedup_key);
+    expect(resolveKeys).toContain(`api-usage-monitor:${provider.id}:balance_low`);
+    expect(resolveKeys).toContain(`api-usage-monitor:${provider.id}:budget_exceeded`);
 
     const resolvedNotification = await prisma.providerAlertNotification.findUniqueOrThrow({
       where: { id: openNotification.id },
     });
     expect(resolvedNotification.resolvedAt).not.toBeNull();
+    const resolvedBudgetNotification = await prisma.providerAlertNotification.findUniqueOrThrow({
+      where: { id: openBudgetNotification.id },
+    });
+    expect(resolvedBudgetNotification.resolvedAt).not.toBeNull();
   });
 });

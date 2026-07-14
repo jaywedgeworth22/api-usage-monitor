@@ -572,7 +572,7 @@ export async function deliverProviderAlerts(options: {
       now
     );
     const canonical = canonicalByProviderId.get(provider.id);
-    if (canonical) {
+    if (canonical && provider.isActive) {
       const nonBudgetAlerts = alertState.alerts.filter(
         (alert) => alert.code !== "budget_exceeded" && alert.code !== "budget_warning"
       );

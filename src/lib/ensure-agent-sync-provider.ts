@@ -23,16 +23,4 @@ export async function ensureAgentSyncProviderSeeded(): Promise<void> {
       },
     });
   }
-
-  // 2. Fix Anthropic 'mustKeepFunded' misconfiguration to stop balance visibility alerts
-  const anthropic = providers.find((p) => p.name.toLowerCase() === "anthropic");
-  if (anthropic) {
-    const plan = await prisma.providerPlan.findUnique({ where: { providerId: anthropic.id } });
-    if (plan?.mustKeepFunded) {
-      await prisma.providerPlan.update({
-        where: { providerId: anthropic.id },
-        data: { mustKeepFunded: false },
-      });
-    }
-  }
 }
