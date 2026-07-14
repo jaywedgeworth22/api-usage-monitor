@@ -169,6 +169,97 @@ describe("GET /api/ready", () => {
     });
   });
 
+  it("skips the blocking database probe only in Render compatibility mode", async () => {
+    vi.stubEnv("RENDER_READINESS_HTTP_COMPATIBILITY", "true");
+    vi.spyOn(process, "uptime").mockReturnValue(301);
+
+    const response = await GET();
+    const body = await response.json();
+
+    expect(mocks.queryRawUnsafe).not.toHaveBeenCalled();
+    expect(response.status).toBe(200);
+    expect(response.headers.get("x-readiness-status")).toBe("not_ready");
+    expect(body).toMatchObject({
+      ok: false,
+      status: "not_ready",
+      checks: {
+        database: {
+          ok: false,
+          latencyMs: 0,
+          probeSkipped: true,
+          probeInFlight: false,
+          coldStartGraceActive: false,
+          healthCheckCompatibilityActive: true,
+        },
+      },
+    });
+  });
+
+  it("keeps backup failures visible while the database probe is skipped", async () => {
+    vi.stubEnv("RENDER_READINESS_HTTP_COMPATIBILITY", "true");
+    vi.stubEnv("LITESTREAM_REQUIRED", "true");
+    vi.stubEnv("LITESTREAM_ACTIVE", "false");
+
+    const response = await GET();
+    const body = await response.json();
+
+    expect(mocks.queryRawUnsafe).not.toHaveBeenCalled();
+    expect(response.status).toBe(200);
+    expect(response.headers.get("x-readiness-status")).toBe("not_ready");
+    expect(body).toMatchObject({
+      ok: false,
+      status: "not_ready",
+      checks: {
+        database: { probeSkipped: true },
+        backup: { ok: false, required: true, active: false },
+      },
+    });
+  });
+
+  it("keeps scheduler and startup failures visible while the database probe is skipped", async () => {
+    vi.stubEnv("RENDER_READINESS_HTTP_COMPATIBILITY", "true");
+    vi.stubEnv("RENDER", "true");
+    markSchedulerTickCompleted(false, null);
+    markSchedulerTickCompleted(false, null);
+    markSchedulerTickCompleted(false, null);
+
+    const response = await GET();
+    const body = await response.json();
+
+    expect(mocks.queryRawUnsafe).not.toHaveBeenCalled();
+    expect(response.status).toBe(200);
+    expect(response.headers.get("x-readiness-status")).toBe("not_ready");
+    expect(body).toMatchObject({
+      ok: false,
+      status: "not_ready",
+      checks: {
+        database: { probeSkipped: true },
+        scheduler: { ok: false, readinessReason: "repeated_tick_failures" },
+        startup: { ok: false, required: true, active: false },
+      },
+    });
+  });
+
+  it("keeps compatibility explicitly not-ready during cold start", async () => {
+    vi.stubEnv("RENDER_READINESS_HTTP_COMPATIBILITY", "true");
+    vi.spyOn(process, "uptime").mockReturnValue(30);
+
+    const response = await GET();
+    const body = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(body).toMatchObject({
+      ok: false,
+      status: "not_ready",
+      checks: {
+        database: {
+          probeSkipped: true,
+          coldStartGraceActive: false,
+        },
+      },
+    });
+  });
+
   it("reuses a timed-out SQLite probe instead of queueing more uncancelled queries", async () => {
     vi.useFakeTimers();
     vi.spyOn(process, "uptime").mockReturnValue(301);

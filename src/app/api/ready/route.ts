@@ -21,6 +21,8 @@ type DatabaseCheck = {
   cached: boolean;
   retryAfter: string | null;
   probeInFlight: boolean;
+  probeSkipped?: boolean;
+  healthCheckCompatibilityActive?: boolean;
 };
 
 type DatabaseFailureCache = Omit<DatabaseCheck, "cached" | "probeInFlight"> & {
@@ -136,9 +138,30 @@ async function checkDatabase(): Promise<DatabaseCheck> {
   }
 }
 
+function skippedDatabaseCheck(): DatabaseCheck {
+  return {
+    ok: false,
+    latencyMs: 0,
+    checkedAt: new Date().toISOString(),
+    cached: false,
+    retryAfter: null,
+    probeInFlight: false,
+    probeSkipped: true,
+    healthCheckCompatibilityActive: true,
+  };
+}
+
 export async function GET() {
+  // Live evidence showed a native Prisma query could outlive JavaScript's
+  // timeout and the host continued polling this route even after its service
+  // metadata named /api/health. The temporary flag keeps strict diagnostics
+  // without starting the blocking probe at all.
+  const databaseHealthCheckCompatibilityRequested =
+    process.env.RENDER_READINESS_HTTP_COMPATIBILITY === "true";
   const [database, scheduler, backup, startup] = await Promise.all([
-    checkDatabase(),
+    databaseHealthCheckCompatibilityRequested
+      ? Promise.resolve(skippedDatabaseCheck())
+      : checkDatabase(),
     Promise.resolve(getSchedulerRuntimeStatus()),
     Promise.resolve(getBackupRuntimeStatus()),
     Promise.resolve(getStartupRuntimeStatus()),
@@ -157,6 +180,7 @@ export async function GET() {
   // never reactivate after this process has completed one successful probe.
   const databaseColdStartGraceActive =
     databaseOnlyFailure &&
+    !databaseHealthCheckCompatibilityRequested &&
     !databaseProbeHasSucceeded &&
     process.uptime() * 1_000 < DATABASE_COLD_START_GRACE_MS;
   const status = ok

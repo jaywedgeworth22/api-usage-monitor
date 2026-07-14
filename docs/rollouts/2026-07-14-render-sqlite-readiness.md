@@ -4,13 +4,13 @@
 
 Diagnosed and repaired a production restart livelock on the paid Render Starter service. Scheduled retention no longer performs a full SQLite `VACUUM` unless an operator explicitly opts in, the declared Render configuration uses database-independent liveness, and concurrent readiness requests reuse one outstanding database probe instead of queueing uncancellable Prisma queries.
 
-PR #178 merged as `d03b1b8` and deployed, but Render did not synchronize the declared health-check path: the live service still uses `/api/ready`. PR #180 merged as `40afc02` with a narrower database-only compatibility flag, but live logs continued to show five-second Prisma probes and a kill after the five-minute grace. PR #181 supersedes that bridge: `/api/ready` is HTTP-liveness-safe for every diagnostic state while its JSON `ok`, `status`, and per-dependency checks remain strict; completed database failures are cached for 60 seconds and hung probes remain coalesced.
+PR #178 merged as `d03b1b8`; PR #180 merged as `40afc02`; and PR #181 merged as `938af7f`. The live service now reports `healthCheckPath=/api/health`, and an exact-current-main redeploy applied that synchronized metadata. P1008 `SELECT 1` failures nevertheless continue every five seconds, proving that `/api/ready` is still polled in practice and that its per-process failure cache does not protect this production topology. The current follow-up skips the database probe only when `RENDER_READINESS_HTTP_COMPATIBILITY=true`; HTTP transport, top-level `ok/status`, `X-Readiness-Status`, and scheduler/backup/startup diagnostics retain #181 semantics.
 
 ## Why
 
 Render reported the service as paid and `not_suspended`; the outage was not caused by account bandwidth, billing, or plan limits. Logs showed recurring Prisma `P1008` database timeouts followed by termination/restart of the sole instance. On every boot, the in-process scheduler immediately entered retention, pruned rows, checkpointed the WAL, and ran a full exclusive `VACUUM` against an approximately 129.7 MB SQLite database. The strict `/api/ready` health check timed out during that lock, so Render restarted the process before maintenance could finish; the next boot repeated the same cycle.
 
-The repair separates liveness from readiness and keeps expensive whole-database compaction operator-controlled. `/api/ready` remains available for strict scheduler/database/backup diagnostics; it is not an appropriate automatic process-restart signal for a single-instance SQLite service.
+The repair separates liveness from readiness and keeps expensive whole-database compaction operator-controlled. `/api/ready` remains available for strict scheduler/backup/startup diagnostics; its database check is explicitly `probeSkipped` and not-ready only while the temporary compatibility flag is active. With the flag disabled, strict database probing resumes. The route is not an appropriate automatic process-restart signal for a single-instance SQLite service.
 
 ## Files
 
@@ -52,12 +52,20 @@ PR #181 failsafe verification used Node 24:
 - Focused ESLint, `npm run typecheck`, and `git diff --check` — passed.
 - Independent adversarial review — LAND; no P0/P1/P2 findings. The review confirmed always-200 transport, strict body/header diagnostics, 60-second failure caching, accurate timestamps, and hung-probe coalescing.
 
+Current-main no-probe follow-up verification used Node `v24.14.0`:
+
+- Focused readiness suite — passed, 15/15 tests.
+- Complete `npm run verify` — passed: 73 test files / 448 tests, migration safety, SQLite backup, startup configuration, TypeScript, ESLint, and production build.
+- `git diff --check` — passed.
+- Tests explicitly cover no Prisma call, strict not-ready body/header semantics, cold start, backup, scheduler, and startup diagnostics while the flag is active.
+- Independent exact-current-main review — LAND; no P0/P1/P2 findings.
+
 Two accidental install attempts under the shell-default Node 26 were stopped at the engine guard before tests. The successful install and every verification command above used supported Node 24; this is additional evidence not to upgrade the repo to Node 26 now.
 
 ## Follow-ups
 
-- Merge and deploy PR #181 while Render continues to use `/api/ready` for process health; no environment flag is required.
-- Correct the live Render service to `healthCheckPath: /api/health`, then restore transport-level strict readiness in a separate verified follow-up; repository YAML alone is not runtime proof.
-- Verify sustained `/api/health` 200 responses, `/api/ready` body recovery, stable instance uptime, and absence of the five-second Prisma timeout/restart pattern.
+- Merge/deploy the no-probe follow-up, enable its compatibility flag, and verify the five-second P1008 pattern stops.
+- Keep transport-level strict readiness and database probing deferred until production evidence proves the host no longer polls `/api/ready`; repository/service metadata alone has not been sufficient runtime proof.
+- Verify sustained `/api/health` 200 responses, monotonic uptime, and recovery of DB-backed API routes before restoring retention windows.
 - Verify an authenticated usage-ingest request returns 2xx before unblocking Socratic.Trade replay PR #1563.
 - Schedule any future full `VACUUM` only in a deliberate maintenance window with `DATA_RETENTION_ENABLE_VACUUM=true`; the legacy disable flag remains an overriding kill switch.
