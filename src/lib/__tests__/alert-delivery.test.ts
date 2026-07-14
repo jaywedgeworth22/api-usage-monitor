@@ -204,6 +204,73 @@ describe("alert delivery", () => {
     });
     expect(next.skipped).toBe(1);
     expect(fetchMock).toHaveBeenCalledOnce();
+    const repaired = await prisma.providerAlertNotification.findUniqueOrThrow({
+      where: { stateKey: `${provider.id}:balance_low` },
+    });
+    expect(repaired.lastSentAt).toEqual(
+      new Date("2026-07-20T12:00:00.000Z")
+    );
+    expect(repaired.sendCount).toBe(1);
+  });
+
+  it("keeps raw warning incidents open when severity policy is raised and does not resend when lowered", async () => {
+    const provider = await prisma.provider.create({
+      data: {
+        name: "severity-policy-eligibility",
+        displayName: "Severity Policy Eligibility",
+        type: "builtin",
+        refreshIntervalMin: 60,
+        plan: { create: { billingMode: "actual", lowBalanceUsd: 10 } },
+        snapshots: {
+          create: {
+            fetchedAt: new Date("2026-07-20T08:00:00.000Z"),
+            balance: 5,
+          },
+        },
+      },
+    });
+    const fetchMock = vi.fn().mockResolvedValue(new Response("ok", { status: 200 }));
+    const warningConfig = {
+      channels: [{ kind: "webhook" as const, url: "https://alerts.example/severity-policy" }],
+      minSeverity: "warning" as const,
+      reminderHours: 24,
+      maxAttempts: 1,
+    };
+
+    expect(
+      await deliverProviderAlerts({
+        now: new Date("2026-07-20T12:00:00.000Z"),
+        config: warningConfig,
+        fetchImpl: fetchMock,
+      })
+    ).toMatchObject({ activeAlerts: 1, sent: 1, resolved: 0 });
+
+    expect(
+      await deliverProviderAlerts({
+        now: new Date("2026-07-20T13:00:00.000Z"),
+        config: { ...warningConfig, minSeverity: "critical" as const },
+        fetchImpl: fetchMock,
+      })
+    ).toMatchObject({ activeAlerts: 1, sent: 0, resolved: 0 });
+    expect(
+      await prisma.providerAlertNotification.findUniqueOrThrow({
+        where: { stateKey: `${provider.id}:balance_low` },
+      })
+    ).toMatchObject({ incidentGeneration: 1, resolvedAt: null, sendCount: 1 });
+
+    expect(
+      await deliverProviderAlerts({
+        now: new Date("2026-07-20T14:00:00.000Z"),
+        config: warningConfig,
+        fetchImpl: fetchMock,
+      })
+    ).toMatchObject({ activeAlerts: 1, sent: 0, resolved: 0, skipped: 1 });
+    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(
+      await prisma.providerAlertNotification.findUniqueOrThrow({
+        where: { stateKey: `${provider.id}:balance_low` },
+      })
+    ).toMatchObject({ incidentGeneration: 1, resolvedAt: null, sendCount: 1 });
   });
 
   it("refuses a stale notification summary after the parent operation is replaced and the incident closes", async () => {
@@ -868,6 +935,249 @@ describe("alert delivery", () => {
     expect(state.lastSucceededIncidentGeneration).toBe(1);
   });
 
+  it("lets newer active evidence preempt a resolver parent before any external resolve", async () => {
+    const provider = await prisma.provider.create({
+      data: {
+        name: "resolver-newer-active-parent-race",
+        displayName: "Resolver Newer Active Parent Race",
+        type: "builtin",
+        refreshIntervalMin: 60,
+        plan: { create: { billingMode: "actual", lowBalanceUsd: 10 } },
+        snapshots: {
+          create: {
+            fetchedAt: new Date("2026-07-20T08:00:00.000Z"),
+            balance: 5,
+          },
+        },
+      },
+    });
+    const config = {
+      channels: [{ kind: "pagerduty" as const, routingKey: "resolver-parent-race" }],
+      minSeverity: "warning" as const,
+      reminderHours: 24,
+      maxAttempts: 1,
+      retryBaseMs: 0,
+    };
+    const fetchMock = vi.fn().mockResolvedValue(new Response("ok", { status: 202 }));
+    await deliverProviderAlerts({
+      now: new Date("2026-07-20T12:00:00.000Z"),
+      config,
+      fetchImpl: fetchMock,
+    });
+    await prisma.usageSnapshot.create({
+      data: {
+        providerId: provider.id,
+        fetchedAt: new Date("2026-07-20T13:00:00.000Z"),
+        balance: 25,
+      },
+    });
+
+    const { PrismaClient } = await import("@prisma/client");
+    const resolverPrisma = new PrismaClient();
+    let signalResolverParent: (() => void) | undefined;
+    let releaseResolverParent: (() => void) | undefined;
+    const resolverParentReached = new Promise<void>((resolve) => {
+      signalResolverParent = resolve;
+    });
+    const resolverParentBarrier = new Promise<void>((resolve) => {
+      releaseResolverParent = resolve;
+    });
+    let heldResolverParent = false;
+    const resolverChannelDelegate = new Proxy(
+      resolverPrisma.providerAlertChannelDelivery,
+      {
+        get(target, property) {
+          if (property === "findMany") {
+            return async (
+              args: Parameters<typeof resolverPrisma.providerAlertChannelDelivery.findMany>[0]
+            ) => {
+              const rows = await resolverPrisma.providerAlertChannelDelivery.findMany(args);
+              if (!heldResolverParent) {
+                heldResolverParent = true;
+                signalResolverParent?.();
+                await resolverParentBarrier;
+              }
+              return rows;
+            };
+          }
+          const value = Reflect.get(target, property, target);
+          return typeof value === "function" ? value.bind(target) : value;
+        },
+      }
+    );
+    type AlertDb = NonNullable<
+      NonNullable<Parameters<typeof deliverProviderAlerts>[0]>["db"]
+    >;
+    const resolver = deliverProviderAlerts({
+      now: new Date("2026-07-20T13:30:00.000Z"),
+      config,
+      fetchImpl: fetchMock,
+      db: {
+        provider: resolverPrisma.provider,
+        providerAlertNotification: resolverPrisma.providerAlertNotification,
+        providerAlertChannelDelivery: resolverChannelDelegate,
+      } as unknown as AlertDb,
+    });
+    await resolverParentReached;
+
+    await prisma.usageSnapshot.create({
+      data: {
+        providerId: provider.id,
+        fetchedAt: new Date("2026-07-20T14:00:00.000Z"),
+        balance: 3,
+      },
+    });
+    const fresh = await deliverProviderAlerts({
+      now: new Date("2026-07-20T14:30:00.000Z"),
+      config,
+      fetchImpl: fetchMock,
+      db: {
+        provider: prisma.provider,
+        providerAlertNotification: prisma.providerAlertNotification,
+        providerAlertChannelDelivery: prisma.providerAlertChannelDelivery,
+      } as AlertDb,
+    });
+    expect(fresh).toMatchObject({ resolved: 0, sent: 0, skipped: 1 });
+
+    releaseResolverParent?.();
+    const staleResolver = await resolver.finally(() => resolverPrisma.$disconnect());
+    expect(staleResolver.resolved).toBe(0);
+    expect(fetchMock).toHaveBeenCalledOnce();
+    const notification = await prisma.providerAlertNotification.findUniqueOrThrow({
+      where: { stateKey: `${provider.id}:balance_low` },
+    });
+    expect(notification).toMatchObject({
+      resolvedAt: null,
+      evidenceSourceAt: new Date("2026-07-20T14:00:00.000Z"),
+      message: "Balance $3.00 is at or below $10.00.",
+    });
+  });
+
+  it("never sends a stale trigger message after newer evidence replaces its parent claim", async () => {
+    const provider = await prisma.provider.create({
+      data: {
+        name: "stale-trigger-message-race",
+        displayName: "Stale Trigger Message Race",
+        type: "builtin",
+        refreshIntervalMin: 60,
+        plan: { create: { billingMode: "actual", lowBalanceUsd: 10 } },
+        snapshots: {
+          create: {
+            fetchedAt: new Date("2026-07-20T08:00:00.000Z"),
+            balance: 5,
+          },
+        },
+      },
+    });
+    const noChannels = {
+      channels: [],
+      minSeverity: "warning" as const,
+      reminderHours: 24,
+      maxAttempts: 1,
+    };
+    await deliverProviderAlerts({
+      now: new Date("2026-07-20T12:00:00.000Z"),
+      config: noChannels,
+    });
+    await prisma.usageSnapshot.create({
+      data: {
+        providerId: provider.id,
+        fetchedAt: new Date("2026-07-20T13:00:00.000Z"),
+        balance: 4,
+      },
+    });
+
+    const config = {
+      channels: [{ kind: "webhook" as const, url: "https://alerts.example/stale-message" }],
+      minSeverity: "warning" as const,
+      reminderHours: 24,
+      maxAttempts: 1,
+      retryBaseMs: 0,
+    };
+    let signalStaleChild: (() => void) | undefined;
+    let releaseStaleChild: (() => void) | undefined;
+    const staleChildReached = new Promise<void>((resolve) => {
+      signalStaleChild = resolve;
+    });
+    const staleChildBarrier = new Promise<void>((resolve) => {
+      releaseStaleChild = resolve;
+    });
+    let heldStaleChild = false;
+    const staleChannelDelegate = new Proxy(prisma.providerAlertChannelDelivery, {
+      get(target, property) {
+        if (property === "updateMany") {
+          return async (
+            args: Parameters<typeof prisma.providerAlertChannelDelivery.updateMany>[0]
+          ) => {
+            if (!heldStaleChild) {
+              heldStaleChild = true;
+              signalStaleChild?.();
+              await staleChildBarrier;
+            }
+            return prisma.providerAlertChannelDelivery.updateMany(args);
+          };
+        }
+        const value = Reflect.get(target, property, target);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+    type AlertDb = NonNullable<
+      NonNullable<Parameters<typeof deliverProviderAlerts>[0]>["db"]
+    >;
+    const fetchMock = vi.fn().mockResolvedValue(new Response("ok", { status: 200 }));
+    const staleTrigger = deliverProviderAlerts({
+      now: new Date("2026-07-20T13:30:00.000Z"),
+      config,
+      fetchImpl: fetchMock,
+      db: {
+        provider: prisma.provider,
+        providerAlertNotification: prisma.providerAlertNotification,
+        providerAlertChannelDelivery: staleChannelDelegate,
+      } as unknown as AlertDb,
+    });
+    await staleChildReached;
+
+    const { PrismaClient } = await import("@prisma/client");
+    const freshPrisma = new PrismaClient();
+    try {
+      await freshPrisma.usageSnapshot.create({
+        data: {
+          providerId: provider.id,
+          fetchedAt: new Date("2026-07-20T14:00:00.000Z"),
+          balance: 3,
+        },
+      });
+      const fresh = await deliverProviderAlerts({
+        now: new Date("2026-07-20T14:30:00.000Z"),
+        config,
+        fetchImpl: fetchMock,
+        db: {
+          provider: freshPrisma.provider,
+          providerAlertNotification: freshPrisma.providerAlertNotification,
+          providerAlertChannelDelivery: freshPrisma.providerAlertChannelDelivery,
+        } as unknown as AlertDb,
+      });
+      expect(fresh).toMatchObject({ sent: 1 });
+    } finally {
+      releaseStaleChild?.();
+      await freshPrisma.$disconnect();
+    }
+
+    expect(await staleTrigger).toMatchObject({ sent: 0 });
+    expect(fetchMock).toHaveBeenCalledOnce();
+    const body = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body ?? "{}"));
+    expect(body.alert.message).toBe("Balance $3.00 is at or below $10.00.");
+    const notification = await prisma.providerAlertNotification.findUniqueOrThrow({
+      where: { stateKey: `${provider.id}:balance_low` },
+    });
+    expect(notification).toMatchObject({
+      resolvedAt: null,
+      evidenceSourceAt: new Date("2026-07-20T14:00:00.000Z"),
+      message: "Balance $3.00 is at or below $10.00.",
+      sendCount: 1,
+    });
+  });
+
   it("treats no-snapshot evidence as older than every real snapshot", async () => {
     const provider = await prisma.provider.create({
       data: {
@@ -981,6 +1291,67 @@ describe("alert delivery", () => {
       new Date("2026-07-20T12:00:00.000Z")
     );
     expect(notification.evidenceWatermarkState).toBe("clear");
+  });
+
+  it("reopens stale-snapshot evidence when the unchanged fresh snapshot crosses its deterministic deadline", async () => {
+    const firstSnapshotAt = new Date("2026-07-18T08:00:00.000Z");
+    const freshSnapshotAt = new Date("2026-07-20T11:00:00.000Z");
+    const provider = await prisma.provider.create({
+      data: {
+        name: "stale-snapshot-recurrence",
+        displayName: "Stale Snapshot Recurrence",
+        type: "builtin",
+        refreshIntervalMin: 60,
+        snapshots: { create: { fetchedAt: firstSnapshotAt } },
+      },
+    });
+    const fetchMock = vi.fn().mockResolvedValue(new Response("ok", { status: 200 }));
+    const config = {
+      channels: [{ kind: "webhook" as const, url: "https://alerts.example/stale-recurrence" }],
+      minSeverity: "warning" as const,
+      reminderHours: 24,
+      maxAttempts: 1,
+    };
+
+    expect(
+      await deliverProviderAlerts({
+        now: new Date("2026-07-20T12:00:00.000Z"),
+        config,
+        fetchImpl: fetchMock,
+      })
+    ).toMatchObject({ sent: 1 });
+
+    await prisma.usageSnapshot.create({
+      data: { providerId: provider.id, fetchedAt: freshSnapshotAt },
+    });
+    expect(
+      await deliverProviderAlerts({
+        now: new Date("2026-07-20T12:30:00.000Z"),
+        config,
+        fetchImpl: fetchMock,
+      })
+    ).toMatchObject({ resolved: 1 });
+
+    expect(
+      await deliverProviderAlerts({
+        now: new Date("2026-07-21T11:00:00.001Z"),
+        config,
+        fetchImpl: fetchMock,
+      })
+    ).toMatchObject({ sent: 1 });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    const notification = await prisma.providerAlertNotification.findUniqueOrThrow({
+      where: { stateKey: `${provider.id}:stale_snapshot` },
+    });
+    expect(notification).toMatchObject({
+      incidentGeneration: 2,
+      evidenceSourceAt: freshSnapshotAt,
+      evidenceWatermarkState: "active",
+      resolvedAt: null,
+    });
+    expect(notification.evidenceWatermarkAt).toEqual(
+      new Date("2026-07-21T11:00:00.000Z")
+    );
   });
 
   it("reopens no-snapshot evidence after disable and re-enable revisions", async () => {
@@ -1326,6 +1697,77 @@ describe("alert delivery", () => {
     expect(notification.lastDetectedAt).toEqual(
       new Date("2026-07-20T15:00:00.000Z")
     );
+  });
+
+  it("floors a delayed reopen against prior resolution, newer evidence, and the actual claim clock", async () => {
+    const provider = await prisma.provider.create({
+      data: {
+        name: "reopen-time-floor",
+        displayName: "Reopen Time Floor",
+        type: "builtin",
+        refreshIntervalMin: 60,
+        plan: { create: { billingMode: "actual", lowBalanceUsd: 10 } },
+        snapshots: {
+          create: {
+            fetchedAt: new Date("2026-07-20T08:00:00.000Z"),
+            balance: 5,
+          },
+        },
+      },
+    });
+    const fetchMock = vi.fn().mockResolvedValue(new Response("ok", { status: 200 }));
+    const config = {
+      channels: [{ kind: "webhook" as const, url: "https://alerts.example/reopen-time-floor" }],
+      minSeverity: "warning" as const,
+      reminderHours: 24,
+      maxAttempts: 1,
+    };
+    await deliverProviderAlerts({
+      now: new Date("2026-07-20T12:00:00.000Z"),
+      config,
+      fetchImpl: fetchMock,
+    });
+    await prisma.usageSnapshot.create({
+      data: {
+        providerId: provider.id,
+        fetchedAt: new Date("2026-07-20T15:00:00.000Z"),
+        balance: 25,
+      },
+    });
+    await deliverProviderAlerts({
+      now: new Date("2026-07-20T15:30:00.000Z"),
+      config,
+      fetchImpl: fetchMock,
+    });
+    await prisma.usageSnapshot.create({
+      data: {
+        providerId: provider.id,
+        fetchedAt: new Date("2026-07-20T16:00:00.000Z"),
+        balance: 4,
+      },
+    });
+
+    const actualClaimAt = new Date("2026-07-20T17:00:00.000Z");
+    expect(
+      await deliverProviderAlerts({
+        // Simulates a delayed worker whose cycle timestamp predates the prior
+        // resolution and the evidence it eventually observes.
+        now: new Date("2026-07-20T14:00:00.000Z"),
+        clock: () => actualClaimAt,
+        config,
+        fetchImpl: fetchMock,
+      })
+    ).toMatchObject({ sent: 1 });
+
+    const reopened = await prisma.providerAlertNotification.findUniqueOrThrow({
+      where: { stateKey: `${provider.id}:balance_low` },
+    });
+    expect(reopened).toMatchObject({
+      incidentGeneration: 2,
+      firstDetectedAt: actualClaimAt,
+      lastDetectedAt: actualClaimAt,
+      resolvedAt: null,
+    });
   });
 
   it("uses actual claim and outcome times instead of moving timestamps back to cycle start", async () => {

@@ -1,7 +1,12 @@
 import type { Prisma, PrismaClient } from "@prisma/client";
 import { createHash, randomUUID } from "node:crypto";
 import { prisma } from "@/lib/prisma";
-import { buildProviderAlertState, type AlertSeverity, type ProviderAlert } from "@/lib/provider-alerts";
+import {
+  buildProviderAlertState,
+  providerSnapshotStaleAt,
+  type AlertSeverity,
+  type ProviderAlert,
+} from "@/lib/provider-alerts";
 import { computeBudgetStatus } from "@/lib/budget-status";
 import { providerPollSnapshotExpected } from "@/lib/anthropic-credentials";
 
@@ -204,14 +209,21 @@ type AlertEvidenceState = "active" | "clear";
 
 interface AlertEvidence {
   configGeneration: number;
+  sourceAt: Date;
   at: Date;
   state: AlertEvidenceState;
 }
 
 interface PersistedAlertEvidence {
   evidenceConfigGeneration: number;
+  evidenceSourceAt: Date | null;
   evidenceWatermarkAt: Date | null;
   evidenceWatermarkState: string;
+}
+
+interface NotificationVersion extends PersistedAlertEvidence {
+  severity: string;
+  message: string;
 }
 
 const EVIDENCE_STATE_RANK: Record<string, number> = {
@@ -227,6 +239,14 @@ function compareEvidence(
   if (persisted.evidenceConfigGeneration !== candidate.configGeneration) {
     return persisted.evidenceConfigGeneration - candidate.configGeneration;
   }
+  const persistedSourceAt =
+    persisted.evidenceSourceAt?.getTime() ??
+    persisted.evidenceWatermarkAt?.getTime() ??
+    -1;
+  const candidateSourceAt = candidate.sourceAt.getTime();
+  if (persistedSourceAt !== candidateSourceAt) {
+    return persistedSourceAt - candidateSourceAt;
+  }
   const persistedAt = persisted.evidenceWatermarkAt?.getTime() ?? -1;
   const candidateAt = candidate.at.getTime();
   if (persistedAt !== candidateAt) return persistedAt - candidateAt;
@@ -236,37 +256,42 @@ function compareEvidence(
   );
 }
 
-function evidenceAtMostConditions(
-  evidence: AlertEvidence
-): Prisma.ProviderAlertNotificationWhereInput[] {
-  return [
-    { evidenceConfigGeneration: { lt: evidence.configGeneration } },
-    {
-      evidenceConfigGeneration: evidence.configGeneration,
-      OR: [
-        { evidenceWatermarkAt: null },
-        { evidenceWatermarkAt: { lt: evidence.at } },
-        ...(evidence.state === "clear"
-          ? [{ evidenceWatermarkAt: evidence.at }]
-          : [
-              {
-                evidenceWatermarkAt: evidence.at,
-                evidenceWatermarkState: { not: "clear" },
-              },
-            ]),
-      ],
-    },
-  ];
+function exactNotificationVersionWhere(
+  version: NotificationVersion
+): Prisma.ProviderAlertNotificationWhereInput {
+  return {
+    evidenceConfigGeneration: version.evidenceConfigGeneration,
+    evidenceSourceAt: version.evidenceSourceAt,
+    evidenceWatermarkAt: version.evidenceWatermarkAt,
+    evidenceWatermarkState: version.evidenceWatermarkState,
+    severity: version.severity,
+    message: version.message,
+  };
 }
 
-function alertEvidenceAt(
+function notificationVersionOf(
+  notification: NotificationVersion
+): NotificationVersion {
+  return {
+    evidenceConfigGeneration: notification.evidenceConfigGeneration,
+    evidenceSourceAt: notification.evidenceSourceAt,
+    evidenceWatermarkAt: notification.evidenceWatermarkAt,
+    evidenceWatermarkState: notification.evidenceWatermarkState,
+    severity: notification.severity,
+    message: notification.message,
+  };
+}
+
+function alertEvidenceTimes(
   provider: {
     isActive: boolean;
+    refreshIntervalMin: number;
     snapshots: Array<{ fetchedAt: Date }>;
   },
   alertCode: ProviderAlert["code"],
-  evaluatedAt: Date
-): Date {
+  evaluatedAt: Date,
+  state: AlertEvidenceState
+): { sourceAt: Date; at: Date } {
   if (
     provider.isActive &&
     SNAPSHOT_EVIDENCE_ALERT_CODES.has(alertCode)
@@ -274,30 +299,56 @@ function alertEvidenceAt(
     // Absence predates every real snapshot. Using evaluatedAt here would let
     // a worker that read "no snapshot" at a later wall-clock time outrank a
     // newly inserted snapshot whose provider fetchedAt is earlier.
-    return provider.snapshots[0]?.fetchedAt ?? NO_SNAPSHOT_EVIDENCE_AT;
+    const snapshot = provider.snapshots[0];
+    if (!snapshot) {
+      return {
+        sourceAt: NO_SNAPSHOT_EVIDENCE_AT,
+        at: NO_SNAPSHOT_EVIDENCE_AT,
+      };
+    }
+    // A stale alert is a deterministic transition derived from S itself.
+    // Source time is compared first, so any newer snapshot wins even when the
+    // older snapshot's stale deadline is later. For the same snapshot, the
+    // deadline follows fetchedAt and permits a fresh -> stale recurrence.
+    if (alertCode === "stale_snapshot" && state === "active") {
+      return {
+        sourceAt: snapshot.fetchedAt,
+        at: providerSnapshotStaleAt(
+          snapshot.fetchedAt,
+          provider.refreshIntervalMin
+        ),
+      };
+    }
+    return { sourceAt: snapshot.fetchedAt, at: snapshot.fetchedAt };
   }
-  return evaluatedAt;
+  return { sourceAt: evaluatedAt, at: evaluatedAt };
 }
 
 function alertEvidence(
   provider: {
     isActive: boolean;
     alertConfigGeneration: number;
+    refreshIntervalMin: number;
     snapshots: Array<{ fetchedAt: Date }>;
   },
   alertCode: ProviderAlert["code"],
   evaluatedAt: Date,
   state: AlertEvidenceState
 ): AlertEvidence {
+  const times = alertEvidenceTimes(provider, alertCode, evaluatedAt, state);
   return {
     configGeneration: provider.alertConfigGeneration,
-    at: alertEvidenceAt(provider, alertCode, evaluatedAt),
+    ...times,
     state,
   };
 }
 
 function noEarlierThan(candidate: Date, floor: Date): Date {
   return candidate >= floor ? candidate : floor;
+}
+
+function latestDate(...dates: Date[]): Date {
+  return new Date(Math.max(...dates.map((date) => date.getTime())));
 }
 
 function dueForChannel(
@@ -391,6 +442,8 @@ interface TriggerDeliveryClaim {
   operationToken: string;
   operationGeneration: number;
   configGeneration: number;
+  targetEvidence: AlertEvidence;
+  notificationVersion: NotificationVersion;
 }
 
 interface ResolveDeliveryClaim {
@@ -402,6 +455,8 @@ interface ResolveDeliveryClaim {
   operationToken: string;
   operationGeneration: number;
   configGeneration: number;
+  targetEvidence: AlertEvidence;
+  notificationVersion: NotificationVersion;
 }
 
 interface NotificationOperationClaim {
@@ -411,7 +466,17 @@ interface NotificationOperationClaim {
   claimedAt: Date;
   expiresAt: Date;
   configGeneration: number;
+  targetEvidence: AlertEvidence;
+  notificationVersion: NotificationVersion;
 }
+
+type ActiveNotificationClaimResult =
+  | {
+      status: "claimed";
+      notification: Prisma.ProviderAlertNotificationGetPayload<{}>;
+      claim: NotificationOperationClaim;
+    }
+  | { status: "stale" | "busy" };
 
 function isRetryableDeliveryError(
   channel: AlertDeliveryChannel,
@@ -727,12 +792,88 @@ function noteChannelPersistenceDegradation(
   });
 }
 
+interface NotificationOperationState {
+  incidentGeneration: number;
+  operationClaimToken: string | null;
+  operationClaimExpiresAt: Date | null;
+  operationClaimIncidentGeneration: number | null;
+  operationClaimConfigGeneration: number | null;
+  operationClaimEvidenceSourceAt: Date | null;
+  operationClaimEvidenceAt: Date | null;
+  operationClaimEvidenceState: string | null;
+}
+
+type LiveOperationTarget =
+  | { status: "none" }
+  | { status: "opaque" }
+  | { status: "known"; evidence: AlertEvidence };
+
+function liveOperationTarget(
+  notification: NotificationOperationState,
+  at: Date
+): LiveOperationTarget {
+  if (
+    !notification.operationClaimToken ||
+    !notification.operationClaimExpiresAt ||
+    notification.operationClaimExpiresAt <= at ||
+    notification.operationClaimIncidentGeneration !==
+      notification.incidentGeneration
+  ) {
+    return { status: "none" };
+  }
+  if (
+    notification.operationClaimConfigGeneration === null ||
+    !notification.operationClaimEvidenceSourceAt ||
+    !notification.operationClaimEvidenceAt ||
+    (notification.operationClaimEvidenceState !== "active" &&
+      notification.operationClaimEvidenceState !== "clear")
+  ) {
+    return { status: "opaque" };
+  }
+  return {
+    status: "known",
+    evidence: {
+      configGeneration: notification.operationClaimConfigGeneration,
+      sourceAt: notification.operationClaimEvidenceSourceAt,
+      at: notification.operationClaimEvidenceAt,
+      state: notification.operationClaimEvidenceState,
+    },
+  };
+}
+
+function compareCandidateToLiveTarget(
+  target: LiveOperationTarget,
+  candidate: AlertEvidence
+): "available" | "busy" | "stale" | "preempt" {
+  if (target.status === "none") return "available";
+  if (target.status === "opaque") return "busy";
+  const comparison = compareEvidence(
+    {
+      evidenceConfigGeneration: target.evidence.configGeneration,
+      evidenceSourceAt: target.evidence.sourceAt,
+      evidenceWatermarkAt: target.evidence.at,
+      evidenceWatermarkState: target.evidence.state,
+    },
+    candidate
+  );
+  if (comparison > 0) return "stale";
+  if (comparison === 0) return "busy";
+  return "preempt";
+}
+
 async function claimNotificationOperation(
   db: PrismaLike,
-  notification: {
+  notification: NotificationVersion & {
     id: string;
     incidentGeneration: number;
     operationClaimGeneration: number;
+    operationClaimToken: string | null;
+    operationClaimExpiresAt: Date | null;
+    operationClaimIncidentGeneration: number | null;
+    operationClaimConfigGeneration: number | null;
+    operationClaimEvidenceSourceAt: Date | null;
+    operationClaimEvidenceAt: Date | null;
+    operationClaimEvidenceState: string | null;
   },
   evidence: AlertEvidence,
   claimLeaseDurationMs: number,
@@ -741,6 +882,12 @@ async function claimNotificationOperation(
   const claimedAt = clock();
   const token = randomUUID();
   const expiresAt = new Date(claimedAt.getTime() + claimLeaseDurationMs);
+  if (compareEvidence(notification, evidence) > 0) return null;
+
+  const liveTarget = liveOperationTarget(notification, claimedAt);
+  const liveDisposition = compareCandidateToLiveTarget(liveTarget, evidence);
+  if (liveDisposition === "busy" || liveDisposition === "stale") return null;
+
   const claimed = await db.providerAlertNotification.updateMany({
     where: {
       id: notification.id,
@@ -750,19 +897,57 @@ async function claimNotificationOperation(
       provider: {
         is: { alertConfigGeneration: evidence.configGeneration },
       },
+      ...exactNotificationVersionWhere(notification),
       AND: [
-        { OR: evidenceAtMostConditions(evidence) },
-        {
-          OR: [
-            { operationClaimToken: null },
-            { operationClaimExpiresAt: { lte: claimedAt } },
-            {
-              operationClaimIncidentGeneration: {
-                not: notification.incidentGeneration,
+        ...(liveDisposition === "preempt"
+          ? [
+              {
+                operationClaimToken: notification.operationClaimToken,
+                operationClaimExpiresAt:
+                  notification.operationClaimExpiresAt,
+                operationClaimIncidentGeneration:
+                  notification.operationClaimIncidentGeneration,
+                operationClaimConfigGeneration:
+                  notification.operationClaimConfigGeneration,
+                operationClaimEvidenceSourceAt:
+                  notification.operationClaimEvidenceSourceAt,
+                operationClaimEvidenceAt:
+                  notification.operationClaimEvidenceAt,
+                operationClaimEvidenceState:
+                  notification.operationClaimEvidenceState,
+                channelDeliveries: {
+                  none: {
+                    OR: [
+                      {
+                        triggerClaimToken: { not: null },
+                        triggerClaimExpiresAt: { gt: claimedAt },
+                        triggerOperationClaimGeneration:
+                          notification.operationClaimGeneration,
+                      },
+                      {
+                        resolveClaimToken: { not: null },
+                        resolveClaimExpiresAt: { gt: claimedAt },
+                        resolveOperationClaimGeneration:
+                          notification.operationClaimGeneration,
+                      },
+                    ],
+                  },
+                },
               },
-            },
-          ],
-        },
+            ]
+          : [
+              {
+                OR: [
+                  { operationClaimToken: null },
+                  { operationClaimExpiresAt: { lte: claimedAt } },
+                  {
+                    operationClaimIncidentGeneration: {
+                      not: notification.incidentGeneration,
+                    },
+                  },
+                ],
+              },
+            ]),
       ],
     },
     data: {
@@ -771,6 +956,9 @@ async function claimNotificationOperation(
       operationClaimExpiresAt: expiresAt,
       operationClaimIncidentGeneration: notification.incidentGeneration,
       operationClaimConfigGeneration: evidence.configGeneration,
+      operationClaimEvidenceSourceAt: evidence.sourceAt,
+      operationClaimEvidenceAt: evidence.at,
+      operationClaimEvidenceState: evidence.state,
     },
   });
   if (claimed.count !== 1) return null;
@@ -784,9 +972,28 @@ async function claimNotificationOperation(
       operationClaimGeneration: true,
       operationClaimIncidentGeneration: true,
       operationClaimConfigGeneration: true,
+      operationClaimEvidenceSourceAt: true,
+      operationClaimEvidenceAt: true,
+      operationClaimEvidenceState: true,
+      evidenceConfigGeneration: true,
+      evidenceSourceAt: true,
+      evidenceWatermarkAt: true,
+      evidenceWatermarkState: true,
+      severity: true,
+      message: true,
       provider: { select: { alertConfigGeneration: true } },
     },
   });
+  const stillOwnsProvisionalClaim =
+    row?.resolvedAt === null &&
+    row.incidentGeneration === notification.incidentGeneration &&
+    row.operationClaimToken === token &&
+    row.operationClaimIncidentGeneration === notification.incidentGeneration &&
+    row.operationClaimConfigGeneration === evidence.configGeneration &&
+    row.operationClaimEvidenceSourceAt?.getTime() ===
+      evidence.sourceAt.getTime() &&
+    row.operationClaimEvidenceAt?.getTime() === evidence.at.getTime() &&
+    row.operationClaimEvidenceState === evidence.state;
   if (
     !row ||
     row.resolvedAt !== null ||
@@ -794,8 +1001,27 @@ async function claimNotificationOperation(
     row.operationClaimToken !== token ||
     row.operationClaimIncidentGeneration !== notification.incidentGeneration ||
     row.operationClaimConfigGeneration !== evidence.configGeneration ||
+    row.operationClaimEvidenceSourceAt?.getTime() !==
+      evidence.sourceAt.getTime() ||
+    row.operationClaimEvidenceAt?.getTime() !== evidence.at.getTime() ||
+    row.operationClaimEvidenceState !== evidence.state ||
+    compareEvidence(row, evidence) > 0 ||
+    row.severity !== notification.severity ||
+    row.message !== notification.message ||
     row.provider.alertConfigGeneration !== evidence.configGeneration
   ) {
+    if (row && stillOwnsProvisionalClaim) {
+      await releaseNotificationOperation(db, notification.id, {
+        token,
+        generation: row.operationClaimGeneration,
+        incidentGeneration: row.incidentGeneration,
+        claimedAt,
+        expiresAt,
+        configGeneration: evidence.configGeneration,
+        targetEvidence: evidence,
+        notificationVersion: notificationVersionOf(row),
+      });
+    }
     throw new TriggerDeliveryClaimLostError();
   }
   return {
@@ -805,6 +1031,15 @@ async function claimNotificationOperation(
     claimedAt,
     expiresAt,
     configGeneration: evidence.configGeneration,
+    targetEvidence: evidence,
+    notificationVersion: {
+      evidenceConfigGeneration: row.evidenceConfigGeneration,
+      evidenceSourceAt: row.evidenceSourceAt,
+      evidenceWatermarkAt: row.evidenceWatermarkAt,
+      evidenceWatermarkState: row.evidenceWatermarkState,
+      severity: row.severity,
+      message: row.message,
+    },
   };
 }
 
@@ -813,7 +1048,8 @@ async function releaseNotificationOperation(
   notificationId: string,
   claim: NotificationOperationClaim
 ): Promise<void> {
-  const released = await db.providerAlertNotification.updateMany({
+  await clearNotificationChildClaims(db, notificationId, claim);
+  await db.providerAlertNotification.updateMany({
     where: {
       id: notificationId,
       incidentGeneration: claim.incidentGeneration,
@@ -821,14 +1057,89 @@ async function releaseNotificationOperation(
       operationClaimGeneration: claim.generation,
       operationClaimIncidentGeneration: claim.incidentGeneration,
       operationClaimConfigGeneration: claim.configGeneration,
+      operationClaimEvidenceSourceAt: claim.targetEvidence.sourceAt,
+      operationClaimEvidenceAt: claim.targetEvidence.at,
+      operationClaimEvidenceState: claim.targetEvidence.state,
     },
     data: {
       operationClaimToken: null,
       operationClaimExpiresAt: null,
       operationClaimConfigGeneration: null,
+      operationClaimEvidenceSourceAt: null,
+      operationClaimEvidenceAt: null,
+      operationClaimEvidenceState: null,
     },
   });
-  if (released.count !== 1) throw new TriggerDeliveryClaimLostError();
+  // A strictly newer evidence target may intentionally preempt this parent
+  // lease. Releasing an already-superseded claim is therefore a safe no-op.
+  return;
+}
+
+async function clearNotificationChildClaims(
+  db: PrismaLike,
+  notificationId: string,
+  claim: NotificationOperationClaim
+): Promise<void> {
+  await db.providerAlertChannelDelivery.updateMany({
+    where: {
+      notificationId,
+      triggerClaimToken: { not: null },
+      triggerOperationClaimGeneration: claim.generation,
+    },
+    data: {
+      triggerClaimToken: null,
+      triggerClaimExpiresAt: null,
+    },
+  });
+  await db.providerAlertChannelDelivery.updateMany({
+    where: {
+      notificationId,
+      resolveClaimToken: { not: null },
+      resolveOperationClaimGeneration: claim.generation,
+    },
+    data: {
+      resolveClaimToken: null,
+      resolveClaimExpiresAt: null,
+    },
+  });
+}
+
+async function persistNotificationSummary(
+  db: PrismaLike,
+  notification: NotificationVersion & {
+    id: string;
+    incidentGeneration: number;
+    lastSentAt: Date | null;
+  },
+  operationClaim: NotificationOperationClaim,
+  summaryAt: Date,
+  claimValidAt = summaryAt
+): Promise<void> {
+  const summary = await db.providerAlertNotification.updateMany({
+    where: {
+      id: notification.id,
+      incidentGeneration: notification.incidentGeneration,
+      resolvedAt: null,
+      lastSentAt: notification.lastSentAt,
+      operationClaimToken: operationClaim.token,
+      operationClaimGeneration: operationClaim.generation,
+      operationClaimIncidentGeneration: operationClaim.incidentGeneration,
+      operationClaimConfigGeneration: operationClaim.configGeneration,
+      operationClaimEvidenceSourceAt: operationClaim.targetEvidence.sourceAt,
+      operationClaimEvidenceAt: operationClaim.targetEvidence.at,
+      operationClaimEvidenceState: operationClaim.targetEvidence.state,
+      operationClaimExpiresAt: { gt: claimValidAt },
+      ...exactNotificationVersionWhere(operationClaim.notificationVersion),
+      provider: {
+        is: { alertConfigGeneration: operationClaim.configGeneration },
+      },
+    },
+    data: {
+      lastSentAt: summaryAt,
+      sendCount: { increment: 1 },
+    },
+  });
+  if (summary.count !== 1) throw new TriggerDeliveryClaimLostError();
 }
 
 async function claimTriggerDelivery(
@@ -875,7 +1186,12 @@ async function claimTriggerDelivery(
           operationClaimGeneration: operationClaim.generation,
           operationClaimIncidentGeneration: incidentGeneration,
           operationClaimConfigGeneration: operationClaim.configGeneration,
+          operationClaimEvidenceSourceAt:
+            operationClaim.targetEvidence.sourceAt,
+          operationClaimEvidenceAt: operationClaim.targetEvidence.at,
+          operationClaimEvidenceState: operationClaim.targetEvidence.state,
           operationClaimExpiresAt: { gt: claimedAt },
+          ...exactNotificationVersionWhere(operationClaim.notificationVersion),
           provider: {
             is: {
               alertConfigGeneration: operationClaim.configGeneration,
@@ -889,6 +1205,11 @@ async function claimTriggerDelivery(
             { triggerClaimToken: null },
             { triggerClaimExpiresAt: { lte: claimedAt } },
             { triggerIncidentGeneration: { not: incidentGeneration } },
+            {
+              triggerOperationClaimGeneration: {
+                not: operationClaim.generation,
+              },
+            },
           ],
         },
         {
@@ -896,6 +1217,11 @@ async function claimTriggerDelivery(
             { resolveClaimToken: null },
             { resolveClaimExpiresAt: { lte: claimedAt } },
             { resolveIncidentGeneration: { not: incidentGeneration } },
+            {
+              resolveOperationClaimGeneration: {
+                not: operationClaim.generation,
+              },
+            },
           ],
         },
       ],
@@ -905,10 +1231,12 @@ async function claimTriggerDelivery(
       triggerClaimGeneration: { increment: 1 },
       triggerClaimExpiresAt: claimExpiresAt,
       triggerIncidentGeneration: incidentGeneration,
+      triggerOperationClaimGeneration: operationClaim.generation,
       pagerDutyDedupKey: exactPagerDutyDedupKey,
       resolveClaimToken: null,
       resolveClaimGeneration: { increment: 1 },
       resolveClaimExpiresAt: null,
+      resolveOperationClaimGeneration: null,
       lastAttemptAt: claimedAt,
       lastError: TRIGGER_OUTCOME_UNKNOWN_MARKER,
     },
@@ -923,13 +1251,15 @@ async function claimTriggerDelivery(
       triggerClaimToken: true,
       triggerClaimGeneration: true,
       triggerIncidentGeneration: true,
+      triggerOperationClaimGeneration: true,
       pagerDutyDedupKey: true,
     },
   });
   if (
     !row ||
     row.triggerClaimToken !== claimToken ||
-    row.triggerIncidentGeneration !== incidentGeneration
+    row.triggerIncidentGeneration !== incidentGeneration ||
+    row.triggerOperationClaimGeneration !== operationClaim.generation
   ) {
     throw new TriggerDeliveryClaimLostError();
   }
@@ -942,6 +1272,8 @@ async function claimTriggerDelivery(
     operationToken: operationClaim.token,
     operationGeneration: operationClaim.generation,
     configGeneration: operationClaim.configGeneration,
+    targetEvidence: operationClaim.targetEvidence,
+    notificationVersion: operationClaim.notificationVersion,
   };
 }
 
@@ -963,6 +1295,7 @@ async function recordTriggerOutcome(
       triggerClaimToken: claim.token,
       triggerClaimGeneration: claim.generation,
       triggerIncidentGeneration: claim.incidentGeneration,
+      triggerOperationClaimGeneration: claim.operationGeneration,
       notification: {
         is: {
           resolvedAt: null,
@@ -971,7 +1304,12 @@ async function recordTriggerOutcome(
           operationClaimGeneration: claim.operationGeneration,
           operationClaimIncidentGeneration: claim.incidentGeneration,
           operationClaimConfigGeneration: claim.configGeneration,
+          operationClaimEvidenceSourceAt:
+            claim.targetEvidence.sourceAt,
+          operationClaimEvidenceAt: claim.targetEvidence.at,
+          operationClaimEvidenceState: claim.targetEvidence.state,
           operationClaimExpiresAt: { gt: persistedAt },
+          ...exactNotificationVersionWhere(claim.notificationVersion),
           provider: {
             is: { alertConfigGeneration: claim.configGeneration },
           },
@@ -981,8 +1319,9 @@ async function recordTriggerOutcome(
     data: {
       channelKind: channel.kind,
       lastAttemptAt: persistedAt,
-      triggerClaimToken: null,
-      triggerClaimExpiresAt: null,
+      ...(error
+        ? { triggerClaimToken: null, triggerClaimExpiresAt: null }
+        : {}),
       attemptCount: { increment: attempts },
       ...(error
         ? { lastError: error }
@@ -1014,6 +1353,7 @@ async function recordTriggerUnknownOutcome(
       triggerClaimToken: claim.token,
       triggerClaimGeneration: claim.generation,
       triggerIncidentGeneration: claim.incidentGeneration,
+      triggerOperationClaimGeneration: claim.operationGeneration,
       notification: {
         is: {
           resolvedAt: null,
@@ -1022,7 +1362,12 @@ async function recordTriggerUnknownOutcome(
           operationClaimGeneration: claim.operationGeneration,
           operationClaimIncidentGeneration: claim.incidentGeneration,
           operationClaimConfigGeneration: claim.configGeneration,
+          operationClaimEvidenceSourceAt:
+            claim.targetEvidence.sourceAt,
+          operationClaimEvidenceAt: claim.targetEvidence.at,
+          operationClaimEvidenceState: claim.targetEvidence.state,
           operationClaimExpiresAt: { gt: persistedAt },
+          ...exactNotificationVersionWhere(claim.notificationVersion),
           provider: {
             is: { alertConfigGeneration: claim.configGeneration },
           },
@@ -1032,8 +1377,6 @@ async function recordTriggerUnknownOutcome(
     data: {
       channelKind: channel.kind,
       lastAttemptAt: persistedAt,
-      triggerClaimToken: null,
-      triggerClaimExpiresAt: null,
       attemptCount: { increment: attempts },
       lastError: TRIGGER_OUTCOME_UNKNOWN_MARKER,
     },
@@ -1080,7 +1423,12 @@ async function claimResolveDelivery(
           operationClaimGeneration: operationClaim.generation,
           operationClaimIncidentGeneration: incidentGeneration,
           operationClaimConfigGeneration: operationClaim.configGeneration,
+          operationClaimEvidenceSourceAt:
+            operationClaim.targetEvidence.sourceAt,
+          operationClaimEvidenceAt: operationClaim.targetEvidence.at,
+          operationClaimEvidenceState: operationClaim.targetEvidence.state,
           operationClaimExpiresAt: { gt: claimedAt },
+          ...exactNotificationVersionWhere(operationClaim.notificationVersion),
           provider: {
             is: {
               alertConfigGeneration: operationClaim.configGeneration,
@@ -1094,6 +1442,11 @@ async function claimResolveDelivery(
             { resolveClaimToken: null },
             { resolveClaimExpiresAt: { lte: claimedAt } },
             { resolveIncidentGeneration: { not: incidentGeneration } },
+            {
+              resolveOperationClaimGeneration: {
+                not: operationClaim.generation,
+              },
+            },
           ],
         },
         {
@@ -1101,6 +1454,11 @@ async function claimResolveDelivery(
             { triggerClaimToken: null },
             { triggerClaimExpiresAt: { lte: claimedAt } },
             { triggerIncidentGeneration: { not: incidentGeneration } },
+            {
+              triggerOperationClaimGeneration: {
+                not: operationClaim.generation,
+              },
+            },
           ],
         },
       ],
@@ -1110,12 +1468,14 @@ async function claimResolveDelivery(
       resolveClaimGeneration: { increment: 1 },
       resolveClaimExpiresAt: new Date(claimedAt.getTime() + claimLeaseDurationMs),
       resolveIncidentGeneration: incidentGeneration,
+      resolveOperationClaimGeneration: operationClaim.generation,
       lastResolveAttemptAt: claimedAt,
       lastResolveError: RESOLVE_OUTCOME_UNKNOWN_MARKER,
       pagerDutyDedupKey: exactPagerDutyDedupKey,
       triggerClaimToken: null,
       triggerClaimGeneration: { increment: 1 },
       triggerClaimExpiresAt: null,
+      triggerOperationClaimGeneration: null,
     },
   });
   if (claimed.count !== 1) return null;
@@ -1128,6 +1488,7 @@ async function claimResolveDelivery(
       resolveClaimToken: true,
       resolveClaimGeneration: true,
       resolveIncidentGeneration: true,
+      resolveOperationClaimGeneration: true,
       pagerDutyDedupKey: true,
     },
   });
@@ -1135,6 +1496,7 @@ async function claimResolveDelivery(
     !row ||
     row.resolveClaimToken !== claimToken ||
     row.resolveIncidentGeneration !== incidentGeneration ||
+    row.resolveOperationClaimGeneration !== operationClaim.generation ||
     row.pagerDutyDedupKey !== exactPagerDutyDedupKey
   ) {
     throw new TriggerDeliveryClaimLostError();
@@ -1148,6 +1510,8 @@ async function claimResolveDelivery(
     operationToken: operationClaim.token,
     operationGeneration: operationClaim.generation,
     configGeneration: operationClaim.configGeneration,
+    targetEvidence: operationClaim.targetEvidence,
+    notificationVersion: operationClaim.notificationVersion,
   };
 }
 
@@ -1169,6 +1533,7 @@ async function recordResolveOutcome(
       resolveClaimToken: claim.token,
       resolveClaimGeneration: claim.generation,
       resolveIncidentGeneration: claim.incidentGeneration,
+      resolveOperationClaimGeneration: claim.operationGeneration,
       notification: {
         is: {
           resolvedAt: null,
@@ -1177,7 +1542,12 @@ async function recordResolveOutcome(
           operationClaimGeneration: claim.operationGeneration,
           operationClaimIncidentGeneration: claim.incidentGeneration,
           operationClaimConfigGeneration: claim.configGeneration,
+          operationClaimEvidenceSourceAt:
+            claim.targetEvidence.sourceAt,
+          operationClaimEvidenceAt: claim.targetEvidence.at,
+          operationClaimEvidenceState: claim.targetEvidence.state,
           operationClaimExpiresAt: { gt: persistedAt },
+          ...exactNotificationVersionWhere(claim.notificationVersion),
           provider: {
             is: { alertConfigGeneration: claim.configGeneration },
           },
@@ -1187,8 +1557,9 @@ async function recordResolveOutcome(
     data: {
       channelKind: channel.kind,
       lastResolveAttemptAt: persistedAt,
-      resolveClaimToken: null,
-      resolveClaimExpiresAt: null,
+      ...(error
+        ? { resolveClaimToken: null, resolveClaimExpiresAt: null }
+        : {}),
       resolveAttemptCount: { increment: attempts },
       ...(error
         ? { lastResolveError: error }
@@ -1203,7 +1574,7 @@ async function recordResolveOutcome(
   if (persisted.count !== 1) throw new TriggerDeliveryClaimLostError();
 }
 
-async function activateProviderAlertNotification(
+async function claimActiveProviderAlertNotification(
   db: PrismaLike,
   provider: {
     id: string;
@@ -1213,8 +1584,10 @@ async function activateProviderAlertNotification(
   },
   alert: ProviderAlert,
   now: Date,
-  evidence: AlertEvidence
-) {
+  evidence: AlertEvidence,
+  claimLeaseDurationMs: number,
+  clock: () => Date
+): Promise<ActiveNotificationClaimResult> {
   const key = stateKey(provider.id, alert);
   for (let attempt = 0; attempt < 8; attempt += 1) {
     const existing = await db.providerAlertNotification.findUnique({
@@ -1223,29 +1596,43 @@ async function activateProviderAlertNotification(
         id: true,
         resolvedAt: true,
         incidentGeneration: true,
+        firstDetectedAt: true,
         lastDetectedAt: true,
         evidenceConfigGeneration: true,
+        evidenceSourceAt: true,
         evidenceWatermarkAt: true,
         evidenceWatermarkState: true,
+        severity: true,
+        message: true,
+        operationClaimToken: true,
+        operationClaimGeneration: true,
+        operationClaimExpiresAt: true,
+        operationClaimIncidentGeneration: true,
+        operationClaimConfigGeneration: true,
+        operationClaimEvidenceSourceAt: true,
+        operationClaimEvidenceAt: true,
+        operationClaimEvidenceState: true,
       },
     });
 
+    const evidenceComparison = existing
+      ? compareEvidence(existing, evidence)
+      : 0;
+    if (existing && evidenceComparison > 0) {
+      return { status: "stale" };
+    }
+    const claimedAt = clock();
     if (
       existing &&
-      (compareEvidence(existing, evidence) > 0 ||
-        (compareEvidence(existing, evidence) === 0 &&
-          existing.resolvedAt === null &&
-          existing.lastDetectedAt > now))
+      evidenceComparison === 0 &&
+      latestDate(now, claimedAt) < existing.lastDetectedAt
     ) {
-      return null;
+      return { status: "stale" };
     }
-    const detectedAt = existing
-      ? noEarlierThan(now, existing.lastDetectedAt)
-      : now;
+    const expiresAt = new Date(claimedAt.getTime() + claimLeaseDurationMs);
+    const claimToken = randomUUID();
 
     if (!existing) {
-      // A plain create plus unique-race retry avoids an unconditional upsert
-      // update that could let stale evidence overwrite a newer first creator.
       try {
         const currentProvider = await db.provider.findUnique({
           where: { id: provider.id },
@@ -1254,8 +1641,9 @@ async function activateProviderAlertNotification(
         if (
           currentProvider?.alertConfigGeneration !== evidence.configGeneration
         ) {
-          return null;
+          return { status: "stale" };
         }
+        const detectedAt = latestDate(now, claimedAt, evidence.sourceAt, evidence.at);
         const created = await db.providerAlertNotification.create({
           data: {
             providerId: provider.id,
@@ -1265,91 +1653,189 @@ async function activateProviderAlertNotification(
             providerName: provider.name,
             providerDisplayName: provider.displayName,
             message: alert.message,
-            firstDetectedAt: now,
-            lastDetectedAt: now,
+            firstDetectedAt: detectedAt,
+            lastDetectedAt: detectedAt,
             incidentGeneration: 1,
             evidenceConfigGeneration: evidence.configGeneration,
+            evidenceSourceAt: evidence.sourceAt,
             evidenceWatermarkAt: evidence.at,
             evidenceWatermarkState: "active",
             pagerDutyAuditState: "generation_scoped",
+            operationClaimToken: claimToken,
+            operationClaimGeneration: 1,
+            operationClaimExpiresAt: expiresAt,
+            operationClaimIncidentGeneration: 1,
+            operationClaimConfigGeneration: evidence.configGeneration,
+            operationClaimEvidenceSourceAt: evidence.sourceAt,
+            operationClaimEvidenceAt: evidence.at,
+            operationClaimEvidenceState: evidence.state,
           },
         });
         const stillCurrent = await db.provider.findUnique({
           where: { id: provider.id },
           select: { alertConfigGeneration: true },
         });
-        return stillCurrent?.alertConfigGeneration === evidence.configGeneration
-          ? created
-          : null;
+        const claim: NotificationOperationClaim = {
+          token: claimToken,
+          generation: created.operationClaimGeneration,
+          incidentGeneration: created.incidentGeneration,
+          claimedAt,
+          expiresAt,
+          configGeneration: evidence.configGeneration,
+          targetEvidence: evidence,
+          notificationVersion: notificationVersionOf(created),
+        };
+        if (
+          stillCurrent?.alertConfigGeneration !== evidence.configGeneration
+        ) {
+          await releaseNotificationOperation(db, created.id, claim);
+          return { status: "stale" };
+        }
+        return { status: "claimed", notification: created, claim };
       } catch (error) {
         if (isPrismaUniqueConstraint(error)) continue;
         throw error;
       }
     }
 
-    if (existing.resolvedAt) {
-      // Only one worker may advance a resolved row into the next incident. A
-      // contender that observed the same resolved generation loses this CAS and
-      // then reads the winner's open generation without resetting firstDetected.
-      const reopened = await db.providerAlertNotification.updateMany({
-        where: {
-          id: existing.id,
-          incidentGeneration: existing.incidentGeneration,
-          resolvedAt: existing.resolvedAt,
-          provider: {
-            is: { alertConfigGeneration: evidence.configGeneration },
+    const liveTarget = liveOperationTarget(existing, claimedAt);
+    const liveDisposition = compareCandidateToLiveTarget(liveTarget, evidence);
+    if (liveDisposition === "stale") return { status: "stale" };
+    if (liveDisposition === "busy") return { status: "busy" };
+
+    const reopenedIncidentGeneration = existing.resolvedAt
+      ? existing.incidentGeneration + 1
+      : existing.incidentGeneration;
+    const detectedAt = latestDate(
+      now,
+      claimedAt,
+      evidence.sourceAt,
+      evidence.at,
+      existing.lastDetectedAt,
+      ...(existing.resolvedAt ? [existing.resolvedAt] : [])
+    );
+    const claimed = await db.providerAlertNotification.updateMany({
+      where: {
+        id: existing.id,
+        incidentGeneration: existing.incidentGeneration,
+        resolvedAt: existing.resolvedAt,
+        operationClaimGeneration: existing.operationClaimGeneration,
+        provider: {
+          is: { alertConfigGeneration: evidence.configGeneration },
+        },
+        ...exactNotificationVersionWhere(existing),
+        AND: [
+          ...(liveDisposition === "preempt"
+            ? [
+                {
+                  operationClaimToken: existing.operationClaimToken,
+                  operationClaimExpiresAt:
+                    existing.operationClaimExpiresAt,
+                  operationClaimIncidentGeneration:
+                    existing.operationClaimIncidentGeneration,
+                  operationClaimConfigGeneration:
+                    existing.operationClaimConfigGeneration,
+                  operationClaimEvidenceSourceAt:
+                    existing.operationClaimEvidenceSourceAt,
+                  operationClaimEvidenceAt:
+                    existing.operationClaimEvidenceAt,
+                  operationClaimEvidenceState:
+                    existing.operationClaimEvidenceState,
+                  channelDeliveries: {
+                    none: {
+                      OR: [
+                        {
+                          triggerClaimToken: { not: null },
+                          triggerClaimExpiresAt: { gt: claimedAt },
+                          triggerOperationClaimGeneration:
+                            existing.operationClaimGeneration,
+                        },
+                        {
+                          resolveClaimToken: { not: null },
+                          resolveClaimExpiresAt: { gt: claimedAt },
+                          resolveOperationClaimGeneration:
+                            existing.operationClaimGeneration,
+                        },
+                      ],
+                    },
+                  },
+                },
+              ]
+            : [
+                {
+                  OR: [
+                    { operationClaimToken: null },
+                    { operationClaimExpiresAt: { lte: claimedAt } },
+                    {
+                      operationClaimIncidentGeneration: {
+                        not: existing.incidentGeneration,
+                      },
+                    },
+                  ],
+                },
+              ]),
+        ],
+      },
+      data: {
+        severity: alert.severity,
+        providerName: provider.name,
+        providerDisplayName: provider.displayName,
+        message: alert.message,
+        ...(existing.resolvedAt ? { firstDetectedAt: detectedAt } : {}),
+        lastDetectedAt: detectedAt,
+        resolvedAt: null,
+        ...(existing.resolvedAt
+          ? { incidentGeneration: { increment: 1 } }
+          : {}),
+        evidenceConfigGeneration: evidence.configGeneration,
+        evidenceSourceAt: evidence.sourceAt,
+        evidenceWatermarkAt: evidence.at,
+        evidenceWatermarkState: "active",
+        pagerDutyAuditState: "generation_scoped",
+        operationClaimToken: claimToken,
+        operationClaimGeneration: { increment: 1 },
+        operationClaimExpiresAt: expiresAt,
+        operationClaimIncidentGeneration: reopenedIncidentGeneration,
+        operationClaimConfigGeneration: evidence.configGeneration,
+        operationClaimEvidenceSourceAt: evidence.sourceAt,
+        operationClaimEvidenceAt: evidence.at,
+        operationClaimEvidenceState: evidence.state,
+      },
+    });
+    if (claimed.count === 0) {
+      if (liveDisposition === "preempt") {
+        const liveChildClaim = await db.providerAlertChannelDelivery.findFirst({
+          where: {
+            notificationId: existing.id,
+            OR: [
+              {
+                triggerClaimToken: { not: null },
+                triggerClaimExpiresAt: { gt: claimedAt },
+                triggerOperationClaimGeneration:
+                  existing.operationClaimGeneration,
+              },
+              {
+                resolveClaimToken: { not: null },
+                resolveClaimExpiresAt: { gt: claimedAt },
+                resolveOperationClaimGeneration:
+                  existing.operationClaimGeneration,
+              },
+            ],
           },
-          AND: [
-            { OR: evidenceAtMostConditions(evidence) },
-          ],
-        },
-        data: {
-          severity: alert.severity,
-          providerName: provider.name,
-          providerDisplayName: provider.displayName,
-          message: alert.message,
-          firstDetectedAt: now,
-          lastDetectedAt: detectedAt,
-          resolvedAt: null,
-          incidentGeneration: { increment: 1 },
-          evidenceConfigGeneration: evidence.configGeneration,
-          evidenceWatermarkAt: evidence.at,
-          evidenceWatermarkState: "active",
-          pagerDutyAuditState: "generation_scoped",
-          operationClaimToken: null,
-          operationClaimExpiresAt: null,
-          operationClaimConfigGeneration: null,
-        },
+          select: { id: true },
+        });
+        if (liveChildClaim) return { status: "busy" };
+      }
+      const currentProvider = await db.provider.findUnique({
+        where: { id: provider.id },
+        select: { alertConfigGeneration: true },
       });
-      if (reopened.count === 0) continue;
-    } else {
-      // An open row can be closed by a resolver after this read. Refresh only
-      // the exact still-open generation; if the resolver wins, loop and reopen
-      // it as the next incident instead of triggering the resolved generation.
-      const refreshed = await db.providerAlertNotification.updateMany({
-        where: {
-          id: existing.id,
-          incidentGeneration: existing.incidentGeneration,
-          resolvedAt: null,
-          provider: {
-            is: { alertConfigGeneration: evidence.configGeneration },
-          },
-          AND: [
-            { OR: evidenceAtMostConditions(evidence) },
-          ],
-        },
-        data: {
-          severity: alert.severity,
-          providerName: provider.name,
-          providerDisplayName: provider.displayName,
-          message: alert.message,
-          lastDetectedAt: detectedAt,
-          evidenceConfigGeneration: evidence.configGeneration,
-          evidenceWatermarkAt: evidence.at,
-          evidenceWatermarkState: "active",
-        },
-      });
-      if (refreshed.count === 0) continue;
+      if (
+        currentProvider?.alertConfigGeneration !== evidence.configGeneration
+      ) {
+        return { status: "stale" };
+      }
+      continue;
     }
 
     const activated = await db.providerAlertNotification.findUniqueOrThrow({
@@ -1358,16 +1844,52 @@ async function activateProviderAlertNotification(
         provider: { select: { alertConfigGeneration: true } },
       },
     });
-    if (
+    const ownsClaim =
       activated.resolvedAt === null &&
+      activated.incidentGeneration === reopenedIncidentGeneration &&
+      activated.operationClaimToken === claimToken &&
+      activated.operationClaimIncidentGeneration ===
+        reopenedIncidentGeneration &&
+      activated.operationClaimConfigGeneration === evidence.configGeneration &&
+      activated.operationClaimEvidenceSourceAt?.getTime() ===
+        evidence.sourceAt.getTime() &&
+      activated.operationClaimEvidenceAt?.getTime() === evidence.at.getTime() &&
+      activated.operationClaimEvidenceState === evidence.state &&
       activated.provider.alertConfigGeneration === evidence.configGeneration &&
-      compareEvidence(activated, evidence) === 0
+      compareEvidence(activated, evidence) === 0 &&
+      activated.severity === alert.severity &&
+      activated.message === alert.message;
+    const acquiredClaim: NotificationOperationClaim = {
+      token: claimToken,
+      generation: activated.operationClaimGeneration,
+      incidentGeneration: activated.incidentGeneration,
+      claimedAt,
+      expiresAt,
+      configGeneration: evidence.configGeneration,
+      targetEvidence: evidence,
+      notificationVersion: notificationVersionOf(activated),
+    };
+    if (ownsClaim) {
+      return {
+        status: "claimed",
+        notification: activated,
+        claim: acquiredClaim,
+      };
+    }
+    if (
+      activated.operationClaimToken === claimToken &&
+      activated.operationClaimIncidentGeneration ===
+        activated.incidentGeneration &&
+      activated.operationClaimConfigGeneration === evidence.configGeneration
     ) {
-      return activated;
+      await releaseNotificationOperation(db, activated.id, acquiredClaim);
     }
     if (activated.provider.alertConfigGeneration !== evidence.configGeneration) {
-      return null;
+      return { status: "stale" };
     }
+    return compareEvidence(activated, evidence) > 0
+      ? { status: "stale" }
+      : { status: "busy" };
   }
   throw new Error(`Alert incident ${key} changed too often to activate safely`);
 }
@@ -1504,12 +2026,16 @@ export async function deliverProviderAlerts(options: {
       );
       alertState.alerts = [...nonBudgetAlerts, ...canonical.alerts];
     }
-    const deliverableAlerts = alertState.alerts.filter((alert) =>
+    const rawAlerts = alertState.alerts;
+    const deliverableAlerts = rawAlerts.filter((alert) =>
       shouldDeliverSeverity(alert.severity, config.minSeverity)
     );
-    result.activeAlerts += deliverableAlerts.length;
+    result.activeAlerts += rawAlerts.length;
 
-    const activeKeys = new Set(deliverableAlerts.map((alert) => stateKey(provider.id, alert)));
+    // Severity policy controls external delivery eligibility, not whether the
+    // underlying condition remains active. Otherwise raising the policy would
+    // falsely resolve already-open warning incidents.
+    const activeKeys = new Set(rawAlerts.map((alert) => stateKey(provider.id, alert)));
     const openNotifications = await db.providerAlertNotification.findMany({
       where: { providerId: provider.id, resolvedAt: null },
       select: {
@@ -1523,7 +2049,15 @@ export async function deliverProviderAlerts(options: {
         incidentGeneration: true,
         pagerDutyAuditState: true,
         operationClaimGeneration: true,
+        operationClaimToken: true,
+        operationClaimExpiresAt: true,
+        operationClaimIncidentGeneration: true,
+        operationClaimConfigGeneration: true,
+        operationClaimEvidenceSourceAt: true,
+        operationClaimEvidenceAt: true,
+        operationClaimEvidenceState: true,
         evidenceConfigGeneration: true,
+        evidenceSourceAt: true,
         evidenceWatermarkAt: true,
         evidenceWatermarkState: true,
       },
@@ -1576,10 +2110,12 @@ export async function deliverProviderAlerts(options: {
           triggerClaimToken: true,
           triggerClaimExpiresAt: true,
           triggerIncidentGeneration: true,
+          triggerOperationClaimGeneration: true,
           resolveClaimToken: true,
           resolveClaimGeneration: true,
           resolveClaimExpiresAt: true,
           resolveIncidentGeneration: true,
+          resolveOperationClaimGeneration: true,
           pagerDutyDedupKey: true,
         },
       });
@@ -1614,6 +2150,7 @@ export async function deliverProviderAlerts(options: {
           state.triggerClaimToken !== null &&
           state.triggerClaimExpiresAt !== null &&
           state.triggerClaimExpiresAt > now &&
+          state.triggerOperationClaimGeneration === operationClaim.generation &&
           generationMatches(
             state.triggerIncidentGeneration,
             notification.incidentGeneration
@@ -1681,6 +2218,7 @@ export async function deliverProviderAlerts(options: {
           state?.resolveClaimToken &&
           state.resolveClaimExpiresAt &&
           state.resolveClaimExpiresAt > now &&
+          state.resolveOperationClaimGeneration === operationClaim.generation &&
           generationMatches(
             state.resolveIncidentGeneration,
             notification.incidentGeneration
@@ -1830,12 +2368,13 @@ export async function deliverProviderAlerts(options: {
       }
 
       if (!allPagerDutyResolvesSent) continue;
-      const closedAt = noEarlierThan(
-        noEarlierThan(
-          noEarlierThan(now, operationClaim.claimedAt),
-          clock()
-        ),
-        notification.lastDetectedAt
+      const closedAt = latestDate(
+        now,
+        operationClaim.claimedAt,
+        clock(),
+        notification.lastDetectedAt,
+        resolutionEvidence.sourceAt,
+        resolutionEvidence.at
       );
       const closed = await db.providerAlertNotification.updateMany({
         where: {
@@ -1848,30 +2387,37 @@ export async function deliverProviderAlerts(options: {
             operationClaim.incidentGeneration,
           operationClaimConfigGeneration:
             operationClaim.configGeneration,
+          operationClaimEvidenceSourceAt:
+            operationClaim.targetEvidence.sourceAt,
+          operationClaimEvidenceAt: operationClaim.targetEvidence.at,
+          operationClaimEvidenceState: operationClaim.targetEvidence.state,
           operationClaimExpiresAt: { gt: closedAt },
+          ...exactNotificationVersionWhere(operationClaim.notificationVersion),
           provider: {
             is: {
               alertConfigGeneration: resolutionEvidence.configGeneration,
             },
           },
-          AND: [
-            { OR: evidenceAtMostConditions(resolutionEvidence) },
-          ],
         },
         data: {
           resolvedAt: closedAt,
           evidenceConfigGeneration: resolutionEvidence.configGeneration,
+          evidenceSourceAt: resolutionEvidence.sourceAt,
           evidenceWatermarkAt: resolutionEvidence.at,
           evidenceWatermarkState: "clear",
           operationClaimToken: null,
           operationClaimExpiresAt: null,
           operationClaimConfigGeneration: null,
+          operationClaimEvidenceSourceAt: null,
+          operationClaimEvidenceAt: null,
+          operationClaimEvidenceState: null,
           ...(legacyAuditPending
             ? { pagerDutyAuditState: "legacy_audited" }
             : {}),
         },
       });
       if (closed.count !== 1) throw new TriggerDeliveryClaimLostError();
+      await clearNotificationChildClaims(db, notification.id, operationClaim);
       operationClosed = true;
       result.resolved += 1;
       } finally {
@@ -1888,45 +2434,34 @@ export async function deliverProviderAlerts(options: {
         now,
         "active"
       );
-      const notification = await activateProviderAlertNotification(
+      const activation = await claimActiveProviderAlertNotification(
         db,
         provider,
         alert,
         now,
-        activationEvidence
-      );
-
-      if (!notification) {
-        result.skipped += 1;
-        result.errors.push({
-          providerId: provider.id,
-          alertCode: alert.code,
-          channel: "incident",
-          error: STALE_ALERT_EVIDENCE_MESSAGE,
-        });
-        continue;
-      }
-
-      if (channels.length === 0) {
-        result.skipped += 1;
-        continue;
-      }
-
-      const operationClaim = await claimNotificationOperation(
-        db,
-        notification,
         activationEvidence,
         operationClaimLeaseDurationMs,
         clock
       );
-      if (!operationClaim) {
+
+      if (activation.status !== "claimed") {
         result.skipped += 1;
         result.errors.push({
           providerId: provider.id,
           alertCode: alert.code,
           channel: "incident",
-          error: NOTIFICATION_OPERATION_IN_PROGRESS_MESSAGE,
+          error:
+            activation.status === "stale"
+              ? STALE_ALERT_EVIDENCE_MESSAGE
+              : NOTIFICATION_OPERATION_IN_PROGRESS_MESSAGE,
         });
+        continue;
+      }
+      const { notification, claim: operationClaim } = activation;
+
+      if (channels.length === 0) {
+        result.skipped += 1;
+        await releaseNotificationOperation(db, notification.id, operationClaim);
         continue;
       }
       try {
@@ -1943,6 +2478,7 @@ export async function deliverProviderAlerts(options: {
           triggerClaimGeneration: true,
           triggerClaimExpiresAt: true,
           triggerIncidentGeneration: true,
+          triggerOperationClaimGeneration: true,
         },
       });
       const stateByChannelKey = new Map(
@@ -1955,6 +2491,8 @@ export async function deliverProviderAlerts(options: {
           persisted?.triggerClaimToken &&
           persisted.triggerClaimExpiresAt &&
           persisted.triggerClaimExpiresAt > now &&
+          persisted.triggerOperationClaimGeneration ===
+            operationClaim.generation &&
           generationMatches(
             persisted.triggerIncidentGeneration,
             notification.incidentGeneration
@@ -2011,6 +2549,44 @@ export async function deliverProviderAlerts(options: {
       });
 
       if (dueChannels.length === 0) {
+        const successfulStates = channels.map((channel) =>
+          stateByChannelKey.get(channelKey(channel))
+        );
+        const hasCompleteDurableSuccess =
+          !hasDeferredDueChannel &&
+          successfulStates.every(
+            (state) =>
+              state?.lastSucceededAt &&
+              generationMatches(
+                state.lastSucceededIncidentGeneration,
+                notification.incidentGeneration
+              ) &&
+              state.lastSucceededAt >= notification.firstDetectedAt
+          );
+        if (hasCompleteDurableSuccess) {
+          const durableSummaryAt = latestDate(
+            ...successfulStates.map((state) => state!.lastSucceededAt!)
+          );
+          if (
+            !notification.lastSentAt ||
+            notification.lastSentAt < durableSummaryAt
+          ) {
+            try {
+              await persistNotificationSummary(
+                db,
+                notification,
+                operationClaim,
+                durableSummaryAt,
+                latestDate(now, operationClaim.claimedAt, clock())
+              );
+            } catch (error) {
+              if (!isPrismaModelTimeout(error, "ProviderAlertNotification")) {
+                throw error;
+              }
+              deferredSummaryTimeout ??= error;
+            }
+          }
+        }
         result.skipped += 1;
         continue;
       }
@@ -2183,38 +2759,13 @@ export async function deliverProviderAlerts(options: {
 
       if (allDueChannelsSent && anyChannelSent) {
         try {
-          const summaryAt = noEarlierThan(
-            noEarlierThan(now, operationClaim.claimedAt),
-            clock()
+          const summaryAt = latestDate(now, operationClaim.claimedAt, clock());
+          await persistNotificationSummary(
+            db,
+            notification,
+            operationClaim,
+            summaryAt
           );
-          const summary = await db.providerAlertNotification.updateMany({
-            where: {
-              id: notification.id,
-              incidentGeneration: notification.incidentGeneration,
-              resolvedAt: null,
-              evidenceConfigGeneration:
-                activationEvidence.configGeneration,
-              evidenceWatermarkAt: activationEvidence.at,
-              evidenceWatermarkState: "active",
-              operationClaimToken: operationClaim.token,
-              operationClaimGeneration: operationClaim.generation,
-              operationClaimIncidentGeneration:
-                operationClaim.incidentGeneration,
-              operationClaimConfigGeneration:
-                operationClaim.configGeneration,
-              operationClaimExpiresAt: { gt: summaryAt },
-              provider: {
-                is: {
-                  alertConfigGeneration: activationEvidence.configGeneration,
-                },
-              },
-            },
-            data: {
-              lastSentAt: summaryAt,
-              sendCount: { increment: 1 },
-            },
-          });
-          if (summary.count !== 1) throw new TriggerDeliveryClaimLostError();
         } catch (error) {
           if (!isPrismaModelTimeout(error, "ProviderAlertNotification")) throw error;
           deferredSummaryTimeout ??= error;

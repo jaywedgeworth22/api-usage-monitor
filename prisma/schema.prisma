@@ -294,10 +294,15 @@ model ProviderAlertNotification {
   // Monotonic evidence guard. "clear" wins ties so a stale alert evaluator
   // cannot reopen an incident already resolved from equal/newer evidence.
   evidenceWatermarkAt              DateTime?
+  // Source observation identity is ordered before the transition watermark.
+  // For stale_snapshot this lets a newer snapshot outrank an older snapshot's
+  // later stale deadline, while the unchanged snapshot can still transition
+  // from fresh at fetchedAt to stale at its deterministic deadline.
+  evidenceSourceAt                 DateTime?
   evidenceWatermarkState           String                         @default("legacy")
   // Provider alert-config revision that produced the durable evidence above.
-  // Compared before evidenceWatermarkAt so a deliberate config transition can
-  // supersede an unchanged snapshot or the no-snapshot epoch sentinel.
+  // Compared before source/transition time so a deliberate config transition
+  // can supersede an unchanged snapshot or no-snapshot epoch sentinel.
   evidenceConfigGeneration         Int                            @default(0)
   // Existing rows predate generation-scoped PagerDuty dedup keys and must be
   // conservatively audited/resolved with the legacy key before local closure.
@@ -310,6 +315,9 @@ model ProviderAlertNotification {
   operationClaimExpiresAt          DateTime?
   operationClaimIncidentGeneration Int?
   operationClaimConfigGeneration   Int?
+  operationClaimEvidenceSourceAt   DateTime?
+  operationClaimEvidenceAt         DateTime?
+  operationClaimEvidenceState      String?
   lastSentAt                       DateTime?
   sendCount                        Int                            @default(0)
   resolvedAt                       DateTime?
@@ -340,6 +348,7 @@ model ProviderAlertChannelDelivery {
   triggerClaimGeneration          Int                       @default(0)
   triggerClaimExpiresAt           DateTime?
   triggerIncidentGeneration       Int?
+  triggerOperationClaimGeneration Int?
   lastSucceededIncidentGeneration Int?
   pagerDutyDedupKey               String?
   attemptCount                    Int                       @default(0)
@@ -348,6 +357,7 @@ model ProviderAlertChannelDelivery {
   resolveClaimGeneration          Int                       @default(0)
   resolveClaimExpiresAt           DateTime?
   resolveIncidentGeneration       Int?
+  resolveOperationClaimGeneration Int?
   lastResolveAttemptAt            DateTime?
   lastResolvedAt                  DateTime?
   lastResolvedIncidentGeneration  Int?

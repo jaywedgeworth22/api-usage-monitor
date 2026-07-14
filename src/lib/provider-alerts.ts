@@ -69,6 +69,17 @@ const MS_PER_DAY = 24 * 60 * 60 * 1000;
 const WARNING_RATIO = 0.8;
 const RENEWAL_WARNING_DAYS = 7;
 
+export function providerSnapshotStaleAt(
+  fetchedAt: Date | string,
+  refreshIntervalMin: number
+): Date {
+  const staleAfterMs = Math.max(
+    refreshIntervalMin * 3 * 60 * 1000,
+    MS_PER_DAY
+  );
+  return new Date(new Date(fetchedAt).getTime() + staleAfterMs);
+}
+
 function formatUsd(value: number): string {
   return new Intl.NumberFormat("en-US", {
     style: "currency",
@@ -124,11 +135,10 @@ export function buildProviderAlertState(
       });
     } else {
       const fetchedAt = new Date(latestSnapshot.fetchedAt);
-      const staleAfterMs = Math.max(
-        input.refreshIntervalMin * 3 * 60 * 1000,
-        MS_PER_DAY
-      );
-      if (now.getTime() - fetchedAt.getTime() > staleAfterMs) {
+      if (
+        now.getTime() >
+        providerSnapshotStaleAt(fetchedAt, input.refreshIntervalMin).getTime()
+      ) {
         alerts.push({
           code: "stale_snapshot",
           severity: "warning",

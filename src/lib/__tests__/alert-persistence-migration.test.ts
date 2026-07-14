@@ -95,7 +95,9 @@ describe("alert persistence migration", () => {
                     "operationClaimToken", "operationClaimGeneration",
                     "operationClaimExpiresAt", "operationClaimIncidentGeneration",
                     "operationClaimConfigGeneration",
-                    "evidenceWatermarkAt", "evidenceWatermarkState",
+                    "operationClaimEvidenceSourceAt",
+                    "operationClaimEvidenceAt", "operationClaimEvidenceState",
+                    "evidenceSourceAt", "evidenceWatermarkAt", "evidenceWatermarkState",
                     "evidenceConfigGeneration"
              FROM "ProviderAlertNotification" WHERE "id" = ?`
           )
@@ -108,6 +110,10 @@ describe("alert persistence migration", () => {
               operationClaimExpiresAt: string | null;
               operationClaimIncidentGeneration: number | null;
               operationClaimConfigGeneration: number | null;
+              operationClaimEvidenceSourceAt: string | null;
+              operationClaimEvidenceAt: string | null;
+              operationClaimEvidenceState: string | null;
+              evidenceSourceAt: string | null;
               evidenceWatermarkAt: string | null;
               evidenceWatermarkState: string;
               evidenceConfigGeneration: number;
@@ -121,6 +127,10 @@ describe("alert persistence migration", () => {
           operationClaimExpiresAt: null,
           operationClaimIncidentGeneration: null,
           operationClaimConfigGeneration: null,
+          operationClaimEvidenceSourceAt: null,
+          operationClaimEvidenceAt: null,
+          operationClaimEvidenceState: null,
+          evidenceSourceAt: null,
           evidenceWatermarkAt: null,
           evidenceWatermarkState: "legacy",
           evidenceConfigGeneration: 0,
@@ -129,9 +139,11 @@ describe("alert persistence migration", () => {
         const channel = migrated
           .prepare(
             `SELECT "triggerClaimGeneration", "triggerIncidentGeneration",
+                    "triggerOperationClaimGeneration",
                     "lastSucceededIncidentGeneration", "pagerDutyDedupKey",
                     "resolveClaimGeneration", "resolveClaimToken",
-                    "resolveIncidentGeneration", "lastResolvedIncidentGeneration",
+                    "resolveIncidentGeneration", "resolveOperationClaimGeneration",
+                    "lastResolvedIncidentGeneration",
                     "lastError"
              FROM "ProviderAlertChannelDelivery" WHERE "id" = ?`
           )
@@ -139,11 +151,13 @@ describe("alert persistence migration", () => {
         expect(channel).toMatchObject({
           triggerClaimGeneration: 0,
           triggerIncidentGeneration: null,
+          triggerOperationClaimGeneration: null,
           lastSucceededIncidentGeneration: null,
           pagerDutyDedupKey: null,
           resolveClaimGeneration: 0,
           resolveClaimToken: null,
           resolveIncidentGeneration: null,
+          resolveOperationClaimGeneration: null,
           lastResolvedIncidentGeneration: null,
           lastError: "delivery_outcome_unknown",
         });
