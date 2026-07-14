@@ -29,7 +29,7 @@ describe("provider integration catalog", () => {
       expect(profile.canAdd.length).toBeGreaterThan(0);
       expect(profile.cannotAdd.length).toBeGreaterThan(0);
       expect(profile.limitations.length).toBeGreaterThan(0);
-      expect(profile.provenance.reviewedOn).toBe("2026-07-11");
+      expect(profile.provenance.reviewedOn).toBe("2026-07-13");
       expect(profile.provenance.sources[0]).toMatch(/^src\//);
       expect(JSON.stringify(profile)).not.toMatch(/sk-(?:admin|ant|proj)-[A-Za-z0-9]/);
     }
@@ -86,13 +86,15 @@ describe("provider integration catalog", () => {
       "alphavantage",
       "marketstack",
       "tiingo",
-      "fintech-studios",
       "massive",
       "fred",
       "robinhood",
     ]) {
       expect(byName.get(name)?.usesApiKey, name).toBe(false);
     }
+    expect(byName.get("fintech-studios")?.usesApiKey).not.toBe(false);
+    expect(byName.get("render")?.needsConfig).toBeUndefined();
+    expect(byName.get("langfuse")?.defaultRefreshIntervalMin).toBe(360);
     for (const name of ["voyage", "langfuse", "llamaindex"]) {
       expect(byName.get(name)?.creditBased, name).not.toBe(true);
     }
