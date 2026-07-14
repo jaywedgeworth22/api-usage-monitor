@@ -4,7 +4,7 @@
 
 Diagnosed and repaired a production restart livelock on the paid Render Starter service. Scheduled retention no longer performs a full SQLite `VACUUM` unless an operator explicitly opts in, the declared Render configuration uses database-independent liveness, and concurrent readiness requests reuse one outstanding database probe instead of queueing uncancellable Prisma queries.
 
-PR #178 merged as `d03b1b8` and deployed, but Render did not synchronize the declared health-check path: the live service still uses strict `/api/ready`. A follow-up compatibility flag therefore softens only the HTTP status of database-only readiness failures until the live Render path can be corrected. The body remains `{ ok:false, status:"not_ready" }`, and scheduler, backup, or startup failures remain HTTP 503.
+PR #178 merged as `d03b1b8` and deployed, but Render did not synchronize the declared health-check path: the live service still uses `/api/ready`. PR #180 merged as `40afc02` with a narrower database-only compatibility flag, but live logs continued to show five-second Prisma probes and a kill after the five-minute grace. PR #181 supersedes that bridge: `/api/ready` is HTTP-liveness-safe for every diagnostic state while its JSON `ok`, `status`, and per-dependency checks remain strict; completed database failures are cached for 60 seconds and hung probes remain coalesced.
 
 ## Why
 
@@ -40,18 +40,24 @@ All Node commands used Node `v24.18.0` from `/opt/homebrew/opt/node@24/bin`.
 - `git diff --check` — passed.
 - Independent hostile review — ACCEPT; no blocking findings.
 
-Follow-up compatibility verification used Node `v24.14.0`:
+Follow-up compatibility verification for PR #180 used Node `v24.14.0`:
 
 - Focused readiness suite — passed, 12/12 tests.
 - `npm run verify` — passed: ESLint; TypeScript; 73 Vitest files / 445 tests; safe-migration reproduction; SQLite backup checks; startup configuration checks; production build.
 - Independent adversarial review — no P0/P1/P2 findings; the flag cannot mask modeled non-database failures.
 
+PR #181 failsafe verification used Node 24:
+
+- Focused readiness suite — passed, 11/11 tests.
+- Focused ESLint, `npm run typecheck`, and `git diff --check` — passed.
+- Independent adversarial review — LAND; no P0/P1/P2 findings. The review confirmed always-200 transport, strict body/header diagnostics, 60-second failure caching, accurate timestamps, and hung-probe coalescing.
+
 Two accidental install attempts under the shell-default Node 26 were stopped at the engine guard before tests. The successful install and every verification command above used supported Node 24; this is additional evidence not to upgrade the repo to Node 26 now.
 
 ## Follow-ups
 
-- Merge and deploy the bounded compatibility follow-up, then set `RENDER_READINESS_HTTP_COMPATIBILITY=true` only while Render continues to use `/api/ready` for process health.
-- Correct the live Render service to `healthCheckPath: /api/health`, then disable the compatibility flag immediately; repository YAML alone is not runtime proof.
-- Verify sustained `/api/health` 200 responses, strict `/api/ready` recovery, stable instance uptime, and absence of the Prisma timeout/restart pattern.
+- Merge and deploy PR #181 while Render continues to use `/api/ready` for process health; no environment flag is required.
+- Correct the live Render service to `healthCheckPath: /api/health`, then restore transport-level strict readiness in a separate verified follow-up; repository YAML alone is not runtime proof.
+- Verify sustained `/api/health` 200 responses, `/api/ready` body recovery, stable instance uptime, and absence of the five-second Prisma timeout/restart pattern.
 - Verify an authenticated usage-ingest request returns 2xx before unblocking Socratic.Trade replay PR #1563.
 - Schedule any future full `VACUUM` only in a deliberate maintenance window with `DATA_RETENTION_ENABLE_VACUUM=true`; the legacy disable flag remains an overriding kill switch.

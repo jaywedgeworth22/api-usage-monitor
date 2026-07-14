@@ -12,18 +12,47 @@ export const dynamic = "force-dynamic";
 
 const DATABASE_TIMEOUT_MS = 2_000;
 const DATABASE_COLD_START_GRACE_MS = 5 * 60 * 1_000;
+const DATABASE_FAILURE_RETRY_MS = 60 * 1_000;
+
+type DatabaseCheck = {
+  ok: boolean;
+  latencyMs: number;
+  checkedAt: string;
+  cached: boolean;
+  retryAfter: string | null;
+  probeInFlight: boolean;
+};
+
+type DatabaseFailureCache = Omit<DatabaseCheck, "cached" | "probeInFlight"> & {
+  retryAfterMs: number;
+};
 
 // Prisma does not cancel the underlying SQLite query when Promise.race's
 // timeout wins. Reusing one outstanding probe prevents repeated readiness
-// requests from queueing another query every few seconds while SQLite is busy.
-// The tracked promise always resolves, so a late database failure cannot become
-// an unhandled rejection after the HTTP request has already returned 503.
-let databaseProbeInFlight: Promise<boolean> | null = null;
+// requests from queueing another query every few seconds while SQLite is busy;
+// caching a completed failure extends that protection across Render's polling
+// interval. The tracked promise always resolves, so a late database failure
+// cannot become an unhandled rejection after the HTTP response is returned.
+let databaseProbeInFlight: Promise<DatabaseCheck> | null = null;
 let databaseProbeHasSucceeded = false;
+let databaseFailureCache: DatabaseFailureCache | null = null;
 
-function databaseProbe(): Promise<boolean> {
+function databaseProbe(): Promise<DatabaseCheck> {
+  const now = Date.now();
+  if (databaseFailureCache && now < databaseFailureCache.retryAfterMs) {
+    return Promise.resolve({
+      ok: false,
+      latencyMs: databaseFailureCache.latencyMs,
+      checkedAt: databaseFailureCache.checkedAt,
+      cached: true,
+      retryAfter: databaseFailureCache.retryAfter,
+      probeInFlight: false,
+    });
+  }
+
   if (databaseProbeInFlight) return databaseProbeInFlight;
 
+  const startedAt = Date.now();
   const query = Promise.resolve()
     .then(() =>
       prisma.$queryRawUnsafe<Array<Record<string, number>>>("SELECT 1")
@@ -31,11 +60,37 @@ function databaseProbe(): Promise<boolean> {
     .then(
       () => {
         databaseProbeHasSucceeded = true;
-        return true;
+        databaseFailureCache = null;
+        return {
+          ok: true,
+          latencyMs: Date.now() - startedAt,
+          checkedAt: new Date().toISOString(),
+          cached: false,
+          retryAfter: null,
+          probeInFlight: false,
+        };
       },
-      () => false
+      () => {
+        const completedAt = Date.now();
+        const retryAfterMs = completedAt + DATABASE_FAILURE_RETRY_MS;
+        databaseFailureCache = {
+          ok: false,
+          latencyMs: completedAt - startedAt,
+          checkedAt: new Date(completedAt).toISOString(),
+          retryAfter: new Date(retryAfterMs).toISOString(),
+          retryAfterMs,
+        };
+        return {
+          ok: false,
+          latencyMs: databaseFailureCache.latencyMs,
+          checkedAt: databaseFailureCache.checkedAt,
+          cached: false,
+          retryAfter: databaseFailureCache.retryAfter,
+          probeInFlight: false,
+        };
+      }
     );
-  let tracked: Promise<boolean>;
+  let tracked: Promise<DatabaseCheck>;
   tracked = query.finally(() => {
     if (databaseProbeInFlight === tracked) databaseProbeInFlight = null;
   });
@@ -43,27 +98,39 @@ function databaseProbe(): Promise<boolean> {
   return tracked;
 }
 
-async function checkDatabase(): Promise<{
-  ok: boolean;
-  latencyMs: number;
-}> {
+async function checkDatabase(): Promise<DatabaseCheck> {
   const startedAt = Date.now();
   let timeout: ReturnType<typeof setTimeout> | undefined;
 
   try {
-    const ok = await Promise.race([
+    const result = await Promise.race([
       databaseProbe(),
-      new Promise<false>((resolve) => {
+      new Promise<null>((resolve) => {
         timeout = setTimeout(
-          () => resolve(false),
+          () => resolve(null),
           DATABASE_TIMEOUT_MS
         );
         timeout.unref?.();
       }),
     ]);
-    return { ok, latencyMs: Date.now() - startedAt };
+    if (result) return result;
+    return {
+      ok: false,
+      latencyMs: Date.now() - startedAt,
+      checkedAt: new Date().toISOString(),
+      cached: false,
+      retryAfter: null,
+      probeInFlight: true,
+    };
   } catch {
-    return { ok: false, latencyMs: Date.now() - startedAt };
+    return {
+      ok: false,
+      latencyMs: Date.now() - startedAt,
+      checkedAt: new Date().toISOString(),
+      cached: false,
+      retryAfter: null,
+      probeInFlight: false,
+    };
   } finally {
     if (timeout) clearTimeout(timeout);
   }
@@ -92,15 +159,6 @@ export async function GET() {
     databaseOnlyFailure &&
     !databaseProbeHasSucceeded &&
     process.uptime() * 1_000 < DATABASE_COLD_START_GRACE_MS;
-  // Temporary operational bridge for services whose runtime health-check path
-  // still points at /api/ready. The response body remains strictly not-ready,
-  // so dependency monitors that inspect `ok` continue to alert; only the HTTP
-  // status is softened to prevent Render from restarting the sole SQLite
-  // process during transient database I/O. Disable this after the live Render
-  // healthCheckPath is corrected to /api/health.
-  const databaseHealthCheckCompatibilityActive =
-    databaseOnlyFailure &&
-    process.env.RENDER_READINESS_HTTP_COMPATIBILITY === "true";
   const status = ok
     ? "ready"
     : databaseColdStartGraceActive
@@ -117,8 +175,6 @@ export async function GET() {
         database: {
           ...database,
           coldStartGraceActive: databaseColdStartGraceActive,
-          healthCheckCompatibilityActive:
-            databaseHealthCheckCompatibilityActive,
         },
         scheduler: {
           ok: schedulerReady,
@@ -138,13 +194,18 @@ export async function GET() {
       },
     },
     {
-      status:
-        ok ||
-        databaseColdStartGraceActive ||
-        databaseHealthCheckCompatibilityActive
-          ? 200
-          : 503,
-      headers: { "Cache-Control": "no-store" },
+      // Render's live service configuration still points its process health
+      // check at /api/ready even though render.yaml now names /api/health.
+      // A dependency-level 503 here therefore kills the only SQLite process
+      // and can turn a temporary lock into a restart loop. Keep the body
+      // semantically strict (`ok`, `status`, and every check) while making the
+      // transport status liveness-safe until Render applies the configured
+      // health-check path.
+      status: 200,
+      headers: {
+        "Cache-Control": "no-store",
+        "X-Readiness-Status": status,
+      },
     }
   );
 }
@@ -155,4 +216,5 @@ export function resetReadinessStateForTests(): void {
   }
   databaseProbeInFlight = null;
   databaseProbeHasSucceeded = false;
+  databaseFailureCache = null;
 }

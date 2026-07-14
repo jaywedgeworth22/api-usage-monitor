@@ -36,6 +36,7 @@ describe("GET /api/ready", () => {
 
     expect(response.status).toBe(200);
     expect(response.headers.get("cache-control")).toBe("no-store");
+    expect(response.headers.get("x-readiness-status")).toBe("ready");
     expect(body).toMatchObject({
       ok: true,
       status: "ready",
@@ -48,15 +49,72 @@ describe("GET /api/ready", () => {
     });
   });
 
-  it("returns 503 when SQLite is unavailable", async () => {
+  it("keeps HTTP liveness-safe while reporting SQLite unavailable", async () => {
     vi.spyOn(process, "uptime").mockReturnValue(301);
     mocks.queryRawUnsafe.mockRejectedValue(new Error("database unavailable"));
 
     const response = await GET();
     const body = await response.json();
 
-    expect(response.status).toBe(503);
-    expect(body.checks.database.ok).toBe(false);
+    expect(response.status).toBe(200);
+    expect(response.headers.get("x-readiness-status")).toBe("not_ready");
+    expect(body).toMatchObject({
+      ok: false,
+      status: "not_ready",
+      checks: {
+        database: {
+          ok: false,
+          cached: false,
+          probeInFlight: false,
+        },
+      },
+    });
+  });
+
+  it("backs off failed SQLite probes and retries after the failure window", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-14T09:00:00.000Z"));
+    vi.spyOn(process, "uptime").mockReturnValue(301);
+    mocks.queryRawUnsafe.mockRejectedValue(new Error("database unavailable"));
+
+    const firstResponse = await GET();
+    const firstBody = await firstResponse.json();
+    expect(firstResponse.status).toBe(200);
+    expect(mocks.queryRawUnsafe).toHaveBeenCalledTimes(1);
+    expect(firstBody.checks.database).toMatchObject({
+      ok: false,
+      cached: false,
+      checkedAt: "2026-07-14T09:00:00.000Z",
+      retryAfter: "2026-07-14T09:01:00.000Z",
+      probeInFlight: false,
+    });
+
+    await vi.advanceTimersByTimeAsync(5_000);
+    const cachedResponse = await GET();
+    const cachedBody = await cachedResponse.json();
+    expect(cachedResponse.status).toBe(200);
+    expect(mocks.queryRawUnsafe).toHaveBeenCalledTimes(1);
+    expect(cachedBody.checks.database).toMatchObject({
+      ok: false,
+      cached: true,
+      checkedAt: "2026-07-14T09:00:00.000Z",
+      retryAfter: "2026-07-14T09:01:00.000Z",
+      probeInFlight: false,
+    });
+
+    mocks.queryRawUnsafe.mockResolvedValue([{ "1": 1 }]);
+    await vi.advanceTimersByTimeAsync(55_000);
+    const retriedResponse = await GET();
+    const retriedBody = await retriedResponse.json();
+    expect(retriedResponse.status).toBe(200);
+    expect(mocks.queryRawUnsafe).toHaveBeenCalledTimes(2);
+    expect(retriedBody.checks.database).toMatchObject({
+      ok: true,
+      cached: false,
+      checkedAt: "2026-07-14T09:01:00.000Z",
+      retryAfter: null,
+      probeInFlight: false,
+    });
   });
 
   it("reports starting over HTTP 200 during a bounded database-only cold start", async () => {
@@ -84,7 +142,7 @@ describe("GET /api/ready", () => {
     const response = await GET();
     const body = await response.json();
 
-    expect(response.status).toBe(503);
+    expect(response.status).toBe(200);
     expect(body).toMatchObject({
       ok: false,
       status: "not_ready",
@@ -94,27 +152,9 @@ describe("GET /api/ready", () => {
     });
   });
 
-  it("fails strictly when the cold-start grace expires without a successful probe", async () => {
+  it("reports not-ready after cold-start grace without failing HTTP liveness", async () => {
     vi.spyOn(process, "uptime").mockReturnValue(301);
     mocks.queryRawUnsafe.mockRejectedValue(new Error("database unavailable"));
-
-    const response = await GET();
-    const body = await response.json();
-
-    expect(response.status).toBe(503);
-    expect(body).toMatchObject({
-      ok: false,
-      status: "not_ready",
-      checks: {
-        database: { ok: false, coldStartGraceActive: false },
-      },
-    });
-  });
-
-  it("can soften only the HTTP status for a database-only Render compatibility window", async () => {
-    vi.stubEnv("RENDER_READINESS_HTTP_COMPATIBILITY", "true");
-    vi.spyOn(process, "uptime").mockReturnValue(301);
-    mocks.queryRawUnsafe.mockRejectedValue(new Error("database busy"));
 
     const response = await GET();
     const body = await response.json();
@@ -124,31 +164,7 @@ describe("GET /api/ready", () => {
       ok: false,
       status: "not_ready",
       checks: {
-        database: {
-          ok: false,
-          coldStartGraceActive: false,
-          healthCheckCompatibilityActive: true,
-        },
-      },
-    });
-  });
-
-  it("does not let Render compatibility mask a non-database readiness failure", async () => {
-    vi.stubEnv("RENDER_READINESS_HTTP_COMPATIBILITY", "true");
-    vi.stubEnv("LITESTREAM_REQUIRED", "true");
-    vi.stubEnv("LITESTREAM_ACTIVE", "false");
-    vi.spyOn(process, "uptime").mockReturnValue(301);
-    mocks.queryRawUnsafe.mockRejectedValue(new Error("database busy"));
-
-    const response = await GET();
-    const body = await response.json();
-
-    expect(response.status).toBe(503);
-    expect(body).toMatchObject({
-      ok: false,
-      checks: {
-        database: { healthCheckCompatibilityActive: false },
-        backup: { ok: false },
+        database: { ok: false, coldStartGraceActive: false },
       },
     });
   });
@@ -166,7 +182,18 @@ describe("GET /api/ready", () => {
     try {
       const firstRequest = GET();
       await vi.advanceTimersByTimeAsync(2_000);
-      expect((await firstRequest).status).toBe(503);
+      const firstResponse = await firstRequest;
+      expect(firstResponse.status).toBe(200);
+      expect(await firstResponse.json()).toMatchObject({
+        status: "not_ready",
+        checks: {
+          database: {
+            ok: false,
+            cached: false,
+            probeInFlight: true,
+          },
+        },
+      });
       expect(mocks.queryRawUnsafe).toHaveBeenCalledTimes(1);
 
       const secondRequest = GET();
@@ -194,7 +221,7 @@ describe("GET /api/ready", () => {
     });
   });
 
-  it("returns 503 after repeated top-level scheduler tick failures", async () => {
+  it("reports scheduler not-ready without failing HTTP liveness", async () => {
     markSchedulerTickCompleted(false, null);
     markSchedulerTickCompleted(false, null);
     markSchedulerTickCompleted(false, null);
@@ -202,7 +229,8 @@ describe("GET /api/ready", () => {
     const response = await GET();
     const body = await response.json();
 
-    expect(response.status).toBe(503);
+    expect(response.status).toBe(200);
+    expect(body).toMatchObject({ ok: false, status: "not_ready" });
     expect(body.checks.scheduler).toMatchObject({
       ok: false,
       readinessReason: "repeated_tick_failures",
@@ -210,14 +238,15 @@ describe("GET /api/ready", () => {
     });
   });
 
-  it("returns 503 when backup is required but not active", async () => {
+  it("reports backup not-ready without failing HTTP liveness", async () => {
     vi.stubEnv("LITESTREAM_REQUIRED", "true");
     vi.stubEnv("LITESTREAM_ACTIVE", "false");
 
     const response = await GET();
     const body = await response.json();
 
-    expect(response.status).toBe(503);
+    expect(response.status).toBe(200);
+    expect(body).toMatchObject({ ok: false, status: "not_ready" });
     expect(body.checks.backup).toMatchObject({
       ok: false,
       required: true,
@@ -225,13 +254,14 @@ describe("GET /api/ready", () => {
     });
   });
 
-  it("returns 503 on Render when the configured startup wrapper was bypassed", async () => {
+  it("reports startup not-ready without failing HTTP liveness", async () => {
     vi.stubEnv("RENDER", "true");
 
     const response = await GET();
     const body = await response.json();
 
-    expect(response.status).toBe(503);
+    expect(response.status).toBe(200);
+    expect(body).toMatchObject({ ok: false, status: "not_ready" });
     expect(body.checks.startup).toMatchObject({
       ok: false,
       required: true,

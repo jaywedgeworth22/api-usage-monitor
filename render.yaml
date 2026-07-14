@@ -16,7 +16,9 @@ services:
     # Render uses this as a liveness/restart signal. Keep it independent of
     # SQLite readiness: restarting during an exclusive maintenance operation
     # restarts that same operation and can livelock the only instance.
-    # Operators and dependency monitors still use strict /api/ready.
+    # /api/ready keeps strict dependency diagnostics in its JSON body but is
+    # temporarily HTTP-liveness-safe because Render's existing service config
+    # can lag this Blueprint field and continue probing that endpoint.
     healthCheckPath: /api/health
     buildFilter:
       ignoredPaths:
