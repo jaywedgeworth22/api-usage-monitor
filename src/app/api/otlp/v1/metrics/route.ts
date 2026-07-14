@@ -16,6 +16,12 @@ import {
   persistOtlpUsageEvents,
 } from "@/lib/otlp/cumulative-state";
 import { readBoundedBody, validateMetricsRequest } from "@/lib/otlp/validation";
+import {
+  INGEST_ADMISSION_RETRY_AFTER_SECONDS,
+  isOtlpMetricsIngestEnabled,
+  OTLP_METRICS_DISABLED_RETRY_AFTER_SECONDS,
+  tryAcquireIngestAdmission,
+} from "@/lib/ingest-admission";
 
 // OTLP-HTTP metrics ingest: POST /api/otlp/v1/metrics
 //
@@ -87,12 +93,35 @@ export async function POST(request: NextRequest) {
   }
 
   const ip = getClientIp(request);
+  const ingestEnabled = isOtlpMetricsIngestEnabled();
   if (!otlpMetricsRateLimiter.check(ip)) {
-    return NextResponse.json({ error: "Too many requests. Slow down." }, { status: 429 });
+    return NextResponse.json(
+      { error: "Too many requests. Slow down." },
+      {
+        status: 429,
+        headers: {
+          "Retry-After": String(
+            ingestEnabled ? 1 : OTLP_METRICS_DISABLED_RETRY_AFTER_SECONDS
+          ),
+        },
+      }
+    );
   }
 
   if (!isUsageIngestAuthorized(request)) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
+  if (!ingestEnabled) {
+    return NextResponse.json(
+      { error: "OTLP metrics ingest is temporarily disabled. Retry later." },
+      {
+        status: 503,
+        headers: {
+          "Retry-After": String(OTLP_METRICS_DISABLED_RETRY_AFTER_SECONDS),
+        },
+      }
+    );
   }
 
   const contentType = (request.headers.get("content-type") ?? "").split(";")[0].trim().toLowerCase();
@@ -140,70 +169,85 @@ export async function POST(request: NextRequest) {
   let idempotentRetries = 0;
   let accepted = 0;
   if (events.length > 0) {
-    // Resolve any `project` resource attribute (OTEL_RESOURCE_ATTRIBUTES) to a
-    // Project.id. Unknown names stay null; the allowlisted raw project name is
-    // preserved in metadata so a later-created Project can be back-filled.
-    const projectIdByName = await resolveProjectIdsByName(
-      events.map((event) => event.projectName).filter((name): name is string => !!name)
-    );
-
-    let persistResult: Awaited<ReturnType<typeof persistOtlpUsageEvents>>;
-    try {
-      persistResult = await persistOtlpUsageEvents(
-        events.map((event) => ({
-          point: event.otlp,
-          event: {
-            idempotencyKey: event.idempotencyKey,
-            sourceApp: event.sourceApp,
-            environment: event.environment,
-            provider: event.provider,
-            service: event.service,
-            projectId: event.projectName
-              ? projectIdByName.get(canonicalProjectKey(event.projectName)) ?? null
-              : null,
-            label: event.label,
-            keyRef: event.keyRef,
-            billingMode: event.billingMode,
-            metricType: event.metricType,
-            quantity: event.quantity,
-            unit: event.unit,
-            costUsd: event.costUsd,
-            requests: event.requests,
-            occurredAt: event.occurredAt,
-            metadata: event.metadata as Prisma.InputJsonObject,
-          },
-        }))
+    const releaseAdmission = tryAcquireIngestAdmission();
+    if (!releaseAdmission) {
+      return NextResponse.json(
+        { error: "Usage ingest is busy. Retry later." },
+        {
+          status: 503,
+          headers: { "Retry-After": String(INGEST_ADMISSION_RETRY_AFTER_SECONDS) },
+        }
       );
-    } catch (error) {
-      if (error instanceof ExternalUsageIdempotencyCollisionError) {
-        return NextResponse.json({ error: error.message }, { status: 409 });
+    }
+
+    try {
+      // Resolve any `project` resource attribute (OTEL_RESOURCE_ATTRIBUTES) to a
+      // Project.id. Unknown names stay null; the allowlisted raw project name is
+      // preserved in metadata so a later-created Project can be back-filled.
+      const projectIdByName = await resolveProjectIdsByName(
+        events.map((event) => event.projectName).filter((name): name is string => !!name)
+      );
+
+      let persistResult: Awaited<ReturnType<typeof persistOtlpUsageEvents>>;
+      try {
+        persistResult = await persistOtlpUsageEvents(
+          events.map((event) => ({
+            point: event.otlp,
+            event: {
+              idempotencyKey: event.idempotencyKey,
+              sourceApp: event.sourceApp,
+              environment: event.environment,
+              provider: event.provider,
+              service: event.service,
+              projectId: event.projectName
+                ? projectIdByName.get(canonicalProjectKey(event.projectName)) ?? null
+                : null,
+              label: event.label,
+              keyRef: event.keyRef,
+              billingMode: event.billingMode,
+              metricType: event.metricType,
+              quantity: event.quantity,
+              unit: event.unit,
+              costUsd: event.costUsd,
+              requests: event.requests,
+              occurredAt: event.occurredAt,
+              metadata: event.metadata as Prisma.InputJsonObject,
+            },
+          }))
+        );
+      } catch (error) {
+        if (error instanceof ExternalUsageIdempotencyCollisionError) {
+          return NextResponse.json({ error: error.message }, { status: 409 });
+        }
+        if (error instanceof OtlpMetricStateCapacityError) {
+          return NextResponse.json(
+            { error: error.message, limit: error.limit },
+            { status: 503, headers: { "Retry-After": "900" } }
+          );
+        }
+        throw error;
       }
-      if (error instanceof OtlpMetricStateCapacityError) {
-        return NextResponse.json(
-          { error: error.message, limit: error.limit },
-          { status: 503, headers: { "Retry-After": "900" } }
+      skippedPrunedDuplicates = persistResult.skippedPrunedDuplicates;
+      ignoredOutOfOrder = persistResult.ignoredOutOfOrder;
+      idempotentRetries = persistResult.idempotentRetries;
+      accepted = persistResult.persisted + idempotentRetries;
+
+      // Best-effort: give the owner a Provider row to attach a budget to (see
+      // ensure-anthropic-provider.ts for why this is lazy-on-first-ingest
+      // rather than a one-off seed script, and why it's a no-op if an
+      // "anthropic" provider already exists from the poll adapter). Never lets
+      // a seeding failure fail the ingest itself — the usage row above is
+      // already durably written by this point.
+      try {
+        await ensureAnthropicProviderSeeded();
+      } catch (error) {
+        console.warn(
+          "[otlp/metrics] failed to seed anthropic provider row (non-fatal):",
+          error instanceof Error ? error.message : error
         );
       }
-      throw error;
-    }
-    skippedPrunedDuplicates = persistResult.skippedPrunedDuplicates;
-    ignoredOutOfOrder = persistResult.ignoredOutOfOrder;
-    idempotentRetries = persistResult.idempotentRetries;
-    accepted = persistResult.persisted + idempotentRetries;
-
-    // Best-effort: give the owner a Provider row to attach a budget to (see
-    // ensure-anthropic-provider.ts for why this is lazy-on-first-ingest
-    // rather than a one-off seed script, and why it's a no-op if an
-    // "anthropic" provider already exists from the poll adapter). Never lets
-    // a seeding failure fail the ingest itself — the usage row above is
-    // already durably written by this point.
-    try {
-      await ensureAnthropicProviderSeeded();
-    } catch (error) {
-      console.warn(
-        "[otlp/metrics] failed to seed anthropic provider row (non-fatal):",
-        error instanceof Error ? error.message : error
-      );
+    } finally {
+      releaseAdmission();
     }
   }
 

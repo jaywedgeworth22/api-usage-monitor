@@ -81,6 +81,17 @@ SQLite datasource — match provider names case-insensitively in JS (`.toLowerCa
   configures one in Settings) — but only if no `anthropic`-named provider exists yet, so it never
   collides with a manually-added one from the existing poll adapter
   (`src/lib/adapters/anthropic.ts`, keyed on `orgId`).
+- `OTLP_METRICS_INGEST_ENABLED` is a default-on emergency switch for the
+  database-writing metrics route only. Explicit `false` returns authenticated
+  requests admitted by the IP limiter `503` plus `Retry-After: 300` before body
+  decoding or SQLite access; excess requests receive `429` with the same backoff.
+  The accept-and-drop logs route and generic usage ingest are unaffected.
+- Generic usage ingest and database-writing OTLP metrics share the process-global
+  admission token in `src/lib/ingest-admission.ts`. Only one may enter SQLite at
+  a time; overlap is rejected with `503` plus `Retry-After: 5` instead of queued,
+  because a timed-out exporter may retry while the original query is still live.
+  Keep the token around every database call in each route and release it only in
+  `finally`; never add a timeout that releases ownership while a query is running.
 
 ## Per-project cost attribution
 

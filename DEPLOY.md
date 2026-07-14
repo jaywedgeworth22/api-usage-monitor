@@ -106,6 +106,13 @@ not copied from the obsolete gray-cloud setup.
   stops automatic provider snapshots but does not disable pushed usage/OTLP
   ingest. Use only to isolate scheduler/SQLite contention, and restore `true`
   only after a complete provider tick plus DB-backed ingest/replay smoke succeeds.
+- `OTLP_METRICS_INGEST_ENABLED` (optional, defaults to `true`; emergency
+  isolation switch for database-writing `POST /api/otlp/v1/metrics`). Setting it
+  to `false` returns authenticated requests admitted by the IP limiter `503`
+  plus `Retry-After: 300` before reading their body or touching SQLite; excess
+  requests receive `429` with the same backoff. Generic `/api/ingest/usage`
+  remains available. Restore `true` only after the database stays healthy and a
+  controlled OTLP ingest/replay succeeds.
 - `LITESTREAM_S3_*` (optional replica credentials; set all four required values
   together or none—partial configuration fails startup)
 - `LITESTREAM_REQUIRED` (`false` initially; set `true` only after credentials are

@@ -5,6 +5,7 @@ import path from "path";
 import { NextRequest } from "next/server";
 import protobuf from "protobufjs";
 import { setupPrismaSqliteTestDb } from "@/lib/__tests__/setup-test-db";
+import { tryAcquireIngestAdmission } from "@/lib/ingest-admission";
 
 // This test exercises the real POST /api/otlp/v1/metrics route handler
 // against a throwaway SQLite file (never the dev `data`/`dev.db`), following
@@ -102,6 +103,33 @@ describe("POST /api/otlp/v1/metrics", () => {
   it("rejects requests with the wrong token", async () => {
     const res = await POST(jsonRequest(samplePayload, { authorization: "Bearer wrong-token" }));
     expect(res.status).toBe(401);
+  });
+
+  it("fails closed before decoding or writing when OTLP metrics ingest is disabled", async () => {
+    vi.stubEnv("OTLP_METRICS_INGEST_ENABLED", "false");
+    const res = await POST(
+      jsonRequest("not-an-otlp-object", { authorization: "Bearer test-token-123" })
+    );
+    expect(res.status).toBe(503);
+    expect(res.headers.get("retry-after")).toBe("300");
+    expect(await prisma.externalUsageEvent.count({ where: { sourceApp: "claude-code" } })).toBe(0);
+    expect(await prisma.otlpMetricState.count()).toBe(0);
+  });
+
+  it("rejects overlapping database ingest before writing", async () => {
+    const release = tryAcquireIngestAdmission();
+    expect(release).not.toBeNull();
+    try {
+      const res = await POST(
+        jsonRequest(samplePayload, { authorization: "Bearer test-token-123" })
+      );
+      expect(res.status).toBe(503);
+      expect(res.headers.get("retry-after")).toBe("5");
+      expect(await prisma.externalUsageEvent.count({ where: { sourceApp: "claude-code" } })).toBe(0);
+      expect(await prisma.otlpMetricState.count()).toBe(0);
+    } finally {
+      release?.();
+    }
   });
 
   it("accepts a valid bearer token and writes a usage row", async () => {
