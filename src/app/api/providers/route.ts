@@ -150,6 +150,8 @@ export async function GET() {
       snapshotCostIncludesUnknownFixed:
         canonicalBudget?.snapshotCostIncludesUnknownFixed ?? false,
       pushedMonthToDateUsd: canonicalBudget?.pushedMonthToDateUsd ?? 0,
+      estimatedApiEquivalentUsd:
+        canonicalBudget?.estimatedApiEquivalentUsd ?? 0,
       pushedCostCoverage: canonicalBudget?.pushedCostCoverage ?? "unknown",
       pushedPricedEventCount: canonicalBudget?.pushedPricedEventCount ?? 0,
       pushedUnpricedEventCount: canonicalBudget?.pushedUnpricedEventCount ?? 0,

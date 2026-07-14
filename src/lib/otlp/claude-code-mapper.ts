@@ -38,7 +38,10 @@ import {
 //                                           |        | sub-bucket via label suffix so the
 //                                           |        | four token types don't collide on
 //                                           |        | one idempotency key (see keyRef below)
-//   claude_code.cost.usage                  | USD    | metricType="cost", costUsd=value
+//   claude_code.cost.usage                  | USD    | metricType="cost", costUsd=value,
+//                                           |        | billingMode="estimated"; this is an
+//                                           |        | API-equivalent analytics estimate,
+//                                           |        | not canonical cash spend
 //   claude_code.session.count               | count  | metricType="usage", unit="request",
 //                                           |        | requests=value (session starts)
 //   claude_code.lines_of_code.count          | count  | metricType="usage", unit="row",
@@ -61,9 +64,10 @@ import {
 //
 // provider/service dimension: every row is provider="anthropic",
 // service="claude-code" (per the owner's goal split: usage metrics land here
-// under the anthropic provider so existing budgets/alerts apply; Sentry
-// keeps errors/health). sourceApp is always "claude-code" so these rows are
-// distinguishable from any other Anthropic usage pushed via the generic
+// under the anthropic provider for analytics; exact Claude Code rows are
+// excluded from cash budgets/alerts. Sentry keeps errors/health. sourceApp is
+// always "claude-code" so these rows are distinguishable from any other
+// Anthropic usage pushed via the generic
 // POST /api/ingest/usage contract (e.g. a hand-rolled app-level Anthropic
 // SDK cost push would use a different sourceApp).
 // ---------------------------------------------------------------------------
@@ -189,7 +193,7 @@ function mapDataPoint(
     service: SERVICE,
     environment,
     projectName,
-    billingMode: "actual" as const,
+    billingMode: "estimated" as const,
     occurredAt,
     otlp: describeOtlpPoint({
       metricName,
@@ -222,8 +226,10 @@ function mapDataPoint(
         metricType: "cost",
         costUsd: value,
         keyRef: model,
-        label: "cost",
-        metadata: cleanOtlpMetadata(resourceAttrs, pointAttrs),
+        label: "estimated_api_equivalent",
+        metadata: cleanOtlpMetadata(resourceAttrs, pointAttrs, {
+          costSemantics: "estimated_api_equivalent_not_authoritative",
+        }),
         idempotencyKey: deriveIdempotencyKey(metricName, resourceAttrs, point, value),
       };
     }

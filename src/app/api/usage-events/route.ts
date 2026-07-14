@@ -68,6 +68,10 @@ export async function GET(request: NextRequest) {
   return NextResponse.json({
     days,
     totalCostUsd: groups.reduce((sum, group) => sum + group.totalCostUsd, 0),
+    estimatedApiEquivalentUsd: groups.reduce(
+      (sum, group) => sum + group.estimatedApiEquivalentUsd,
+      0
+    ),
     ...costCounts,
     costCoverage: classifyCostCoverage(costCounts),
     totalRequests: groups.reduce((sum, group) => sum + group.totalRequests, 0),

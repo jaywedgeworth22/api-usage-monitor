@@ -264,6 +264,81 @@ describe("materializeDueSubscriptions + project attribution (integration)", () =
     expect(prov.projectedEomUsd).toBeCloseTo(190);
   });
 
+  it("keeps Claude's API-equivalent estimate out of cash spend and project budgets", async () => {
+    // Regression fixture for the user's asserted target scenario. The $9k
+    // Claude Code value models historical OTLP rows that were stored as
+    // billingMode=actual; the exact source/service identity still makes it
+    // analytics-only. This fixture does not assert the live subscription state.
+    const provider = await prisma.provider.create({
+      data: {
+        name: "anthropic",
+        displayName: "Anthropic",
+        type: "push",
+        refreshIntervalMin: 60,
+        plan: { create: { billingMode: "actual", monthlyBudgetUsd: 500 } },
+      },
+    });
+    const project = await prisma.project.create({
+      data: { name: "Coding", monthlyBudgetUsd: 500 },
+    });
+    await prisma.providerProjectAllocation.create({
+      data: { providerId: provider.id, projectId: project.id, percentage: 100 },
+    });
+    await prisma.usageSnapshot.create({
+      data: { providerId: provider.id, fetchedAt: NOW, totalCost: 65 },
+    });
+    await createSubscription(provider.id, {
+      name: "Claude Max account A",
+      costUsd: 200,
+      projectId: project.id,
+    });
+    await createSubscription(provider.id, {
+      name: "Claude Max account B",
+      costUsd: 200,
+      projectId: project.id,
+    });
+    await prisma.externalUsageEvent.create({
+      data: {
+        idempotencyKey: "historical-claude-api-equivalent-estimate",
+        sourceApp: "claude-code",
+        provider: "anthropic",
+        service: "claude-code",
+        projectId: project.id,
+        billingMode: "actual",
+        metricType: "cost",
+        costUsd: 9_000,
+        occurredAt: NOW,
+      },
+    });
+
+    await materializeDueSubscriptions(NOW);
+    const status = await computeProjectBudgetStatus(NOW);
+    const anthropic = status.providers.find((row) => row.id === provider.id)!;
+    const coding = status.projects.find((row) => row.id === project.id)!;
+
+    expect(anthropic).toMatchObject({
+      snapshotCostUsd: 65,
+      pushedMonthToDateUsd: 400,
+      subscriptionMonthToDateUsd: 400,
+      estimatedApiEquivalentUsd: 9_000,
+      fixedAccruedUsd: 400,
+      spentUsd: 465,
+      status: "warning",
+    });
+    expect(anthropic.alerts.map((alert) => alert.code)).toContain("budget_warning");
+    expect(anthropic.alerts.map((alert) => alert.code)).not.toContain("budget_exceeded");
+    expect(coding).toMatchObject({
+      directUsd: 400,
+      allocatedUsd: 65,
+      spentUsd: 465,
+      status: "warning",
+    });
+    expect(status.summary).toMatchObject({
+      totalSpentUsd: 465,
+      estimatedApiEquivalentUsd: 9_000,
+    });
+  });
+
   it("dedupes a provider-reported fixed fee against its local manual subscription", async () => {
     const provider = await prisma.provider.create({
       data: {
