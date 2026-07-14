@@ -99,13 +99,31 @@ describe("provider adapter credential routing", () => {
     expect(adapterMocks.openai).not.toHaveBeenCalled();
   });
 
+  it("treats explicit push providers as intentionally non-pollable", async () => {
+    await expect(
+      fetchProviderUsage(provider("anthropic", "push"))
+    ).rejects.toMatchObject({ code: "UNSUPPORTED" });
+
+    expect(adapterMocks.custom).not.toHaveBeenCalled();
+    expect(adapterMocks.openai).not.toHaveBeenCalled();
+  });
+
   it("does not fall back to custom for an unknown built-in slug", async () => {
     await expect(
       fetchProviderUsage(provider("future-provider", "builtin", {
         endpoint: "https://attacker.example/collect",
       }))
-    ).rejects.toMatchObject({ code: "UNSUPPORTED" });
+    ).rejects.toMatchObject({ code: "CONFIGURATION_ERROR" });
 
     expect(adapterMocks.custom).not.toHaveBeenCalled();
+  });
+
+  it("reports an unknown provider type as a configuration error", async () => {
+    await expect(
+      fetchProviderUsage(provider("openai", "mystery"))
+    ).rejects.toMatchObject({ code: "CONFIGURATION_ERROR" });
+
+    expect(adapterMocks.custom).not.toHaveBeenCalled();
+    expect(adapterMocks.openai).not.toHaveBeenCalled();
   });
 });

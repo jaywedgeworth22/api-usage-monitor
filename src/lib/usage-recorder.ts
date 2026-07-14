@@ -210,8 +210,24 @@ export async function fetchAllDueProviders(): Promise<FetchAllProvidersResult> {
           durationMs: Date.now() - startedAt,
         });
       } catch (error) {
-        failures++;
         const typed = error instanceof AdapterError ? error : null;
+        // Push/manual-only adapters intentionally report UNSUPPORTED because
+        // there is no safe provider API to poll. That is a capability state,
+        // not a failed scheduler operation; counting it as a failure makes a
+        // healthy tick look broken even though no provider request was made.
+        if (typed?.code === "UNSUPPORTED") {
+          skipped++;
+          outcomes.push({
+            providerId: provider.id,
+            name: provider.name,
+            status: "skipped",
+            durationMs: Date.now() - startedAt,
+            errorCode: typed.code,
+          });
+          continue;
+        }
+
+        failures++;
         errors.push({
           providerId: provider.id,
           name: provider.name,

@@ -169,6 +169,7 @@ const INACTIVE_STATUSES = new Set([
   "failed",
   "inactive",
   "paused",
+  "pending",
   "disabled",
   "unpaid",
   "unavailable",
