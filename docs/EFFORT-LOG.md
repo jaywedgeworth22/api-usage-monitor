@@ -18,6 +18,7 @@ Protocol: /Users/jay/apps/EFFORT-LOG-PROTOCOL.md (canonical). Live board: this f
   exists specifically to make this section verifiable going forward instead of inferred.
 
 ## Completed
+- **PR Comments and Merge Resolution (AG)** — COMPLETED (2026-07-14): Resolved review comments on PR #113 (implemented inactive-provider alert-resolution logic and added a standalone Anthropic funding repair script), merged PR #113 and PR #114, and closed incompatible/breaking PRs #115, #116, #117, and #118. All tests and verification pass cleanly.
 - **Cross-App Status Integration (AG, M)** — COMPLETED (MERGED PR #90, 2026-07-11): Updating `/api/ingest/usage` to handle `quota_sync` and `credit_balance` metric types from Socratic.Trade and Congress.Trade status pages, addressing bulk insert idempotency bug and excluding status metrics from dashboard raw sum totals.
 - **App-wide production/status and improvement audit (CODEX, read-only, 2026-07-11) — delivered; no
   implementation PR applicable.** Current source/deploy, authenticated desktop/mobile UX, spend
@@ -184,6 +185,13 @@ Protocol: /Users/jay/apps/EFFORT-LOG-PROTOCOL.md (canonical). Live board: this f
 - **Resolve merge conflicts and merge open PRs (AG)** — COMPLETED (MERGED): PRs 94-101, 105, 106. Integrated and resolved all conflicts.
 
 ## In Progress
+- **Infisical provider-credential auto-sync (CODEX + security/runtime reviewers, owner-directed
+  2026-07-14) — IN PROGRESS.** Branch `codex-infisical-provider-sync`, isolated worktree
+  `/Users/jay/apps/api-usage-monitor-infisical-provider-sync`, based on fetched `origin/main`.
+  Build a value-redacting, scope-aware bridge from the Socratic.Trade, Congress.Trade, and shared
+  Infisical machine identities into encrypted API Usage Monitor provider credentials. Project
+  scopes must remain distinct, shared values are fallback-only, and no secret values may enter
+  logs, git, browser payloads, or provider metadata.
 - **Live provider reconciliation cleanup (CODEX + verifier, owner-directed 2026-07-13) — LIVE.** Branch
   `codex-live-provider-reconciliation`, PR
   https://github.com/jaywedgeworth22/api-usage-monitor/pull/171, isolated worktree
@@ -199,16 +207,17 @@ Protocol: /Users/jay/apps/EFFORT-LOG-PROTOCOL.md (canonical). Live board: this f
   refresh leaves exactly one pending Google billing record per Congress.Trade/SocraticTrade.com,
   `0 Active / 1 Auto-detected`, null provider cost, and the separate `$4.22` Congress pushed cost.
 - **Remaining-provider automatic enrichment implementation wave (CODEX + provider teams,
-  owner-directed 2026-07-13) — LIVE.** Branch
+  owner-directed 2026-07-13) — LIVE.** Isolated branch
   `codex-provider-enrichment-wave`, PR
-  https://github.com/jaywedgeworth22/api-usage-monitor/pull/168, isolated
-  worktree `/Users/jay/apps/api-usage-monitor-provider-enrichment-wave`, based on fetched
-  `origin/main`. Parallel lanes cover Twelve Data/FinTech Studios/Resend,
-  LlamaIndex/Sentry/Langfuse, and Render/Hetzner/Pinecone. Brokerage billing/subscription work is
-  explicitly out of scope per the owner because those broker accounts do not carry a paid plan.
-  Only official account/control-plane endpoints are in scope. Implementation plus adversarial
-  completeness/pruning hardening is complete and rebased onto the verified production receiver.
-  Full Node 24 `npm run verify` PASS: ESLint, TypeScript, 73 files / 431 tests, migrate-safe 3/3,
+  https://github.com/jaywedgeworth22/api-usage-monitor/pull/168, worktree
+  `/Users/jay/apps/api-usage-monitor-provider-enrichment-wave`, based on fetched `origin/main`.
+  Parallel adapter lanes: Twelve Data + FinTech Studios + Resend; LlamaIndex + Sentry + Langfuse;
+  Render + Hetzner + Pinecone. Brokerage billing/subscription work is explicitly out of scope per
+  the owner because Alpaca, Tradier, and the other broker accounts do not carry a paid plan. Only
+  official account/control-plane endpoints are in scope; authoritative pagination, currency/cost
+  semantics, and no-billable-probe guards required. Implementation plus adversarial
+  completeness/pruning hardening is complete and rebased onto the verified live receiver. Full
+  Node 24 `npm run verify` PASS: ESLint, TypeScript, 73 files / 431 tests, migrate-safe 3/3,
   SQLite backup, startup config, and production build. GitHub CI, CodeQL, and gitleaks passed;
   PR #168 merged as `f6310c62`, Render on-commit deploy `dep-d9aprtr7uimc73a1j45g` is live,
   and production `/api/health` + `/api/ready` report that exact revision. Live refresh verified
