@@ -29,6 +29,8 @@ import {
 //   - poll snapshots  (UsageSnapshot.totalCost — cumulative cost the poll adapter reported)
 //   - pushed telemetry (ExternalUsageEvent.costUsd — month-to-date, the ONLY signal for providers
 //     the poll adapters are blind to: Anthropic, Voyage, Robinhood)
+// Exact Claude Code OTLP rows are analytics-only API-equivalent estimates and
+// are excluded before this cash-spend calculation.
 // To avoid double-counting a provider that reports through both channels, per-provider spend uses
 // max(snapshotCost, pushedMonthToDate) + fixedMonthlyCost — matching the existing alert convention
 // in provider-alerts.ts (which treats fixedMonthlyCost + snapshot.totalCost as the monthly figure).
@@ -48,6 +50,8 @@ export interface ProviderBudgetStatus {
   snapshotFixedCostIncludedUsd: number;
   snapshotCostIncludesUnknownFixed: boolean;
   pushedMonthToDateUsd: number;
+  /** Claude Code's analytics-only API-equivalent estimate; never cash spend. */
+  estimatedApiEquivalentUsd: number;
   pushedCostCoverage: CostCoverage;
   pushedPricedEventCount: number;
   pushedUnpricedEventCount: number;
@@ -76,6 +80,7 @@ export interface BudgetStatusResponse {
     budgetedSpentUsd: number;
     unbudgetedSpentUsd: number;
     totalSpentUsd: number;
+    estimatedApiEquivalentUsd: number;
     remainingUsd: number;
     percentUsed: number | null;
     overBudget: boolean;
@@ -307,12 +312,14 @@ export async function computeBudgetStatus(now: Date = new Date()): Promise<Budge
     const bucket = pushedByProviderId.get(owner.id) ?? {
       usagePushed: 0,
       subscriptionPushed: 0,
+      estimatedApiEquivalentUsd: 0,
       pricedEventCount: 0,
       unpricedEventCount: 0,
       unclassifiedCostEventCount: 0,
     };
     bucket.usagePushed += pushed.usagePushed;
     bucket.subscriptionPushed += pushed.subscriptionPushed;
+    bucket.estimatedApiEquivalentUsd += pushed.estimatedApiEquivalentUsd;
     bucket.pricedEventCount += pushed.pricedEventCount;
     bucket.unpricedEventCount += pushed.unpricedEventCount;
     bucket.unclassifiedCostEventCount += pushed.unclassifiedCostEventCount;
@@ -335,6 +342,7 @@ export async function computeBudgetStatus(now: Date = new Date()): Promise<Budge
     const pushed = pushedByProviderId.get(p.id) ?? {
       usagePushed: 0,
       subscriptionPushed: 0,
+      estimatedApiEquivalentUsd: 0,
       pricedEventCount: 0,
       unpricedEventCount: 0,
       unclassifiedCostEventCount: 0,
@@ -492,6 +500,7 @@ export async function computeBudgetStatus(now: Date = new Date()): Promise<Budge
       snapshotFixedCostIncludedUsd,
       snapshotCostIncludesUnknownFixed,
       pushedMonthToDateUsd,
+      estimatedApiEquivalentUsd: pushed.estimatedApiEquivalentUsd,
       pushedCostCoverage,
       pushedPricedEventCount: pushed.pricedEventCount,
       pushedUnpricedEventCount: pushed.unpricedEventCount,
@@ -517,6 +526,10 @@ export async function computeBudgetStatus(now: Date = new Date()): Promise<Budge
   const totalBudgetUsd = budgeted.reduce((s, p) => s + (p.monthlyBudgetUsd ?? 0), 0);
   const budgetedSpentUsd = budgeted.reduce((s, p) => s + p.spentUsd, 0);
   const totalSpentUsd = providerStatuses.reduce((s, p) => s + p.spentUsd, 0);
+  const estimatedApiEquivalentUsd = providerStatuses.reduce(
+    (sum, provider) => sum + provider.estimatedApiEquivalentUsd,
+    0
+  );
 
   return {
     ok: true,
@@ -528,6 +541,7 @@ export async function computeBudgetStatus(now: Date = new Date()): Promise<Budge
       budgetedSpentUsd,
       unbudgetedSpentUsd: totalSpentUsd - budgetedSpentUsd,
       totalSpentUsd,
+      estimatedApiEquivalentUsd,
       remainingUsd: totalBudgetUsd - budgetedSpentUsd,
       percentUsed: totalBudgetUsd > 0 ? budgetedSpentUsd / totalBudgetUsd : null,
       overBudget: providerStatuses.some((p) => p.status === "exceeded"),
@@ -572,6 +586,7 @@ export interface ProjectBudgetStatusResponse {
     unbudgetedSpentUsd: number;
     unassignedSpentUsd: number;
     totalSpentUsd: number;
+    estimatedApiEquivalentUsd: number;
     remainingUsd: number;
     percentUsed: number | null;
     overBudget: boolean;
@@ -806,6 +821,7 @@ export async function computeProjectBudgetStatus(now: Date = new Date()): Promis
       unbudgetedSpentUsd: Math.max(0, totalSpentUsd - budgetedSpentUsd),
       unassignedSpentUsd,
       totalSpentUsd,
+      estimatedApiEquivalentUsd: providerStatus.summary.estimatedApiEquivalentUsd,
       remainingUsd: totalBudgetUsd - budgetedSpentUsd,
       percentUsed: totalBudgetUsd > 0 ? budgetedSpentUsd / totalBudgetUsd : null,
       overBudget: projectStatuses.some((p) => p.status === "exceeded"),

@@ -1,13 +1,17 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const prismaMock = vi.hoisted(() => ({
-  externalUsageEvent: { findMany: vi.fn() },
+  externalUsageEvent: { findMany: vi.fn(), groupBy: vi.fn() },
   externalUsageEventDailyRollup: { findMany: vi.fn() },
 }));
 
 vi.mock("@/lib/prisma", () => ({ prisma: prismaMock }));
 
-import { summarizeExternalUsageEvents } from "../external-usage-events";
+import {
+  sumMonthToDateExternalCostAttribution,
+  sumMonthToDateExternalCostByProvider,
+  summarizeExternalUsageEvents,
+} from "../external-usage-events";
 
 describe("summarizeExternalUsageEvents", () => {
   beforeEach(() => {
@@ -209,6 +213,237 @@ describe("summarizeExternalUsageEvents", () => {
         unpricedEventCount: 0,
         unclassifiedCostEventCount: 3,
         costCoverage: "partial",
+      }),
+    ]);
+  });
+
+  it("separates Claude API-equivalent estimates across raw rows and historical rollups", async () => {
+    prismaMock.externalUsageEvent.findMany.mockResolvedValueOnce([
+      {
+        id: "raw-cash",
+        sourceApp: "socratic-trade",
+        environment: "prod",
+        provider: "anthropic",
+        service: "messages",
+        projectId: "project-a",
+        metricType: "cost",
+        unit: "usd",
+        quantity: 0,
+        costUsd: 10,
+        requests: 1,
+        limit: null,
+        limitWindow: null,
+        occurredAt: new Date("2026-07-03T00:00:00.000Z"),
+      },
+      {
+        id: "raw-claude-estimate",
+        sourceApp: "claude-code",
+        environment: "prod",
+        provider: "anthropic",
+        service: "claude-code",
+        projectId: "project-a",
+        metricType: "cost",
+        unit: "usd",
+        quantity: 0,
+        costUsd: 5_000,
+        requests: 0,
+        limit: null,
+        limitWindow: null,
+        occurredAt: new Date("2026-07-03T00:00:00.000Z"),
+      },
+    ]);
+    prismaMock.externalUsageEventDailyRollup.findMany.mockResolvedValueOnce([
+      {
+        sourceApp: "socratic-trade",
+        environment: "prod",
+        provider: "anthropic",
+        service: "messages",
+        projectId: "project-a",
+        metricType: "cost",
+        unit: "usd",
+        eventCount: 1,
+        pricedEventCount: 1,
+        unpricedEventCount: 0,
+        unclassifiedCostEventCount: 0,
+        totalCostUsd: 5,
+        totalRequests: 1,
+        totalQuantity: 0,
+        maxLimit: null,
+        limitWindow: null,
+        latestOccurredAt: new Date("2026-06-30T00:00:00.000Z"),
+      },
+      {
+        sourceApp: "claude-code",
+        environment: "prod",
+        provider: "anthropic",
+        service: "claude-code",
+        projectId: "project-a",
+        metricType: "cost",
+        unit: "usd",
+        eventCount: 1,
+        pricedEventCount: 1,
+        unpricedEventCount: 0,
+        unclassifiedCostEventCount: 0,
+        totalCostUsd: 4_000,
+        totalRequests: 0,
+        totalQuantity: 0,
+        maxLimit: null,
+        limitWindow: null,
+        latestOccurredAt: new Date("2026-06-30T00:00:00.000Z"),
+      },
+    ]);
+
+    const result = await summarizeExternalUsageEvents(
+      new Date("2026-06-01T00:00:00.000Z"),
+      new Date("2026-07-01T00:00:00.000Z")
+    );
+
+    expect(result.groups).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          service: "messages",
+          totalCostUsd: 15,
+          estimatedApiEquivalentUsd: 0,
+          pricedEventCount: 2,
+          costCoverage: "complete",
+        }),
+        expect.objectContaining({
+          service: "claude-code",
+          totalCostUsd: 0,
+          estimatedApiEquivalentUsd: 9_000,
+          pricedEventCount: 0,
+          unpricedEventCount: 0,
+          costCoverage: "unknown",
+        }),
+      ])
+    );
+  });
+
+  it("excludes raw and rolled-up Claude estimates from provider and project cash totals", async () => {
+    prismaMock.externalUsageEvent.groupBy.mockResolvedValueOnce([
+      {
+        provider: "anthropic",
+        sourceApp: "socratic-trade",
+        service: "messages",
+        metricType: "cost",
+        _sum: { costUsd: 10 },
+        _count: { _all: 1, costUsd: 1 },
+      },
+      {
+        provider: "anthropic",
+        sourceApp: "claude-code",
+        service: "claude-code",
+        metricType: "cost",
+        _sum: { costUsd: 5_000 },
+        _count: { _all: 1, costUsd: 1 },
+      },
+    ]);
+    prismaMock.externalUsageEventDailyRollup.findMany.mockResolvedValueOnce([
+      {
+        provider: "anthropic",
+        sourceApp: "socratic-trade",
+        service: "messages",
+        metricType: "cost",
+        eventCount: 1,
+        pricedEventCount: 1,
+        unpricedEventCount: 0,
+        unclassifiedCostEventCount: 0,
+        totalCostUsd: 5,
+      },
+      {
+        provider: "anthropic",
+        sourceApp: "claude-code",
+        service: "claude-code",
+        metricType: "cost",
+        eventCount: 1,
+        pricedEventCount: 1,
+        unpricedEventCount: 0,
+        unclassifiedCostEventCount: 0,
+        totalCostUsd: 4_000,
+      },
+      {
+        provider: "anthropic",
+        sourceApp: "subscription",
+        service: null,
+        metricType: "subscription",
+        eventCount: 2,
+        pricedEventCount: 2,
+        unpricedEventCount: 0,
+        unclassifiedCostEventCount: 0,
+        totalCostUsd: 400,
+      },
+    ]);
+
+    const byProvider = await sumMonthToDateExternalCostByProvider(
+      new Date("2026-07-01T00:00:00.000Z"),
+      new Date("2026-07-03T00:00:00.000Z")
+    );
+    expect(byProvider.get("anthropic")).toEqual({
+      usagePushed: 15,
+      subscriptionPushed: 400,
+      estimatedApiEquivalentUsd: 9_000,
+      pricedEventCount: 4,
+      unpricedEventCount: 0,
+      unclassifiedCostEventCount: 0,
+    });
+
+    prismaMock.externalUsageEvent.groupBy.mockResolvedValueOnce([
+      {
+        provider: "anthropic",
+        sourceApp: "socratic-trade",
+        service: "messages",
+        projectId: "project-a",
+        metricType: "cost",
+        _sum: { costUsd: 10 },
+        _count: { _all: 1, costUsd: 1 },
+      },
+      {
+        provider: "anthropic",
+        sourceApp: "claude-code",
+        service: "claude-code",
+        projectId: "project-a",
+        metricType: "cost",
+        _sum: { costUsd: 5_000 },
+        _count: { _all: 1, costUsd: 1 },
+      },
+    ]);
+    prismaMock.externalUsageEventDailyRollup.findMany.mockResolvedValueOnce([
+      {
+        provider: "anthropic",
+        sourceApp: "socratic-trade",
+        service: "messages",
+        projectId: "project-a",
+        metricType: "cost",
+        eventCount: 1,
+        pricedEventCount: 1,
+        unpricedEventCount: 0,
+        unclassifiedCostEventCount: 0,
+        totalCostUsd: 5,
+      },
+      {
+        provider: "anthropic",
+        sourceApp: "claude-code",
+        service: "claude-code",
+        projectId: "project-a",
+        metricType: "cost",
+        eventCount: 1,
+        pricedEventCount: 1,
+        unpricedEventCount: 0,
+        unclassifiedCostEventCount: 0,
+        totalCostUsd: 4_000,
+      },
+    ]);
+
+    const attribution = await sumMonthToDateExternalCostAttribution(
+      new Date("2026-07-01T00:00:00.000Z"),
+      new Date("2026-07-03T00:00:00.000Z")
+    );
+    expect(attribution).toEqual([
+      expect.objectContaining({
+        provider: "anthropic",
+        sourceApp: "socratic-trade",
+        projectId: "project-a",
+        costUsd: 15,
       }),
     ]);
   });

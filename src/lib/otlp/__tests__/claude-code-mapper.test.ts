@@ -80,11 +80,16 @@ describe("mapClaudeCodeMetrics", () => {
     expect(tokenEvent!.metadata.tokenType).toBe("input");
   });
 
-  it("maps claude_code.cost.usage to a cost event with costUsd set", () => {
+  it("marks claude_code.cost.usage as a non-authoritative API-equivalent estimate", () => {
     const { events } = mapClaudeCodeMetrics(sampleRequest());
     const costEvent = events.find((e) => e.metricType === "cost");
     expect(costEvent).toBeDefined();
     expect(costEvent!.costUsd).toBeCloseTo(0.0231);
+    expect(costEvent!.billingMode).toBe("estimated");
+    expect(costEvent!.label).toBe("estimated_api_equivalent");
+    expect(costEvent!.metadata.costSemantics).toBe(
+      "estimated_api_equivalent_not_authoritative"
+    );
     expect(costEvent!.keyRef).toBe("claude-sonnet-5");
   });
 

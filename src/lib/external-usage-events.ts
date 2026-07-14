@@ -76,6 +76,7 @@ export interface ExternalUsageEventSummaryGroup {
   unclassifiedCostEventCount: number;
   costCoverage: CostCoverage;
   totalCostUsd: number;
+  estimatedApiEquivalentUsd: number;
   totalRequests: number;
   totalQuantity: number;
   limit: number | null;
@@ -97,6 +98,22 @@ export function classifyCostCoverage(counts: {
       : "complete";
   }
   return unclassifiedCostEventCount > 0 ? "legacy_unknown" : "unknown";
+}
+
+/**
+ * Claude Code's OTLP cost metric is an estimated API-equivalent value. For
+ * Claude Pro/Max sessions it is not a charge and must never enter cash spend,
+ * budgets, or alerts. Keep the discriminator exact so unrelated Anthropic
+ * telemetry and API usage events retain their normal billing semantics.
+ */
+export function isClaudeCodeAnalyticsTelemetry(input: {
+  sourceApp: string;
+  service: string | null | undefined;
+}): boolean {
+  return (
+    input.sourceApp.trim().toLowerCase() === "claude-code" &&
+    input.service?.trim().toLowerCase() === "claude-code"
+  );
 }
 
 // One month-to-date cost total per (provider, sourceApp, projectId) triple,
@@ -415,6 +432,7 @@ function mergeSummaryGroup(
   existing.unclassifiedCostEventCount += group.unclassifiedCostEventCount;
   existing.costCoverage = classifyCostCoverage(existing);
   existing.totalCostUsd += group.totalCostUsd;
+  existing.estimatedApiEquivalentUsd += group.estimatedApiEquivalentUsd;
   existing.totalRequests += group.totalRequests;
   existing.totalQuantity += group.totalQuantity;
   if (group.latestAt > existing.latestAt) {
@@ -470,6 +488,7 @@ export async function summarizeExternalUsageEvents(
     // entire raw-retention window, so retaining every row until the final
     // reduction makes its peak memory grow linearly with event volume.
     for (const event of page) {
+      const isClaudeCodeAnalytics = isClaudeCodeAnalyticsTelemetry(event);
       mergeSummaryGroup(groups, {
         sourceApp: event.sourceApp,
         environment: event.environment,
@@ -480,11 +499,13 @@ export async function summarizeExternalUsageEvents(
         metricType: event.metricType,
         unit: event.unit,
         eventCount: 1,
-        pricedEventCount: event.costUsd == null ? 0 : 1,
-        unpricedEventCount: event.costUsd == null ? 1 : 0,
+        pricedEventCount: isClaudeCodeAnalytics || event.costUsd == null ? 0 : 1,
+        unpricedEventCount: isClaudeCodeAnalytics || event.costUsd != null ? 0 : 1,
         unclassifiedCostEventCount: 0,
-        costCoverage: event.costUsd == null ? "unknown" : "complete",
-        totalCostUsd: event.costUsd ?? 0,
+        costCoverage:
+          !isClaudeCodeAnalytics && event.costUsd != null ? "complete" : "unknown",
+        totalCostUsd: isClaudeCodeAnalytics ? 0 : event.costUsd ?? 0,
+        estimatedApiEquivalentUsd: isClaudeCodeAnalytics ? event.costUsd ?? 0 : 0,
         totalRequests: event.requests ?? 0,
         totalQuantity: event.quantity ?? 0,
         limit: event.limit,
@@ -531,17 +552,24 @@ export async function summarizeExternalUsageEvents(
       : [];
 
   for (const rollup of rollups) {
+    const isClaudeCodeAnalytics = isClaudeCodeAnalyticsTelemetry(rollup);
     const hasCoverageCounts =
       rollup.pricedEventCount != null ||
       rollup.unpricedEventCount != null ||
       rollup.unclassifiedCostEventCount != null;
-    const costCounts = {
-      pricedEventCount: rollup.pricedEventCount ?? 0,
-      unpricedEventCount: rollup.unpricedEventCount ?? 0,
-      unclassifiedCostEventCount: hasCoverageCounts
-        ? rollup.unclassifiedCostEventCount ?? 0
-        : rollup.eventCount,
-    };
+    const costCounts = isClaudeCodeAnalytics
+      ? {
+          pricedEventCount: 0,
+          unpricedEventCount: 0,
+          unclassifiedCostEventCount: 0,
+        }
+      : {
+          pricedEventCount: rollup.pricedEventCount ?? 0,
+          unpricedEventCount: rollup.unpricedEventCount ?? 0,
+          unclassifiedCostEventCount: hasCoverageCounts
+            ? rollup.unclassifiedCostEventCount ?? 0
+            : rollup.eventCount,
+        };
     mergeSummaryGroup(groups, {
       sourceApp: rollup.sourceApp,
       environment: rollup.environment,
@@ -554,7 +582,10 @@ export async function summarizeExternalUsageEvents(
       eventCount: rollup.eventCount,
       ...costCounts,
       costCoverage: classifyCostCoverage(costCounts),
-      totalCostUsd: rollup.totalCostUsd,
+      totalCostUsd: isClaudeCodeAnalytics ? 0 : rollup.totalCostUsd,
+      estimatedApiEquivalentUsd: isClaudeCodeAnalytics
+        ? rollup.totalCostUsd
+        : 0,
       totalRequests: rollup.totalRequests,
       totalQuantity: rollup.totalQuantity,
       limit: rollup.maxLimit,
@@ -585,6 +616,7 @@ export const SUBSCRIPTION_METRIC_TYPE = "subscription";
 export interface ProviderPushedCost {
   usagePushed: number;
   subscriptionPushed: number;
+  estimatedApiEquivalentUsd: number;
   pricedEventCount: number;
   unpricedEventCount: number;
   unclassifiedCostEventCount: number;
@@ -598,7 +630,7 @@ export async function sumMonthToDateExternalCostByProvider(
 
   const [rawGroups, rollups] = await Promise.all([
     prisma.externalUsageEvent.groupBy({
-      by: ["provider", "metricType"],
+      by: ["provider", "sourceApp", "service", "metricType"],
       where: { 
         occurredAt: { gte: rawSince }, 
         metricType: { notIn: Array.from(STATUS_METRIC_TYPES) }
@@ -614,6 +646,8 @@ export async function sumMonthToDateExternalCostByProvider(
           },
           select: {
             provider: true,
+            sourceApp: true,
+            service: true,
             metricType: true,
             eventCount: true,
             pricedEventCount: true,
@@ -628,6 +662,8 @@ export async function sumMonthToDateExternalCostByProvider(
   const totals = new Map<string, ProviderPushedCost>();
   const add = (
     provider: string,
+    sourceApp: string,
+    service: string | null,
     metricType: string,
     cost: number,
     counts: {
@@ -640,10 +676,16 @@ export async function sumMonthToDateExternalCostByProvider(
     const bucket = totals.get(key) ?? {
       usagePushed: 0,
       subscriptionPushed: 0,
+      estimatedApiEquivalentUsd: 0,
       pricedEventCount: 0,
       unpricedEventCount: 0,
       unclassifiedCostEventCount: 0,
     };
+    if (isClaudeCodeAnalyticsTelemetry({ sourceApp, service })) {
+      bucket.estimatedApiEquivalentUsd += cost;
+      totals.set(key, bucket);
+      return;
+    }
     if (metricType === SUBSCRIPTION_METRIC_TYPE) {
       bucket.subscriptionPushed += cost;
     } else {
@@ -656,24 +698,38 @@ export async function sumMonthToDateExternalCostByProvider(
   };
 
   for (const row of rawGroups) {
-    add(row.provider, row.metricType, row._sum.costUsd ?? 0, {
-      pricedEventCount: row._count.costUsd,
-      unpricedEventCount: row._count._all - row._count.costUsd,
-      unclassifiedCostEventCount: 0,
-    });
+    add(
+      row.provider,
+      row.sourceApp,
+      row.service,
+      row.metricType,
+      row._sum.costUsd ?? 0,
+      {
+        pricedEventCount: row._count.costUsd,
+        unpricedEventCount: row._count._all - row._count.costUsd,
+        unclassifiedCostEventCount: 0,
+      }
+    );
   }
   for (const rollup of rollups) {
     const hasCoverageCounts =
       rollup.pricedEventCount != null ||
       rollup.unpricedEventCount != null ||
       rollup.unclassifiedCostEventCount != null;
-    add(rollup.provider, rollup.metricType, rollup.totalCostUsd, {
-      pricedEventCount: rollup.pricedEventCount ?? 0,
-      unpricedEventCount: rollup.unpricedEventCount ?? 0,
-      unclassifiedCostEventCount: hasCoverageCounts
-        ? rollup.unclassifiedCostEventCount ?? 0
-        : rollup.eventCount,
-    });
+    add(
+      rollup.provider,
+      rollup.sourceApp,
+      rollup.service,
+      rollup.metricType,
+      rollup.totalCostUsd,
+      {
+        pricedEventCount: rollup.pricedEventCount ?? 0,
+        unpricedEventCount: rollup.unpricedEventCount ?? 0,
+        unclassifiedCostEventCount: hasCoverageCounts
+          ? rollup.unclassifiedCostEventCount ?? 0
+          : rollup.eventCount,
+      }
+    );
   }
   return totals;
 }
@@ -695,7 +751,7 @@ export async function sumMonthToDateExternalCostAttribution(
 
   const [rawGroups, rollups] = await Promise.all([
     prisma.externalUsageEvent.groupBy({
-      by: ["provider", "sourceApp", "projectId", "metricType"],
+      by: ["provider", "sourceApp", "service", "projectId", "metricType"],
       where: { 
         occurredAt: { gte: rawSince }, 
         metricType: { notIn: Array.from(STATUS_METRIC_TYPES) }
@@ -712,6 +768,7 @@ export async function sumMonthToDateExternalCostAttribution(
           select: {
             provider: true,
             sourceApp: true,
+            service: true,
             projectId: true,
             metricType: true,
             eventCount: true,
@@ -757,6 +814,7 @@ export async function sumMonthToDateExternalCostAttribution(
   };
 
   for (const row of rawGroups) {
+    if (isClaudeCodeAnalyticsTelemetry(row)) continue;
     add(
       row.provider,
       row.sourceApp,
@@ -771,6 +829,7 @@ export async function sumMonthToDateExternalCostAttribution(
     );
   }
   for (const rollup of rollups) {
+    if (isClaudeCodeAnalyticsTelemetry(rollup)) continue;
     const hasCoverageCounts =
       rollup.pricedEventCount != null ||
       rollup.unpricedEventCount != null ||

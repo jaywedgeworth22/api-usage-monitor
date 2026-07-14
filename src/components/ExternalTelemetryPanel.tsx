@@ -25,6 +25,7 @@ export interface ExternalUsageGroup {
   unclassifiedCostEventCount: number;
   costCoverage: ExternalCostCoverage;
   totalCostUsd: number;
+  estimatedApiEquivalentUsd: number;
   totalRequests: number;
   totalQuantity: number;
   limit: number | null;
@@ -35,6 +36,7 @@ export interface ExternalUsageGroup {
 export interface ExternalUsageSummary {
   days: number;
   totalCostUsd: number;
+  estimatedApiEquivalentUsd: number;
   pricedEventCount: number;
   unpricedEventCount: number;
   unclassifiedCostEventCount: number;
@@ -79,6 +81,7 @@ function identityToken(value: string): string {
 export default function ExternalTelemetryPanel({ usageSummary }: ExternalTelemetryPanelProps) {
   const [showAll, setShowAll] = useState(false);
   const externalCost = usageSummary.totalCostUsd;
+  const estimatedApiEquivalent = usageSummary.estimatedApiEquivalentUsd;
   const externalRequests = usageSummary.totalRequests;
   const visibleGroups = showAll ? usageSummary.groups : usageSummary.groups.slice(0, 8);
 
@@ -94,6 +97,9 @@ export default function ExternalTelemetryPanel({ usageSummary }: ExternalTelemet
           </p>
         </div>
         <div className="text-right shrink-0">
+          <p className="text-[10px] font-medium uppercase tracking-wide text-gray-500 dark:text-gray-400">
+            Tracked cash spend
+          </p>
           <p className="text-sm font-semibold text-gray-900 dark:text-gray-100">
             {costLabel(
               externalCost,
@@ -105,6 +111,14 @@ export default function ExternalTelemetryPanel({ usageSummary }: ExternalTelemet
           <p className="text-xs text-gray-500 dark:text-gray-400">
             {new Intl.NumberFormat("en-US").format(externalRequests)} requests
           </p>
+          {estimatedApiEquivalent > 0 && (
+            <p className="mt-1 text-xs font-medium text-amber-700 dark:text-amber-300">
+              Claude API-equivalent estimate: {usd.format(estimatedApiEquivalent)}
+              <span className="block text-[10px] font-normal">
+                Excluded from cash spend · verify Anthropic Console billing
+              </span>
+            </p>
+          )}
         </div>
       </div>
       {usageSummary.groups.length === 0 ? (
@@ -143,6 +157,8 @@ export default function ExternalTelemetryPanel({ usageSummary }: ExternalTelemet
                     : group.totalQuantity;
                 const displayedUnit =
                   group.unit || (requestBased ? "requests" : group.metricType);
+                const hasEstimatedApiEquivalent =
+                  group.estimatedApiEquivalentUsd > 0;
                 const usagePercent =
                   group.limit != null && group.limit > 0
                     ? Math.min((displayedUsage / group.limit) * 100, 999)
@@ -180,15 +196,19 @@ export default function ExternalTelemetryPanel({ usageSummary }: ExternalTelemet
                     </td>
                     <td className="px-6 py-4 text-right" data-label="Usage">
                       <p className="text-sm font-semibold text-gray-900 dark:text-gray-100">
-                        {new Intl.NumberFormat("en-US").format(displayedUsage)}
+                        {hasEstimatedApiEquivalent
+                          ? usd.format(group.estimatedApiEquivalentUsd)
+                          : new Intl.NumberFormat("en-US").format(displayedUsage)}
                       </p>
                       <p className="text-xs text-gray-500 dark:text-gray-400">
-                        {costLabel(
-                          group.totalCostUsd,
-                          group.costCoverage,
-                          group.unpricedEventCount,
-                          group.unclassifiedCostEventCount
-                        )}
+                        {hasEstimatedApiEquivalent
+                          ? "API-equivalent estimate · excluded from cash spend"
+                          : costLabel(
+                              group.totalCostUsd,
+                              group.costCoverage,
+                              group.unpricedEventCount,
+                              group.unclassifiedCostEventCount
+                            )}
                       </p>
                     </td>
                     <td className="px-6 py-4" data-label="Quota">
