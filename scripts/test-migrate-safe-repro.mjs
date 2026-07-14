@@ -4,20 +4,21 @@
  *
  * Exercises the real script (unmodified, invoked the same way
  * start-with-litestream.sh does) against real SQLite DB files, covering the
- * three cases that matter for the "--dry-run isn't a valid flag" bug fixed
- * here:
+ * four cases that matter for safe startup schema synchronization:
  *
  *   1. Additive-only diff: an old-shape DB (schema.prisma from an earlier
  *      git revision) pushed against the current schema.prisma — must exit 0
  *      and apply the new tables/columns.
- *   2. Already-in-sync: re-running against the now-current DB — must exit 0
+ *   2. Litestream-owned tables: additive schema synchronization must preserve
+ *      arbitrary `_litestream_seq`/`_litestream_lock` schemas and data.
+ *   3. Already-in-sync: re-running against the now-current DB — must exit 0
  *      as a no-op.
- *   3. Destructive diff with real data: a DB with actual rows in a
+ *   4. Destructive diff with real data: a DB with actual rows in a
  *      table/column that a schema change would drop — must exit non-zero,
  *      leave the DB file byte-for-byte unchanged, and print manual
  *      --accept-data-loss instructions.
  *
- * Scenario 3 needs a schema that's destructive *relative to the current
+ * Scenario 4 needs a schema that's destructive *relative to the current
  * schema.prisma*, and migrate-safe.mjs always reads the default
  * prisma/schema.prisma path (it takes no --schema flag, matching how it's
  * actually invoked at deploy time) — so this script temporarily overwrites
@@ -40,6 +41,7 @@ import {
 } from "fs";
 import { tmpdir } from "os";
 import { createHash } from "crypto";
+import { DatabaseSync } from "node:sqlite";
 import path from "path";
 import { fileURLToPath } from "url";
 
@@ -66,6 +68,70 @@ function fail(msg) {
 
 function hashFile(file) {
   return createHash("sha256").update(readFileSync(file)).digest("hex");
+}
+
+function seedLitestreamState(dbFile) {
+  const db = new DatabaseSync(dbFile);
+  try {
+    db.exec(`
+      CREATE TABLE "_litestream_seq" (
+        id INTEGER PRIMARY KEY,
+        seq INTEGER NOT NULL,
+        opaque BLOB NOT NULL
+      );
+      CREATE TABLE "_litestream_lock" (
+        id INTEGER PRIMARY KEY,
+        owner TEXT NOT NULL,
+        opaque BLOB NOT NULL
+      );
+    `);
+    db.prepare(
+      'INSERT INTO "_litestream_seq" (id, seq, opaque) VALUES (?, ?, ?)'
+    ).run(1, 0x1f2e, Buffer.from([0x00, 0x7f, 0x80, 0xff]));
+    db.prepare(
+      'INSERT INTO "_litestream_lock" (id, owner, opaque) VALUES (?, ?, ?)'
+    ).run(1, "litestream-owned", Buffer.from([0xde, 0xad, 0xbe, 0xef]));
+  } finally {
+    db.close();
+  }
+}
+
+function readLitestreamState(dbFile) {
+  const db = new DatabaseSync(dbFile, { readOnly: true });
+  try {
+    const seqSchema = db.prepare(
+      "SELECT sql FROM sqlite_schema WHERE type = 'table' AND name = '_litestream_seq'"
+    ).get();
+    const lockSchema = db.prepare(
+      "SELECT sql FROM sqlite_schema WHERE type = 'table' AND name = '_litestream_lock'"
+    ).get();
+    const seq = db.prepare(
+      'SELECT id, seq, opaque FROM "_litestream_seq" WHERE id = 1'
+    ).get();
+    const lock = db.prepare(
+      'SELECT id, owner, opaque FROM "_litestream_lock" WHERE id = 1'
+    ).get();
+    return {
+      seqSchema: seqSchema?.sql ?? null,
+      lockSchema: lockSchema?.sql ?? null,
+      seq: seq
+        ? {
+            id: seq.id,
+            seq: seq.seq,
+            opaque: Buffer.from(seq.opaque).toString("hex"),
+          }
+        : null,
+      lock: lock
+        ? {
+            id: lock.id,
+            owner: lock.owner,
+            opaque: Buffer.from(lock.opaque).toString("hex"),
+          }
+        : null,
+    };
+  } finally {
+    db.close();
+  }
 }
 
 function gitShow(rev, relPath) {
@@ -154,6 +220,8 @@ async function main() {
     writeFileSync(oldSchemaPath, gitShow(OLD_SCHEMA_REV, "prisma/schema.prisma"));
     const additiveDb = path.join(work, "additive.db");
     pushSchemaDirect(oldSchemaPath, additiveDb);
+    seedLitestreamState(additiveDb);
+    const litestreamStateBefore = readLitestreamState(additiveDb);
 
     const scenario1 = runMigrateSafe(additiveDb);
     if (scenario1.code === 0) {
@@ -162,8 +230,21 @@ async function main() {
       fail(`additive scenario exited ${scenario1.code}\n${scenario1.stdout}\n${scenario1.stderr}`);
     }
 
-    // --- Scenario 2: already in sync (no-op) ---
-    log("Scenario 2: already-in-sync re-run");
+    // --- Scenario 2: externally-managed Litestream state survives ---
+    log("Scenario 2: Litestream external tables survive schema synchronization");
+    const litestreamStateAfter = readLitestreamState(additiveDb);
+    if (JSON.stringify(litestreamStateAfter) === JSON.stringify(litestreamStateBefore)) {
+      log("  PASS — external table schemas and opaque rows were preserved exactly");
+    } else {
+      fail(
+        `Litestream external state changed during schema synchronization\n` +
+          `before=${JSON.stringify(litestreamStateBefore)}\n` +
+          `after=${JSON.stringify(litestreamStateAfter)}`
+      );
+    }
+
+    // --- Scenario 3: already in sync (no-op) ---
+    log("Scenario 3: already-in-sync re-run");
     const scenario2 = runMigrateSafe(additiveDb);
     if (scenario2.code === 0) {
       log("  PASS — no-op re-run, exit 0");
@@ -171,15 +252,13 @@ async function main() {
       fail(`already-in-sync scenario exited ${scenario2.code}\n${scenario2.stdout}\n${scenario2.stderr}`);
     }
 
-    // --- Scenario 3: destructive diff with real data ---
-    log("Scenario 3: destructive diff with real data present");
+    // --- Scenario 4: destructive diff with real data ---
+    log("Scenario 4: destructive diff with real data present");
     const destructiveDb = path.join(work, "destructive.db");
     copyFileSync(additiveDb, destructiveDb);
 
-    // Seed via the already-generated Prisma client (a real project dependency,
-    // works on any Node version this repo supports) rather than node:sqlite,
-    // which needs Node 22.5+ and isn't guaranteed by package.json/render.yaml
-    // or the Node 20 CI runner.
+    // Seed application rows through the generated Prisma client so this case
+    // exercises the same schema and write path as the production application.
     const { PrismaClient } = await import("@prisma/client");
     const seedClient = new PrismaClient({ datasources: { db: { url: `file:${destructiveDb}` } } });
     const seedProvider = await seedClient.provider.create({

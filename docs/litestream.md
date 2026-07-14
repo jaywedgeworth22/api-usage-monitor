@@ -45,6 +45,10 @@ and makes `/api/ready` fail.
   `backup-sqlite-before-migrate.mjs` and `migrate-safe.mjs` in that order.
   Enabled mode finally `exec`s `litestream replicate -exec "npm start"`; disabled
   mode `exec`s `npm start` directly.
+- `prisma.config.ts` — declares Litestream's `_litestream_seq` and
+  `_litestream_lock` tables as externally managed. Startup schema sync must
+  preserve their exact schema and state; `migrate-safe.mjs` never retries with
+  Prisma's broad `--accept-data-loss` flag.
 - `scripts/backup-sqlite-before-migrate.mjs` — transaction-consistent SQLite
   Online Backup API snapshot plus `PRAGMA integrity_check`, private file modes,
   atomic promotion, and bounded same-disk retention. It is the immediate schema
@@ -162,9 +166,9 @@ bump:
    `docs/rollouts/YYYY-MM-DD-litestream-restore-drill.md` note, matching this repo's
    existing `docs/rollouts/` convention.
 
-As of this writing, this restore path has **not yet been exercised against production**
-(replication is opt-in and not yet enabled for this app) — treat it as unverified until
-a drill note exists, same caveat as the sibling app's docs before its own first drill.
+Continuous production replication is enabled, but this restore path has **not yet been
+exercised against production**. Treat restore as unverified until a drill note exists,
+the same caveat as the sibling app's docs before its own first drill.
 
 ## Monitoring
 
