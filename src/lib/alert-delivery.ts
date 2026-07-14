@@ -516,7 +516,12 @@ export async function deliverProviderAlerts(options: {
   };
 
   const providers = await db.provider.findMany({
-    where: { isActive: true },
+    where: {
+      OR: [
+        { isActive: true },
+        { alertNotifications: { some: { resolvedAt: null } } },
+      ],
+    },
     orderBy: { name: "asc" },
     select: {
       id: true,
@@ -567,7 +572,7 @@ export async function deliverProviderAlerts(options: {
       now
     );
     const canonical = canonicalByProviderId.get(provider.id);
-    if (canonical) {
+    if (canonical && provider.isActive) {
       const nonBudgetAlerts = alertState.alerts.filter(
         (alert) => alert.code !== "budget_exceeded" && alert.code !== "budget_warning"
       );
