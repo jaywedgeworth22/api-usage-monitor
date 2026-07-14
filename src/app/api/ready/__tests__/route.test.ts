@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   markSchedulerStarted,
   markSchedulerTickCompleted,
@@ -13,15 +13,21 @@ vi.mock("@/lib/prisma", () => ({
   prisma: { $queryRawUnsafe: mocks.queryRawUnsafe },
 }));
 
-import { GET } from "../route";
+import { GET, resetReadinessStateForTests } from "../route";
 
 describe("GET /api/ready", () => {
   beforeEach(() => {
     vi.unstubAllEnvs();
     resetRuntimeHealthForTests();
+    resetReadinessStateForTests();
     mocks.queryRawUnsafe.mockReset();
     mocks.queryRawUnsafe.mockResolvedValue([{ "1": 1 }]);
     markSchedulerStarted(new Date("2026-07-11T12:00:00.000Z"));
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
   });
 
   it("returns ready only after the scheduler starts and SQLite responds", async () => {
@@ -43,6 +49,7 @@ describe("GET /api/ready", () => {
   });
 
   it("returns 503 when SQLite is unavailable", async () => {
+    vi.spyOn(process, "uptime").mockReturnValue(301);
     mocks.queryRawUnsafe.mockRejectedValue(new Error("database unavailable"));
 
     const response = await GET();
@@ -52,8 +59,61 @@ describe("GET /api/ready", () => {
     expect(body.checks.database.ok).toBe(false);
   });
 
+  it("reports starting over HTTP 200 during a bounded database-only cold start", async () => {
+    vi.spyOn(process, "uptime").mockReturnValue(30);
+    mocks.queryRawUnsafe.mockRejectedValue(new Error("database still opening"));
+
+    const response = await GET();
+    const body = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(body).toMatchObject({
+      ok: false,
+      status: "starting",
+      checks: {
+        database: { ok: false, coldStartGraceActive: true },
+      },
+    });
+  });
+
+  it("never re-enters cold-start grace after the first successful database probe", async () => {
+    vi.spyOn(process, "uptime").mockReturnValue(30);
+    expect((await GET()).status).toBe(200);
+
+    mocks.queryRawUnsafe.mockRejectedValue(new Error("database became unavailable"));
+    const response = await GET();
+    const body = await response.json();
+
+    expect(response.status).toBe(503);
+    expect(body).toMatchObject({
+      ok: false,
+      status: "not_ready",
+      checks: {
+        database: { ok: false, coldStartGraceActive: false },
+      },
+    });
+  });
+
+  it("fails strictly when the cold-start grace expires without a successful probe", async () => {
+    vi.spyOn(process, "uptime").mockReturnValue(301);
+    mocks.queryRawUnsafe.mockRejectedValue(new Error("database unavailable"));
+
+    const response = await GET();
+    const body = await response.json();
+
+    expect(response.status).toBe(503);
+    expect(body).toMatchObject({
+      ok: false,
+      status: "not_ready",
+      checks: {
+        database: { ok: false, coldStartGraceActive: false },
+      },
+    });
+  });
+
   it("reuses a timed-out SQLite probe instead of queueing more uncancelled queries", async () => {
     vi.useFakeTimers();
+    vi.spyOn(process, "uptime").mockReturnValue(301);
     let finishProbe: ((value: Array<Record<string, number>>) => void) | undefined;
     mocks.queryRawUnsafe.mockReturnValue(
       new Promise<Array<Record<string, number>>>((resolve) => {
