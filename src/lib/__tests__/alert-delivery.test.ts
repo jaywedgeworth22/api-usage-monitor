@@ -8,15 +8,18 @@ let dbPath: string;
 let prisma: typeof import("@/lib/prisma").prisma;
 let deliverProviderAlerts: typeof import("../alert-delivery").deliverProviderAlerts;
 let AlertNotificationSummaryPersistenceTimeout: typeof import("../alert-delivery").AlertNotificationSummaryPersistenceTimeout;
+let encrypt: typeof import("@/lib/crypto").encrypt;
 
 beforeAll(async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "alert-delivery-test-"));
   dbPath = path.join(dir, "test.db");
   process.env.DATABASE_URL = `file:${dbPath}`;
+  process.env.ENCRYPTION_KEY = "44".repeat(32);
 
   setupPrismaSqliteTestDb(dbPath);
 
   ({ prisma } = await import("@/lib/prisma"));
+  ({ encrypt } = await import("@/lib/crypto"));
   ({ deliverProviderAlerts, AlertNotificationSummaryPersistenceTimeout } = await import(
     "../alert-delivery"
   ));
@@ -27,6 +30,7 @@ afterAll(async () => {
   if (dbPath && fs.existsSync(dbPath)) {
     fs.rmSync(dbPath, { force: true });
   }
+  delete process.env.ENCRYPTION_KEY;
 }, 30_000);
 
 beforeEach(async () => {
@@ -1414,6 +1418,83 @@ describe("alert delivery", () => {
         fetchImpl: fetchMock,
       })
     ).toMatchObject({ sent: 1 });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    const notification = await prisma.providerAlertNotification.findUniqueOrThrow({
+      where: { stateKey: `${provider.id}:missing_snapshot` },
+    });
+    expect(notification).toMatchObject({
+      incidentGeneration: 2,
+      evidenceConfigGeneration: 2,
+      evidenceWatermarkState: "active",
+      resolvedAt: null,
+    });
+    expect(notification.evidenceWatermarkAt).toEqual(new Date(0));
+  });
+
+  it("reopens unchanged no-snapshot evidence when Anthropic polling capability returns", async () => {
+    const encryptedAdminKey = encrypt("sk-ant-admin01-alert-test");
+    const provider = await prisma.provider.create({
+      data: {
+        name: "anthropic",
+        displayName: "Anthropic",
+        type: "builtin",
+        apiKey: encryptedAdminKey,
+        refreshIntervalMin: 60,
+      },
+    });
+    const config = {
+      channels: [
+        {
+          kind: "webhook" as const,
+          url: "https://alerts.example/anthropic-snapshot-capability",
+        },
+      ],
+      minSeverity: "warning" as const,
+      reminderHours: 24,
+      maxAttempts: 1,
+    };
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(new Response("ok", { status: 200 }));
+
+    expect(
+      await deliverProviderAlerts({
+        now: new Date("2026-07-20T12:00:00.000Z"),
+        config,
+        fetchImpl: fetchMock,
+      })
+    ).toMatchObject({ sent: 1 });
+
+    await prisma.provider.update({
+      where: { id: provider.id },
+      data: {
+        apiKey: null,
+        alertConfigGeneration: { increment: 1 },
+      },
+    });
+    expect(
+      await deliverProviderAlerts({
+        now: new Date("2026-07-20T13:00:00.000Z"),
+        config,
+        fetchImpl: fetchMock,
+      })
+    ).toMatchObject({ resolved: 1 });
+
+    await prisma.provider.update({
+      where: { id: provider.id },
+      data: {
+        apiKey: encryptedAdminKey,
+        alertConfigGeneration: { increment: 1 },
+      },
+    });
+    expect(
+      await deliverProviderAlerts({
+        now: new Date("2026-07-20T14:00:00.000Z"),
+        config,
+        fetchImpl: fetchMock,
+      })
+    ).toMatchObject({ sent: 1 });
+
     expect(fetchMock).toHaveBeenCalledTimes(2);
     const notification = await prisma.providerAlertNotification.findUniqueOrThrow({
       where: { stateKey: `${provider.id}:missing_snapshot` },

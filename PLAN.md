@@ -19,11 +19,12 @@ Correct PR #204's alert-persistence safety boundary and the disable/re-enable ev
 9. Atomically paired activation refresh/reopen with the parent operation lease; exact child claims block parent preemption across the external boundary, while newer evidence can safely preempt a parent before any child claim.
 10. Separated raw alert activity from minimum-severity delivery eligibility, repaired aggregate summary state from complete durable channel success, and floored reopen timestamps against prior resolution, evidence, and actual clock.
 11. Added hostile regressions for resolver S2 versus newer active S3, stale trigger payload, stale-snapshot recurrence, severity-policy raise/lower, summary repair without resend, and delayed newer-evidence reopen.
+12. Rebased onto `origin/main` `0420eb0`, retained #209's `providerPollSnapshotExpected` behavior, and added atomic revision bumps for API-key, public/secret config, and secret-clear edits that can change snapshot capability.
+13. Added an Anthropic Admin-capability true -> false -> true regression proving the unchanged no-snapshot epoch resolves and reopens at config generation 2.
 
 ## Remaining
 
-1. Root hostile re-review of the five remediated findings and new adversarial tests.
-2. After review clearance, deliberately rebase/replay onto `origin/main` `0420eb0` and preserve #209's `providerPollSnapshotExpected` behavior in alert evaluation.
-3. Address any integration findings and rerun focused verification.
-4. Run the serialized full Node 24 `npm run verify` gate only after review clearance and rebase.
-5. Keep scheduler and OTLP disabled; do not push, open a PR, merge, deploy, change Render, call providers, read secrets, or write production data in this lane.
+1. Commit the reviewed current-main integration without behavior drift.
+2. Run the claimed serialized full Node 24 `npm run verify` gate.
+3. Publish through a PR, require hosted checks, squash-merge, and verify the exact Render production revision plus health.
+4. Keep scheduler and OTLP disabled throughout; do not call providers, read secrets, or write production data in this lane.

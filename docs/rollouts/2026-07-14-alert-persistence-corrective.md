@@ -12,7 +12,8 @@ This isolated follow-up imports the corrective alert persistence implementation 
 - Notification incidents, parent operations, channel triggers, and PagerDuty resolves use durable tokens, generations, incident IDs, and bounded leases. Activation evidence/payload mutation is atomic with parent acquisition. Child claims/outcomes, final summary, and close writes prove the exact config, source/transition evidence, severity/message, live parent, and open incident. Newer evidence may preempt a parent before a child claim, but a live exact child serializes the external boundary.
 - Ambiguous non-idempotent sends remain unknown and are not blindly retried; PagerDuty uses a persisted per-incident dedup key and conservative legacy audit state.
 - `Provider.alertConfigGeneration` and `ProviderAlertNotification.evidenceConfigGeneration` default to 0 for additive migration. `operationClaimConfigGeneration` binds each parent lease to the provider revision it evaluated.
-- Provider active-state, refresh-interval, and plan writes increment the revision inside the same provider update. Renewal roll-forward uses one Prisma transaction for the conditional plan write plus revision increment. Agent-sync auto-disable and the Anthropic funding repair also increment atomically.
+- Provider active-state, refresh-interval, plan, API-key, public/secret config, and secret-clear writes increment the revision inside the same provider update. Renewal roll-forward uses one Prisma transaction for the conditional plan write plus revision increment. Agent-sync auto-disable and the Anthropic funding repair also increment atomically.
+- Rebase onto #209 retains `providerPollSnapshotExpected`, including the rule that Anthropic snapshot alerts require stored Admin API capability. Capability transitions therefore share the same revision fence as every other alert-affecting edit.
 - Activation checks the provider revision before and after first creation; every later notification CAS includes the provider relation revision. Trigger/resolve claims and outcomes, summary, and close writes carry the same fence.
 - Raw alert activity remains independent from minimum-severity delivery policy, preventing policy changes from falsely resolving an incident.
 - A later pass can CAS-repair `lastSentAt` and `sendCount` from complete durable channel success after a final-summary P1008, without repeating the external send.
@@ -36,16 +37,17 @@ This isolated follow-up imports the corrective alert persistence implementation 
 Using Node `v24.18.0` explicitly:
 
 - `npm ci` — completed; 0 vulnerabilities; Prisma Client 6.19.3 generated.
-- Focused Vitest after hostile remediation — 8 files / 72 tests passed.
-- Alert delivery plus immutable migration — 2 files / 40 tests passed.
+- Focused Vitest after rebase and capability integration — 9 files / 75 tests passed.
+- Core alert/provider integration subset — 4 files / 46 tests passed.
 - Scoped ESLint — passed.
 - `npx tsc --noEmit` — passed.
 - `DATABASE_URL='file:/tmp/api-usage-monitor-alert-config-validate.db' npx prisma validate` — passed.
 - `git diff --check` — passed.
-- Full `npm run verify` — pending root hostile review and serialized gate coordination.
+- Fresh hostile review of frozen diff `b1061e12b11c4078e048832d4a81e14423619e4a0a22140c65624b5a77bf8b0c` — LAND; no P0-P2.
+- Full `npm run verify` — pending in the claimed serialized API Usage Monitor gate slot.
 
 ## Production impact and follow-ups
 
 None from this local branch. Scheduler and OTLP remain disabled. No push, PR, merge, deploy, Render/config/provider/database mutation, provider call, production write, or secret read occurred. Root review must clear the combined implementation before a serialized full gate or any publication decision.
 
-Fetched `origin/main` advanced to `0420eb0` (#209) during remediation. Landing requires a deliberate post-review rebase that retains #209's Anthropic snapshot-capability semantics, followed by integrated focused and full verification.
+The branch is rebased onto `origin/main` `0420eb0` (#209), retains its Anthropic snapshot-capability semantics, and atomically generations capability-affecting credential/config edits. A true -> false -> true Admin-capability regression proves the unchanged no-snapshot epoch reopens. Fresh hostile review is clear; the serialized full gate, hosted checks, merge, and exact Render production proof remain.
