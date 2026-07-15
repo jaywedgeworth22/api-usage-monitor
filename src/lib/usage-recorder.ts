@@ -7,6 +7,10 @@ import {
 } from "@/lib/usage-maintenance";
 import { ensureAgentSyncProviderSeeded } from "@/lib/ensure-agent-sync-provider";
 import {
+  syncProviderCredentialsFromInfisical,
+  type InfisicalCredentialSyncResult,
+} from "@/lib/infisical-provider-sync";
+import {
   markSchedulerStarted,
   markSchedulerTickCompleted,
   markSchedulerTickStarted,
@@ -133,6 +137,8 @@ export interface FetchAllProvidersResult {
   skipped: number;
   errors: ProviderFetchError[];
   outcomes: ProviderFetchOutcome[];
+  // Safe counts/status codes only; no Infisical names, tokens, or values.
+  credentialSync?: InfisicalCredentialSyncResult;
 }
 
 let fetchAllInFlight: Promise<FetchAllProvidersResult> | null = null;
@@ -146,6 +152,32 @@ export async function fetchAllDueProviders(): Promise<FetchAllProvidersResult> {
 
   const run = (async () => {
     await withInternalUsageWriteAdmission(() => ensureAgentSyncProviderSeeded());
+    let credentialSync: InfisicalCredentialSyncResult;
+    try {
+      // Network reads happen before the sync helper takes the internal SQLite
+      // writer lease, so Infisical latency never blocks usage ingest. Any
+      // failure keeps encrypted last-known-good credentials in place.
+      credentialSync = await syncProviderCredentialsFromInfisical();
+      if (credentialSync.failed > 0) {
+        console.warn(
+          `[infisical-provider-sync] retained last-known-good credentials for ${credentialSync.failed} failed mapping(s)`
+        );
+      }
+    } catch {
+      console.error(
+        "[infisical-provider-sync] unexpected failure; retained existing provider credentials"
+      );
+      credentialSync = {
+        enabled: true,
+        configured: true,
+        sources: [],
+        created: 0,
+        updated: 0,
+        unchanged: 0,
+        missing: 0,
+        failed: 1,
+      };
+    }
     const providers = await prisma.provider.findMany({
       where: { isActive: true },
       include: {
@@ -287,6 +319,7 @@ export async function fetchAllDueProviders(): Promise<FetchAllProvidersResult> {
       skipped,
       errors,
       outcomes,
+      credentialSync,
     };
   })();
 
