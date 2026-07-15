@@ -5,8 +5,8 @@ Updated: 2026-07-14
 ## Current state
 
 - Work is isolated on `codex/alert-persistence-config-generation` in `/Users/jay/.codex/worktrees/api-usage-monitor-alert-persistence-config-generation`, rebased onto fetched `origin/main` `0420eb0` (#209, Anthropic individual-account boundary).
-- The branch has two unpublished commits (`c7f79a4`, `2c8ae64`) plus an uncommitted current-main integration correction frozen for fresh hostile review.
-- Fresh hostile review of frozen diff `b1061e12b11c4078e048832d4a81e14423619e4a0a22140c65624b5a77bf8b0c` returned LAND with no P0-P2. CODEX claimed the idle API Usage Monitor serialized full-gate slot in `#agent-sync`.
+- Exact clean implementation HEAD is `930cbc37756b6c9a522f1b1d8dbe49feb282d644` on unchanged `origin/main` `0420eb0c73e3b35eafbe33301df2dee2770ff8ae`.
+- Fresh alert review and final SQLite startup-test re-review returned LAND with no P0-P3.
 - PR #204 (`56d532ec`) remains the production code path; no branch push, PR, merge, deploy, Render/config/provider/production mutation, provider call, or secret read occurred here.
 - Scheduler and OTLP metrics ingest remain disabled while alert persistence and shared writer admission are reviewed separately.
 
@@ -20,10 +20,13 @@ Updated: 2026-07-14
 - Severity policy controls delivery eligibility without falsely resolving raw active incidents. Complete durable per-channel success repairs a later missing aggregate summary without resending. Reopen detection times cannot precede prior resolution, evidence, or the actual claim clock.
 - Existing providers and notifications migrate at revision 0. The checked-in pre-change SQL fixture proves both defaults plus legacy uncertainty survive `scripts/migrate-safe.mjs`.
 - Existing timestamp monotonicity, provider-loop completion, partial-result, and scheduler-health repairs from the corrective source remain intact.
+- The startup-index regression now disconnects its fixture Prisma client before child startup scripts, matching production ordering and preventing transient test-only DDL contention. Strict success assertions include bounded sanitized child error, signal, stdout, and stderr.
 
 ## Verification so far
 
 - Node `v24.18.0`; `npm ci` completed with 0 vulnerabilities and generated Prisma Client 6.19.3.
 - Focused Node 24 Vitest after rebase and capability integration: 9 files / 75 tests passed across alert delivery, provider alerts, maintenance, timeout budget, immutable migration, provider route, renewal, agent-sync, and provider routing. The core alert/provider integration subset is 4 files / 46 tests.
 - Scoped ESLint passed; `npm run typecheck` passed; Prisma validation passed with an inert local SQLite URL; `git diff --check` passed.
-- Full `npm run verify` is the active next gate; publication and exact Render production verification remain after it passes.
+- Focused startup-index verification passed one verbose run plus five repeated runs (12/12 assertions), scoped ESLint, TypeScript, and diff checks.
+- Serialized canonical Node 24 `npm run verify` passed: ESLint, TypeScript, 81 files / 534 tests, all four safe-migration scenarios, SQLite pre-migration backup, startup configuration, and Next.js 16.2.10 production build.
+- Push/PR, hosted checks, squash merge, and exact Render production verification remain.

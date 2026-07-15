@@ -21,10 +21,10 @@ Correct PR #204's alert-persistence safety boundary and the disable/re-enable ev
 11. Added hostile regressions for resolver S2 versus newer active S3, stale trigger payload, stale-snapshot recurrence, severity-policy raise/lower, summary repair without resend, and delayed newer-evidence reopen.
 12. Rebased onto `origin/main` `0420eb0`, retained #209's `providerPollSnapshotExpected` behavior, and added atomic revision bumps for API-key, public/secret config, and secret-clear edits that can change snapshot capability.
 13. Added an Anthropic Admin-capability true -> false -> true regression proving the unchanged no-snapshot epoch resolves and reopens at config generation 2.
+14. Removed SQLite startup-test contention by disconnecting the fixture client before child startup scripts and added bounded sanitized child-process diagnostics; final re-review returned LAND with no P0-P3.
+15. Passed the serialized canonical Node 24 `npm run verify` gate: lint, TypeScript, 81 files / 534 tests, safe migration, SQLite backup, startup configuration, and production build.
 
 ## Remaining
 
-1. Commit the reviewed current-main integration without behavior drift.
-2. Run the claimed serialized full Node 24 `npm run verify` gate.
-3. Publish through a PR, require hosted checks, squash-merge, and verify the exact Render production revision plus health.
-4. Keep scheduler and OTLP disabled throughout; do not call providers, read secrets, or write production data in this lane.
+1. Publish through a PR, require hosted checks, squash-merge, and verify the exact Render production revision plus health.
+2. Keep scheduler and OTLP disabled throughout; do not call providers, read secrets, or write production data in this lane.

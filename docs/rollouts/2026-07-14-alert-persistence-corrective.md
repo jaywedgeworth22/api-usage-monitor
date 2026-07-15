@@ -18,6 +18,7 @@ This isolated follow-up imports the corrective alert persistence implementation 
 - Raw alert activity remains independent from minimum-severity delivery policy, preventing policy changes from falsely resolving an incident.
 - A later pass can CAS-repair `lastSentAt` and `sendCount` from complete durable channel success after a final-summary P1008, without repeating the external send.
 - Reopened `firstDetectedAt`/`lastDetectedAt` are floored against cycle time, actual claim clock, source/transition evidence, prior detection, and prior resolution.
+- The startup-index test closes its fixture Prisma connection before spawning startup DDL and reports bounded sanitized child diagnostics on strict nonzero-status failures, preventing test-only SQLite contention without changing application behavior.
 
 ## Files changed
 
@@ -43,11 +44,12 @@ Using Node `v24.18.0` explicitly:
 - `npx tsc --noEmit` — passed.
 - `DATABASE_URL='file:/tmp/api-usage-monitor-alert-config-validate.db' npx prisma validate` — passed.
 - `git diff --check` — passed.
-- Fresh hostile review of frozen diff `b1061e12b11c4078e048832d4a81e14423619e4a0a22140c65624b5a77bf8b0c` — LAND; no P0-P2.
-- Full `npm run verify` — pending in the claimed serialized API Usage Monitor gate slot.
+- Fresh alert review plus final SQLite startup-test re-review — LAND; no P0-P3.
+- Focused startup-index verification — one verbose run plus five repeated runs passed; scoped ESLint, TypeScript, and diff checks passed.
+- Canonical `npm run verify` — passed ESLint, TypeScript, 81 files / 534 tests, all four safe-migration scenarios, SQLite backup, startup configuration, and Next.js 16.2.10 production build.
 
 ## Production impact and follow-ups
 
-None from this local branch. Scheduler and OTLP remain disabled. No push, PR, merge, deploy, Render/config/provider/database mutation, provider call, production write, or secret read occurred. Root review must clear the combined implementation before a serialized full gate or any publication decision.
+None from this local branch yet. Scheduler and OTLP remain disabled. No push, PR, merge, deploy, Render/config/provider/database mutation, provider call, production write, or secret read occurred before publication.
 
-The branch is rebased onto `origin/main` `0420eb0` (#209), retains its Anthropic snapshot-capability semantics, and atomically generations capability-affecting credential/config edits. A true -> false -> true Admin-capability regression proves the unchanged no-snapshot epoch reopens. Fresh hostile review is clear; the serialized full gate, hosted checks, merge, and exact Render production proof remain.
+The branch is rebased onto `origin/main` `0420eb0` (#209), retains its Anthropic snapshot-capability semantics, and atomically generations capability-affecting credential/config edits. A true -> false -> true Admin-capability regression proves the unchanged no-snapshot epoch reopens. Reviews and the serialized full gate are clear; hosted checks, merge, and exact Render production proof remain.
