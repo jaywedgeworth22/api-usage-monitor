@@ -118,8 +118,28 @@ function familyDisplayName(providers: WorkspaceProvider[]): string {
   return [...counts.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))[0]?.[0] ?? providers[0]?.displayName ?? "Provider";
 }
 
-function providerSpend(provider: WorkspaceProvider): number {
+function providerSpend(provider: WorkspaceProvider): number | null {
+  if (
+    provider.spendCoverage === "unknown" ||
+    provider.spendCoverage === "legacy_unknown"
+  ) {
+    return null;
+  }
   return provider.spentUsd ?? provider.latestSnapshot?.totalCost ?? provider.estimatedMonthlyCostUsd ?? 0;
+}
+
+function providerSpendLabel(provider: WorkspaceProvider): string {
+  const amount = providerSpend(provider);
+  if (amount == null) return "Cost not reported";
+  return `${formatCurrency(amount)}${
+    provider.spendCoverage === "partial" ? " known" : ""
+  } spent`;
+}
+
+function providerProjectionLabel(provider: WorkspaceProvider): string {
+  return providerSpend(provider) == null
+    ? "Projection unavailable"
+    : `${formatCurrency(provider.projectedEomUsd)} projected`;
 }
 
 function latestDate(values: Array<string | null | undefined>): string | null {
@@ -181,9 +201,14 @@ function formatDate(value: string | null): string {
 
 function costCoverageLabel(family: ProviderFamily): string {
   if (!family.financialsAggregated) return "Not aggregated";
-  if (family.incompleteCostCount === 0) return "Complete";
-  if ((family.spentUsd ?? 0) > 0) return "Partial";
-  return "Unknown";
+  switch (family.providers[0]?.spendCoverage) {
+    case "complete":
+      return "Complete";
+    case "partial":
+      return "Partial";
+    default:
+      return "Unknown";
+  }
 }
 
 function childLabel(provider: WorkspaceProvider): string {
@@ -356,6 +381,7 @@ export default function DashboardProviderWorkspace({
       const financialsAggregated = groupProviders.length === 1;
       const onlyProvider = financialsAggregated ? groupProviders[0] : null;
       const spendValues = groupProviders.map(providerSpend);
+      const onlyProviderSpend = onlyProvider ? spendValues[0] : null;
       const externalRenewals = allProviderExternalBilling
         .filter(({ record }) => isExternalBillingRenewal(record))
         .map(({ record }) => record.nextRenewalAt);
@@ -380,10 +406,16 @@ export default function DashboardProviderWorkspace({
         ),
         searchableExternalBilling: allProviderExternalBilling,
         financialsAggregated,
-        spentUsd: onlyProvider ? providerSpend(onlyProvider) : null,
-        projectedUsd: onlyProvider?.projectedEomUsd ?? null,
+        spentUsd: onlyProviderSpend,
+        projectedUsd:
+          onlyProvider && onlyProviderSpend != null
+            ? onlyProvider.projectedEomUsd
+            : null,
         budgetUsd: onlyProvider?.plan?.monthlyBudgetUsd ?? null,
-        spendSortUsd: Math.max(0, ...spendValues),
+        spendSortUsd: Math.max(
+          0,
+          ...spendValues.filter((value): value is number => value != null)
+        ),
         credits: onlyProvider?.latestSnapshot?.credits ?? null,
         balance: onlyProvider?.latestSnapshot?.balance ?? null,
         alertCount: groupProviders.reduce(
@@ -547,6 +579,11 @@ export default function DashboardProviderWorkspace({
           <tbody>
             {visibleFamilies.map((family) => {
               const isCollapsed = collapsed[family.key] ?? family.providers.length === 1;
+              const familySpendLabel = family.spentUsd == null
+                ? "Cost not reported"
+                : `${formatCurrency(family.spentUsd)}${
+                    family.providers[0]?.spendCoverage === "partial" ? " known" : ""
+                  }`;
               return (
                 <Fragment key={family.key}>
                   <tr className="border-b border-gray-100 align-top hover:bg-gray-50/70 dark:border-gray-700 dark:hover:bg-gray-700/40">
@@ -574,11 +611,18 @@ export default function DashboardProviderWorkspace({
                     <td data-label="Spend" className="px-4 py-4">
                       {family.financialsAggregated ? (
                         <>
-                          <p className="font-semibold text-gray-900 dark:text-gray-100">{formatCurrency(family.spentUsd)}</p>
+                          <p
+                            aria-label={`${family.displayName} month-to-date spend: ${familySpendLabel}`}
+                            className="font-semibold text-gray-900 dark:text-gray-100"
+                          >
+                            {familySpendLabel}
+                          </p>
                           <p className="text-xs text-gray-500 dark:text-gray-400">
                             {family.budgetUsd != null
                               ? `${formatCurrency(family.budgetUsd)} budget`
-                              : `${formatCurrency(family.projectedUsd)} projected`}
+                              : family.projectedUsd != null
+                                ? `${formatCurrency(family.projectedUsd)} projected`
+                                : "Projection unavailable"}
                           </p>
                         </>
                       ) : (
@@ -669,9 +713,14 @@ export default function DashboardProviderWorkspace({
                                 </span>
                               </span>
                               <span className="shrink-0 text-right">
-                                <span className="block text-sm font-semibold text-gray-900 dark:text-gray-100">{formatCurrency(providerSpend(provider))} spent</span>
+                                <span
+                                  aria-label={`${childLabel(provider)} month-to-date spend: ${providerSpendLabel(provider)}`}
+                                  className="block text-sm font-semibold text-gray-900 dark:text-gray-100"
+                                >
+                                  {providerSpendLabel(provider)}
+                                </span>
                                 <span className="block text-xs text-gray-500 dark:text-gray-400">
-                                  {formatCurrency(provider.projectedEomUsd)} projected
+                                  {providerProjectionLabel(provider)}
                                 </span>
                                 <span className="block text-xs text-gray-500 dark:text-gray-400">
                                   {formatCurrency(provider.plan?.monthlyBudgetUsd ?? null)} budget

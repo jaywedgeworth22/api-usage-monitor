@@ -64,6 +64,7 @@ const SOURCE_ENV: Record<
 const ALLOWLIST: Record<Scope, readonly string[]> = {
   st: [
     "DEEPSEEK_API_KEY",
+    "GEMINI_API_KEY",
     "HETZNER_API_TOKEN",
     "PINECONE_API_KEY",
     "RESEND_API_KEY",
@@ -359,7 +360,7 @@ describe("Infisical provider credential sync", () => {
     expect(result).toMatchObject({
       enabled: true,
       configured: true,
-      created: 16,
+      created: 17,
       updated: 0,
       unchanged: 0,
       missing: 0,
@@ -370,7 +371,7 @@ describe("Infisical provider credential sync", () => {
     const providers = await prisma.provider.findMany({
       include: { allocations: { include: { project: true } } },
     });
-    expect(providers).toHaveLength(16);
+    expect(providers).toHaveLength(17);
     const deepseek = providers.filter((provider) => provider.name === "deepseek");
     expect(deepseek).toHaveLength(2);
     expect(
@@ -385,6 +386,17 @@ describe("Infisical provider credential sync", () => {
     expect(
       providers.filter((provider) => provider.name === "resend")
     ).toHaveLength(2);
+    const googleAi = providers.filter((provider) => provider.name === "google-ai");
+    expect(googleAi).toHaveLength(2);
+    expect(
+      googleAi.map((provider) => provider.allocations[0]?.project.name).sort()
+    ).toEqual(["Congress.Trade", "SocraticTrade.com"]);
+    expect(
+      googleAi.map((provider) => decrypt(provider.apiKey!)).sort()
+    ).toEqual([
+      secrets.ct.GEMINI_API_KEY,
+      secrets.st.GEMINI_API_KEY,
+    ].sort());
     expect(
       providers.filter((provider) => provider.name === "twelvedata")
     ).toHaveLength(1);
@@ -437,7 +449,7 @@ describe("Infisical provider credential sync", () => {
     const second = await syncProviderCredentialsFromInfisical();
 
     expect(second.updated).toBe(1);
-    expect(second.unchanged).toBe(15);
+    expect(second.unchanged).toBe(16);
     const updated = await prisma.provider.findUniqueOrThrow({
       where: { id: stResend.id },
     });
@@ -647,7 +659,7 @@ describe("Infisical provider credential sync", () => {
           OR: [{ name: "google-ai" }, { name: "gemini" }],
         },
       })
-    ).toBe(2);
+    ).toBe(3);
   });
 
   it("preserves a valid manual ST Gemini row when only CT has an Infisical key", async () => {
@@ -679,6 +691,43 @@ describe("Infisical provider credential sync", () => {
     expect(
       googleProviders.some(
         (provider) => provider.id !== stProvider.id && decrypt(provider.apiKey!) === ct.GEMINI_API_KEY
+      )
+    ).toBe(true);
+  });
+
+  it("keeps static ST/CT Gemini multiplicity when the ST source is unconfigured", async () => {
+    configureSources("ct");
+    const ct = valuesFor("ct");
+    const legacyKey = "unscoped-gemini-key";
+    const existing = await prisma.provider.create({
+      data: {
+        name: "google-ai",
+        displayName: "Google AI",
+        type: "builtin",
+        label: "primary Gemini account",
+        apiKey: encrypt(legacyKey),
+      },
+    });
+    installInfisicalMock({ ct });
+
+    await syncProviderCredentialsFromInfisical();
+
+    const preserved = await prisma.provider.findUniqueOrThrow({
+      where: { id: existing.id },
+    });
+    expect(decrypt(preserved.apiKey!)).toBe(legacyKey);
+    expect(preserved.secretConfig).toBeNull();
+    const googleProviders = await prisma.provider.findMany({
+      where: { name: "google-ai" },
+      include: { allocations: { include: { project: true } } },
+    });
+    expect(googleProviders).toHaveLength(2);
+    expect(
+      googleProviders.some(
+        (provider) =>
+          provider.id !== existing.id &&
+          decrypt(provider.apiKey!) === ct.GEMINI_API_KEY &&
+          provider.allocations[0]?.project.name === "Congress.Trade"
       )
     ).toBe(true);
   });
@@ -773,7 +822,7 @@ describe("Infisical provider credential sync", () => {
 
     const result = await syncProviderCredentialsFromInfisical();
 
-    expect(result.failed).toBe(16);
+    expect(result.failed).toBe(17);
     expect(result.sources[0]).toMatchObject({
       source: "st",
       status: "error",

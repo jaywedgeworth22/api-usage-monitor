@@ -22,6 +22,7 @@ equality is checked directly only after decrypting inside the server process.
 | Scope | Infisical names | Monitor destination |
 |---|---|---|
 | SocraticTrade.com | `DEEPSEEK_API_KEY` | DeepSeek balance |
+| SocraticTrade.com | `GEMINI_API_KEY` | Google AI key validation |
 | SocraticTrade.com | `HETZNER_API_TOKEN` | Hetzner inventory/run-rate |
 | SocraticTrade.com | `PINECONE_API_KEY` | Pinecone inventory |
 | SocraticTrade.com | `RESEND_API_KEY` | Resend key/usage control plane |
@@ -44,9 +45,10 @@ The live Socratic.Trade convention is project
 That exact scope currently has no `GEMINI_API_KEY`, `OPENAI_API_KEY`, or
 `MISTRAL_API_KEY`. Its `GOOGLE_APPLICATION_CREDENTIALS` value is a non-JSON
 path and therefore cannot be copied into the monitor's JSON billing credential
-field. The sync has no ST Google candidate, so an existing manually valid ST
-Gemini provider remains unchanged. To auto-manage it, add `GEMINI_API_KEY` to
-the Socratic.Trade Infisical `prod` `/` scope.
+field. The sync is ready to bind an ST Google candidate while preserving the
+separate CT candidate. To auto-manage the existing ST Gemini provider, add
+`GEMINI_API_KEY` to the Socratic.Trade Infisical `prod` `/` scope; until then,
+the manually valid ST provider remains unchanged.
 
 ## Runtime configuration
 

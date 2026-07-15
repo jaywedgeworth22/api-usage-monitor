@@ -162,6 +162,12 @@ function appAttempts(
 const CREDENTIAL_MAPPINGS: readonly CredentialMapping[] = [
   {
     scope: "st",
+    providerName: "google-ai",
+    attempts: appAttempts("st", ["GEMINI_API_KEY"]),
+    build: (values) => ({ apiKey: values.get("GEMINI_API_KEY") }),
+  },
+  {
+    scope: "st",
     providerName: "deepseek",
     attempts: appAttempts("st", ["DEEPSEEK_API_KEY"]),
     build: (values) => ({ apiKey: values.get("DEEPSEEK_API_KEY") }),

@@ -104,6 +104,54 @@ function renderWorkspace(
 }
 
 describe("DashboardProviderWorkspace", () => {
+  it("reports unknown pending Gemini cost without presenting a false zero", () => {
+    const html = renderWorkspace([
+      provider("socratic-gemini", {
+        name: "google-ai",
+        displayName: "Google AI (SocraticTrade.com)",
+        spentUsd: 0,
+        projectedEomUsd: 0,
+        spendCoverage: "unknown",
+        pushedCostCoverage: "unknown",
+        pushedPricedEventCount: 0,
+        geminiBillingStatus: {
+          state: "pending",
+          errorCode: null,
+          httpStatus: null,
+          retryable: true,
+          checkedAt: "2026-07-15T00:00:00.000Z",
+        },
+      }),
+    ]);
+
+    expect(html).toContain("Cost not reported");
+    expect(html).toContain("Projection unavailable");
+    expect(html).toContain(
+      'aria-label="Google AI month-to-date spend: Cost not reported"'
+    );
+    expect(html).toContain(">Unknown</span>");
+    expect(html).not.toContain("$0.00");
+  });
+
+  it("preserves an authoritative actual zero", () => {
+    const html = renderWorkspace([
+      provider("socratic-gemini", {
+        name: "google-ai",
+        displayName: "Google AI",
+        spentUsd: 0,
+        projectedEomUsd: 0,
+        spendCoverage: "complete",
+      }),
+    ]);
+
+    expect(html).toContain(
+      'aria-label="Google AI month-to-date spend: $0.00"'
+    );
+    expect(html).toContain(">$0.00</p>");
+    expect(html).toContain(">Complete</span>");
+    expect(html).not.toContain("Cost not reported");
+  });
+
   it("does not aggregate ambiguous same-family financial values", () => {
     const html = renderWorkspace([
       provider("account-one", {
