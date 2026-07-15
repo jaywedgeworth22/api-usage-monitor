@@ -1,5 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { createRateLimiter, getClientIp, getLoginRateLimitKey } from "../rate-limit";
+import {
+  createRateLimiter,
+  getClientIp,
+  getLoginBackstopKey,
+  getLoginRateLimitKey,
+} from "../rate-limit";
 
 describe("createRateLimiter", () => {
   beforeEach(() => {
@@ -183,5 +188,56 @@ describe("getLoginRateLimitKey", () => {
       },
     });
     expect(getLoginRateLimitKey(request)).not.toBe(getClientIp(request));
+  });
+});
+
+describe("getLoginBackstopKey", () => {
+  it("keys by CF-Connecting-IP when the rightmost hop is a real Cloudflare IP", () => {
+    // 173.245.48.1 is within Cloudflare's published 173.245.48.0/20 range -
+    // i.e. this simulates genuine production (Cloudflare -> Render) traffic,
+    // where CF-Connecting-IP is Cloudflare-set and trustworthy.
+    const clientA = new Request("https://usage.jays.services/api/auth/login", {
+      headers: { "x-forwarded-for": "173.245.48.1", "cf-connecting-ip": "198.51.100.11" },
+    });
+    const clientB = new Request("https://usage.jays.services/api/auth/login", {
+      headers: { "x-forwarded-for": "173.245.48.1", "cf-connecting-ip": "198.51.100.22" },
+    });
+    // Same shared egress hop, but distinct CF-Connecting-IP -> distinct
+    // backstop buckets, so one client's exhaustion can't touch the other's.
+    expect(getLoginBackstopKey(clientA)).toBe("198.51.100.11");
+    expect(getLoginBackstopKey(clientB)).toBe("198.51.100.22");
+    expect(getLoginBackstopKey(clientA)).not.toBe(getLoginBackstopKey(clientB));
+  });
+
+  it("falls back to the rightmost hop alone when it is not a Cloudflare IP", () => {
+    // 45.33.12.9 is not in any published Cloudflare range - this simulates
+    // traffic reaching the deployment directly, bypassing Cloudflare, where
+    // CF-Connecting-IP is just an ordinary, attacker-settable header.
+    const request = new Request("https://usage.jays.services/api/auth/login", {
+      headers: { "x-forwarded-for": "45.33.12.9", "cf-connecting-ip": "10.10.10.1" },
+    });
+    expect(getLoginBackstopKey(request)).toBe("45.33.12.9");
+  });
+
+  it("rotating a forged cf-connecting-ip from a non-Cloudflare peer does not change the backstop key", () => {
+    const makeRequest = (cfIp: string) =>
+      new Request("https://usage.jays.services/api/auth/login", {
+        headers: { "x-forwarded-for": "45.33.12.9", "cf-connecting-ip": cfIp },
+      });
+    const keys = new Set([
+      getLoginBackstopKey(makeRequest("10.10.10.1")),
+      getLoginBackstopKey(makeRequest("10.10.10.2")),
+      getLoginBackstopKey(makeRequest("10.10.10.3")),
+    ]);
+    // All three resolve to the same key (the unspoofable rightmost hop), so
+    // rotating the forged header cannot fragment the backstop.
+    expect(keys.size).toBe(1);
+  });
+
+  it("falls back to the rightmost hop when cf-connecting-ip is absent, even behind a Cloudflare IP", () => {
+    const request = new Request("https://usage.jays.services/api/auth/login", {
+      headers: { "x-forwarded-for": "173.245.48.1" },
+    });
+    expect(getLoginBackstopKey(request)).toBe("173.245.48.1");
   });
 });

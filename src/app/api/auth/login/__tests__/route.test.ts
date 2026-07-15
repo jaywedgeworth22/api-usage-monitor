@@ -88,11 +88,13 @@ describe("POST /api/auth/login", () => {
   it("isolates two CF clients sharing an egress IP: one exhausting its budget doesn't block the other", async () => {
     // Documents the CF -> Render topology: usage.jays.services is always
     // fronted by Cloudflare, so two distinct end clients proxied through it
-    // present the SAME rightmost XFF hop (Cloudflare's shared egress IP).
+    // present the SAME rightmost XFF hop (Cloudflare's shared egress IP -
+    // 173.245.48.1 is within Cloudflare's published 173.245.48.0/20 range,
+    // so it exercises the same CF-trust path production traffic does).
     // CF-Connecting-IP - set by Cloudflare itself, not the client - is what
     // separates them into independent buckets.
     const { POST } = await freshRoute();
-    const CF_EGRESS_IP = "203.0.113.50"; // shared rightmost XFF hop for both clients
+    const CF_EGRESS_IP = "173.245.48.1"; // shared rightmost XFF hop for both clients
     const clientA = (password: unknown) =>
       loginRequest(password, CF_EGRESS_IP, { "cf-connecting-ip": "198.51.100.11" });
     const clientB = (password: unknown) =>
@@ -110,15 +112,50 @@ describe("POST /api/auth/login", () => {
     expect(res.status).toBe(200);
   });
 
+  it("does not let distinct CF-proxied attackers sharing an egress IP drain a shared backstop and lock out the owner", async () => {
+    // Regression test for the exact production (Cloudflare -> Render) attack
+    // this backstop must resist: several distinct CF-proxied attacker
+    // clients, each staying within its OWN 5/min tuple budget, all egress
+    // through the same shared Cloudflare IP. Before keying the backstop by
+    // CF-Connecting-IP for genuine Cloudflare traffic, their combined failed
+    // attempts drained one shared per-rightmost-hop bucket and 429'd the
+    // legitimate owner - who shares that same egress IP - even with the
+    // correct password.
+    const { POST } = await freshRoute();
+    const CF_EGRESS_IP = "173.245.48.1"; // within Cloudflare's published range
+    const attackerCfIps = ["198.51.100.1", "198.51.100.2", "198.51.100.3", "198.51.100.4"];
+
+    // Four distinct attacker clients each send 5 failed attempts (exactly
+    // their own tuple budget, so the tuple limiter alone never blocks them)
+    // - 20 failed attempts total through the shared egress IP, which would
+    // have exhausted the old rightmost-hop-only backstop's ~20/min budget.
+    for (const cfIp of attackerCfIps) {
+      for (let i = 0; i < 5; i++) {
+        const res = await POST(
+          loginRequest("wrong", CF_EGRESS_IP, { "cf-connecting-ip": cfIp })
+        );
+        expect(res.status).toBe(401);
+      }
+    }
+
+    // The owner, a fifth distinct CF client sharing the same egress IP, logs
+    // in with the correct password and must succeed - not 429.
+    const ownerRes = await POST(
+      loginRequest(PASSWORD, CF_EGRESS_IP, { "cf-connecting-ip": "198.51.100.99" })
+    );
+    expect(ownerRes.status).toBe(200);
+  });
+
   it("still exhausts a direct peer's backstop even when it forges/rotates cf-connecting-ip", async () => {
     // Traffic that reaches Render directly (bypassing Cloudflare): the
-    // rightmost XFF hop is that peer's own unspoofable address. Forging a
-    // different cf-connecting-ip on every request fragments the tuple
-    // limiter into many distinct buckets, but the per-rightmost-hop backstop
-    // re-aggregates by the one hop the attacker cannot change and still
-    // trips.
+    // rightmost XFF hop is that peer's own unspoofable address, and it is
+    // NOT one of Cloudflare's published ranges, so the backstop falls back
+    // to keying on it alone. Forging a different cf-connecting-ip on every
+    // request fragments the tuple limiter into many distinct buckets, but
+    // the backstop re-aggregates by the one hop the attacker cannot change
+    // and still trips.
     const { POST } = await freshRoute();
-    const DIRECT_PEER_IP = "45.33.12.9";
+    const DIRECT_PEER_IP = "45.33.12.9"; // not a Cloudflare IP
     let sawRateLimited = false;
     for (let i = 0; i < 25; i++) {
       const res = await POST(
@@ -135,7 +172,7 @@ describe("POST /api/auth/login", () => {
 
   it("does not let one rightmost hop's backstop exhaustion block a different hop", async () => {
     const { POST } = await freshRoute();
-    const ATTACKER_PEER_IP = "45.33.12.9";
+    const ATTACKER_PEER_IP = "45.33.12.9"; // not a Cloudflare IP
     // Drain the attacker's backstop by rotating cf-connecting-ip 20 times.
     for (let i = 0; i < 20; i++) {
       const res = await POST(

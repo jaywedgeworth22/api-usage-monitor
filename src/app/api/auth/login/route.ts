@@ -5,7 +5,11 @@ import {
   createSessionToken,
   verifyPassword,
 } from "@/lib/auth";
-import { createRateLimiter, getClientIp, getLoginRateLimitKey } from "@/lib/rate-limit";
+import {
+  createRateLimiter,
+  getLoginBackstopKey,
+  getLoginRateLimitKey,
+} from "@/lib/rate-limit";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -23,18 +27,24 @@ export const dynamic = "force-dynamic";
 // traffic that reaches Render directly.
 const loginRateLimiterByTuple = createRateLimiter(60_000, 5);
 
-// Backstop keyed on the rightmost XFF hop alone (via `getClientIp`, with no
-// CF-Connecting-IP component) - NOT an IP-independent global bucket. A
-// single source can fragment its own tuple key into many buckets by forging
-// and rotating CF-Connecting-IP (see rate-limit.ts), so this backstop
-// re-aggregates by the one hop that source cannot spoof, capping its total
-// attempts regardless of how many tuple keys it produced. Keeping the
-// backstop per rightmost-hop rather than one shared global bucket also means
-// a single abusive source - including a burst of distinct CF-proxied
-// clients hammering through the same shared Cloudflare egress IP - cannot
-// exhaust one pool and deny login to every other client, including the
-// legitimate owner. Same ~20/min budget the old global backstop used.
-const loginBackstopByRightmostHop = createRateLimiter(60_000, 20);
+// Backstop keyed via `getLoginBackstopKey` - NOT an IP-independent global
+// bucket, and NOT simply the rightmost XFF hop alone. A single source can
+// fragment its own tuple key into many buckets by forging and rotating
+// CF-Connecting-IP (see rate-limit.ts), so this backstop needs to
+// re-aggregate by the one identity that source cannot spoof - but which
+// identity is actually unspoofable depends on whether the request really
+// transited Cloudflare. `getLoginBackstopKey` checks the rightmost hop
+// against Cloudflare's published IP ranges to decide: for genuine
+// Cloudflare-fronted traffic (this deployment's production topology) it
+// keys per CF-Connecting-IP, so a burst of distinct CF-proxied clients
+// hammering through the same shared Cloudflare egress IP each get their own
+// bucket and cannot exhaust one shared pool to deny login to a different
+// client, including the legitimate owner. Only for traffic that reaches
+// Render directly (bypassing Cloudflare, where CF-Connecting-IP is just an
+// ordinary spoofable header) does it fall back to the rightmost hop alone,
+// re-aggregating that one peer's attempts regardless of how many tuple keys
+// it produced. Same ~20/min budget the old global backstop used.
+const loginBackstop = createRateLimiter(60_000, 20);
 
 export async function POST(request: NextRequest) {
   if (!process.env.DASHBOARD_PASSWORD?.trim()) {
@@ -45,13 +55,13 @@ export async function POST(request: NextRequest) {
   }
 
   const tupleKey = getLoginRateLimitKey(request);
-  const rightmostHop = getClientIp(request);
+  const backstopKey = getLoginBackstopKey(request);
 
   // Only check whether budget is available - do NOT consume yet. Consuming
   // happens later, only for attempts that turn out to be failed logins, so a
   // legitimate successful login never eats into the attacker-facing budget.
   const withinTupleLimit = loginRateLimiterByTuple.isAllowed(tupleKey);
-  const withinBackstop = loginBackstopByRightmostHop.isAllowed(rightmostHop);
+  const withinBackstop = loginBackstop.isAllowed(backstopKey);
   if (!withinTupleLimit || !withinBackstop) {
     return NextResponse.json(
       { error: "Too many login attempts. Try again later." },
@@ -65,14 +75,14 @@ export async function POST(request: NextRequest) {
     password = body?.password;
   } catch {
     loginRateLimiterByTuple.recordAttempt(tupleKey);
-    loginBackstopByRightmostHop.recordAttempt(rightmostHop);
+    loginBackstop.recordAttempt(backstopKey);
     return NextResponse.json({ error: "Invalid password" }, { status: 401 });
   }
 
   if (typeof password !== "string" || !password || !verifyPassword(password)) {
     // Failed authentication: record the attempt against both budgets.
     loginRateLimiterByTuple.recordAttempt(tupleKey);
-    loginBackstopByRightmostHop.recordAttempt(rightmostHop);
+    loginBackstop.recordAttempt(backstopKey);
     return NextResponse.json({ error: "Invalid password" }, { status: 401 });
   }
 

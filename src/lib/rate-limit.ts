@@ -10,6 +10,8 @@
  * switch to a shared store (Redis, etc.) if you scale horizontally.
  */
 
+import { isCloudflareIp } from "./cloudflare-ip-ranges";
+
 interface RateLimitEntry {
   count: number;
   resetAt: number; // epoch ms when the window resets
@@ -169,12 +171,47 @@ export function getClientIp(request: Request): string {
  * forged `CF-Connecting-IP` in that scenario only fragments the tuple key
  * *under that one unspoofable hop*; it cannot collide with, or exhaust the
  * budget of, any other source. The login route pairs this tuple limiter with
- * a second limiter keyed on `getClientIp` alone (the rightmost hop, with no
- * CF-Connecting-IP component) as a backstop that re-aggregates by that
- * unspoofable hop even if CF-Connecting-IP is forged and rotated.
+ * a backstop keyed by `getLoginBackstopKey` below, which re-aggregates by
+ * whichever identity is actually unspoofable for the request's topology.
  */
 export function getLoginRateLimitKey(request: Request): string {
   const rightmostHop = getClientIp(request);
   const cfConnectingIp = request.headers.get("cf-connecting-ip")?.trim() || "";
   return `${rightmostHop}|cf-connecting-ip=${cfConnectingIp}`;
+}
+
+/**
+ * Builds the rate-limit key used for the login backstop: a secondary check
+ * that re-aggregates by the one identity a single abusive source cannot
+ * rotate away from, so it can't escape the tuple limiter above by
+ * fragmenting its own key across many distinct tuple values.
+ *
+ * The identity that's actually unspoofable depends on whether this request
+ * genuinely transited Cloudflare, which we can check: `isCloudflareIp`
+ * verifies the rightmost XFF hop (the peer our own proxy observed) against
+ * Cloudflare's published edge ranges.
+ *
+ * - When the rightmost hop IS a Cloudflare IP, this request really did come
+ *   through Cloudflare, so `CF-Connecting-IP` is Cloudflare-set and
+ *   trustworthy as a per-client identity - keying on it alone gives every
+ *   distinct real visitor sharing Cloudflare's shared egress hop its own
+ *   backstop bucket. This is what fixes the production (Cloudflare -> Render)
+ *   case: a burst of distinct CF-proxied attacker clients draining their own
+ *   tuple budgets can no longer also drain a bucket shared with the
+ *   legitimate owner, because they no longer share a bucket at all.
+ * - When the rightmost hop is NOT a Cloudflare IP (traffic reaching this
+ *   deployment directly, bypassing Cloudflare), `CF-Connecting-IP` is just an
+ *   ordinary header the client can set to anything, including a fresh value
+ *   per request - trusting it here would let that one source evade the
+ *   backstop entirely by rotating it. Falling back to the rightmost hop alone
+ *   re-aggregates by that peer's own unspoofable address instead, exactly as
+ *   this backstop worked before the Cloudflare-range check existed.
+ */
+export function getLoginBackstopKey(request: Request): string {
+  const rightmostHop = getClientIp(request);
+  const cfConnectingIp = request.headers.get("cf-connecting-ip")?.trim() || "";
+  if (cfConnectingIp && isCloudflareIp(rightmostHop)) {
+    return cfConnectingIp;
+  }
+  return rightmostHop;
 }
