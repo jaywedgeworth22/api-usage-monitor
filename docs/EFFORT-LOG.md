@@ -447,20 +447,10 @@ Protocol: /Users/jay/apps/EFFORT-LOG-PROTOCOL.md (canonical). Live board: this f
   attach through the local relay consumer plus `/Users/jay/apps/agent-sync-websocket.py --post`.
   No API-usage-monitor runtime branch/PR remains for this old readiness row; keep future changes
   under the shared `/Users/jay/apps/AGENT-SYNC.md` process._
-- **Cursor quality sweep — now carried by OPEN PR #42 (MONET, `monet/aum-ingest-auth-refactor-eslint`).**
-  _2026-07-05 (CLAUDE next-wave): moved here from Completed — see correction note on the row under
-  Completed. #42 rebases the stranded `cursor` branch content onto current `main` (auth
-  consolidation via shared `ingest-auth.ts`, ESLint config, CI test step, README, etc.). Move to
-  Completed only when #42 merges; issues #22-#26 close then, not before._
-  _2026-07-05 (CLAUDE audit-c3): ABANDONED/HANGING — re-verified, ready to land. `gh pr view 42`:
-  mergeable=MERGEABLE, mergeStateStatus=CLEAN, checks verify+gitleaks BOTH pass. Open since
-  2026-07-05T10:32Z with zero movement (~10h). Nothing blocks it. Leaving it open also
-  blocks/entangles #56 (stacked on it — see the litestream/adapter row above). action=land-it.
-  [MONET -> keep-with-owner]._
-  _2026-07-05 (MONET): owner authorized landing all assigned MONET items this session. LANDING #42
-  now (re-verified MERGEABLE/CLEAN, verify+gitleaks green). Will move to Completed on merge and
-  reconcile issues #22-#26 + the docs/EFFORT-LOG.md mirror._
-  _2026-07-05 (MONET): ✅ DONE — merged squash `8452a0b`; moved to Completed (top of this board)._
+_2026-07-15 (MONET): the stale In-Progress "Cursor quality sweep — carried by OPEN PR #42" row was
+removed here — PR #42 MERGED (`8452a0b`) + deployed; it is fully recorded in the Completed entry at
+the top of this board. Its keyed issue #47 is closed with this reconciliation. (Prior CLAUDE/MONET
+audit annotations preserved in git history.)_
 - **budget-status 401 middleware bug (board row assigned MONET, S) — fix confirmed NOT on main and
   not in the clean PR (CLAUDE audit-c3, new annotation).** `git show origin/main:src/middleware.ts`
   — `api/budget-status` is NOT in the matcher exclusion (only `api/ingest`, `api/otlp`, `api/health`
@@ -541,16 +531,11 @@ the sync to figure out.
   the `anthropic` provider actually appear, not just that auth accepts the POST).
 
 ### 2026-07-05 next-wave (cycle 2)
-- **Fix /api/budget-status 401: exclude it from the dashboard-session middleware matcher (MONET, S)**
-  — `src/middleware.ts`'s matcher excludes `api/ingest` and `api/otlp` but NOT `api/budget-status`,
-  so the session gate 401s every bearer-token request before the route's own
-  `USAGE_READ_TOKEN`/`USAGE_INGEST_TOKEN` check — confirmed live against prod with a valid token.
-  Also decide/document whether prod gets a distinct `USAGE_READ_TOKEN` (`render.yaml` doesn't define
-  one). _(why now: CONFIRMED production bug, verified today: the token-gated budget endpoint (PR #6,
-  built so sibling apps like Socratic.Trade can check spend before LLM calls) has never worked
-  externally. Same bug class PR #13 found and fixed for OTLP. MONET's open PR #42 already touches
-  this route's auth, so it is the cheapest hands to carry the one-line matcher fix plus a regression
-  test.)_
+_2026-07-15 (MONET): the stale Planned "Fix /api/budget-status 401…" row was removed here — DONE via
+PR #58 (`dfdb39e`), merged + DEPLOYED + prod-verified (`POST` unauth `401`→`405`, `GET` authed `200`
+with a real budget payload); the distinct-`USAGE_READ_TOKEN` decision was documented in `render.yaml`.
+Fully recorded in the Completed entry at the top of this board. Its keyed issue #50 is closed with
+this reconciliation._
 - **Verify Claude Code OTLP metrics are actually landing end-to-end (data check, not just auth) (CLAUDE, S)**
   — Ingest auth is proven (202 authed / 401 unauthed, token from `~/.claude/settings.json`), but
   nobody has confirmed real Claude Code sessions produce `ExternalUsageEvent` rows, the lazily-seeded
