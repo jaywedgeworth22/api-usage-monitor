@@ -17,6 +17,9 @@ describe("provider identity", () => {
     ["Twelve Data", "twelvedata"],
     ["Voyage AI", "voyage"],
     ["fintechstudios", "fintech-studios"],
+    ["quiver", "quiver-quant"],
+    ["QuiverQuant", "quiver-quant"],
+    ["Quiver Quantitative", "quiver-quant"],
   ])("maps %s to %s", (input, expected) => {
     expect(canonicalProviderKey(input)).toBe(expected);
   });

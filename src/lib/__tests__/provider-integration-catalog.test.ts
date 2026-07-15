@@ -120,6 +120,7 @@ describe("provider integration catalog", () => {
       "tiingo",
       "massive",
       "fred",
+      "quiver-quant",
       "robinhood",
     ]) {
       expect(byName.get(name)?.usesApiKey, name).toBe(false);

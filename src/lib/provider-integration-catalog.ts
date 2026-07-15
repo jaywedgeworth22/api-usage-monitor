@@ -290,6 +290,7 @@ const CATALOG: Record<CatalogProviderName, ProviderIntegrationProfile> = {
   }),
   massive: defineBlindProfile({ name: "massive", displayName: "Massive", category: "Market Data", reason: "Account and invoice information are dashboard-only; aggregate-data calls are not used for monitoring.", source: "src/lib/adapters/massive.ts" }),
   fred: defineBlindProfile({ name: "fred", displayName: "FRED", category: "Market Data", reason: "FRED data is free and exposes no account billing state.", source: "src/lib/adapters/fred.ts", cannotAdd: ["There is no paid plan, invoice, or subscription state to synchronize for the public API."] }),
+  "quiver-quant": defineBlindProfile({ name: "quiver-quant", displayName: "Quiver Quantitative", category: "Market Data", reason: "Quiver Quantitative does not expose a billing or usage quota API endpoint; usage is tracked via the provider dashboard.", source: "src/lib/adapters/quiver.ts" }),
   sentry: defineProfile({
     name: "sentry", displayName: "Sentry", category: "Observability", mode: "partial",
     summary: "Reads exact UTC calendar-month-to-date organization stats_v2 quantities across projects, categories, and outcomes.",

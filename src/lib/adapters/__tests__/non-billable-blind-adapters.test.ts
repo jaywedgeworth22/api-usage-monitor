@@ -5,6 +5,7 @@ import { fetchUsage as fetchFmp } from "../fmp";
 import { fetchUsage as fetchFred } from "../fred";
 import { fetchUsage as fetchMarketstack } from "../marketstack";
 import { fetchUsage as fetchMassive } from "../massive";
+import { fetchUsage as fetchQuiver } from "../quiver";
 import { fetchUsage as fetchRobinhood } from "../robinhood";
 import { fetchUsage as fetchTiingo } from "../tiingo";
 
@@ -21,6 +22,7 @@ describe("blind provider adapters", () => {
       fetchFred,
       fetchMarketstack,
       fetchMassive,
+      fetchQuiver,
       fetchRobinhood,
       fetchTiingo,
     ];

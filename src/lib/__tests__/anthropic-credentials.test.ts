@@ -63,6 +63,7 @@ describe("Anthropic credential capability", () => {
     expect(providerPollSnapshotExpected({ name: "voyage", type: "builtin" })).toBe(false);
     expect(providerPollSnapshotExpected({ name: "fmp", type: "builtin" })).toBe(false);
     expect(providerPollSnapshotExpected({ name: "fred", type: "builtin" })).toBe(false);
+    expect(providerPollSnapshotExpected({ name: "quiver-quant", type: "builtin" })).toBe(false);
     expect(providerPollSnapshotExpected({ name: "robinhood", type: "builtin" })).toBe(false);
   });
 
