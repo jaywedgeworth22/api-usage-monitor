@@ -1201,7 +1201,7 @@ export default function AddProviderModal({
                   value={label}
                   onChange={(e) => setLabel(e.target.value)}
                   disabled={Boolean(credentialManaged)}
-                  placeholder="e.g. Agentic Trading, Congress.Trade"
+                  placeholder="e.g. Socratic Trade, Congress.Trade"
                   className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 disabled:cursor-not-allowed disabled:bg-gray-100"
                 />
                 <p className="text-xs text-gray-400 mt-0.5">Tag this key to distinguish it from others with the same provider name</p>
