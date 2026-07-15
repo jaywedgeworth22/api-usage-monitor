@@ -66,7 +66,7 @@ services:
       # SQLite DB. Startup creates one before every migrate-safe run and fails
       # closed for an existing DB if backup or integrity verification fails.
       - key: SQLITE_PRE_MIGRATION_BACKUP_RETENTION
-        value: "3"
+        value: "1"
       - key: ENCRYPTION_KEY
         generateValue: true
       - key: CRON_SECRET
@@ -81,6 +81,27 @@ services:
       # rights, add a distinct USAGE_READ_TOKEN in the Render dashboard.
       - key: DASHBOARD_PASSWORD
         generateValue: true
+      # Optional Infisical provider-credential rotation. Project/path defaults
+      # are verified in code, so production only needs the three Universal Auth
+      # ID/secret pairs. Render never generates or copies these values.
+      - key: INFISICAL_PROVIDER_SYNC_ENABLED
+        value: "true"
+      - key: INFISICAL_BASE_URL
+        value: https://app.infisical.com
+      - key: INFISICAL_ENV
+        value: prod
+      - key: INFISICAL_ST_CLIENT_ID
+        sync: false
+      - key: INFISICAL_ST_CLIENT_SECRET
+        sync: false
+      - key: INFISICAL_CT_CLIENT_ID
+        sync: false
+      - key: INFISICAL_CT_CLIENT_SECRET
+        sync: false
+      - key: INFISICAL_SHARED_CLIENT_ID
+        sync: false
+      - key: INFISICAL_SHARED_CLIENT_SECRET
+        sync: false
       # Optional: enables the read-only Sentry Health dashboard card
       # (GET /api/sentry-health). `sync: false` means Render won't generate
       # or sync a value - set these manually in the dashboard's Environment

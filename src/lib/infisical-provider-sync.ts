@@ -1,0 +1,1125 @@
+import { Prisma } from "@prisma/client";
+import { decrypt, encrypt, encryptJson } from "@/lib/crypto";
+import { withInternalUsageWriteAdmission } from "@/lib/ingest-admission";
+import { prisma } from "@/lib/prisma";
+import { BUILT_IN_PROVIDERS } from "@/lib/provider-definitions";
+import {
+  canonicalProjectKey,
+  canonicalProviderKey,
+} from "@/lib/provider-identity";
+import {
+  decryptProviderSecretConfig,
+  hasProviderSecrets,
+  mergeProviderConfig,
+  providerConfigForServer,
+  splitProviderConfig,
+} from "@/lib/provider-secret-config";
+
+export type InfisicalCredentialScope = "st" | "ct" | "shared";
+
+export interface InfisicalCredentialSyncSourceResult {
+  source: InfisicalCredentialScope;
+  configured: boolean;
+  status: "disabled" | "unconfigured" | "incomplete" | "synced" | "partial" | "error";
+  available: number;
+  missing: number;
+  failed: number;
+  errorCode?: string;
+}
+
+export interface InfisicalCredentialSyncResult {
+  enabled: boolean;
+  configured: boolean;
+  sources: InfisicalCredentialSyncSourceResult[];
+  created: number;
+  updated: number;
+  unchanged: number;
+  missing: number;
+  failed: number;
+}
+
+interface SourceDefinition {
+  source: InfisicalCredentialScope;
+  clientIdEnv: string;
+  clientSecretEnv: string;
+  projectIdEnv: string;
+  pathEnv: string;
+  defaultProjectId: string;
+}
+
+interface SourceConfig extends SourceDefinition {
+  clientId?: string;
+  clientSecret?: string;
+  projectId: string;
+  environment: string;
+  secretPath: string;
+}
+
+interface SourceRead {
+  source: InfisicalCredentialScope;
+  authenticated: boolean;
+  values: Map<string, string>;
+  missing: Set<string>;
+  errors: Map<string, string>;
+  result: InfisicalCredentialSyncSourceResult;
+}
+
+interface CredentialMaterial {
+  apiKey?: string;
+  publicConfig?: Record<string, string>;
+  secretConfig?: Record<string, string>;
+}
+
+interface CredentialAttempt {
+  source: InfisicalCredentialScope;
+  required: readonly string[];
+  optional?: readonly string[];
+}
+
+interface CredentialMapping {
+  scope: InfisicalCredentialScope;
+  providerName: string;
+  attempts: readonly CredentialAttempt[];
+  build(values: ReadonlyMap<string, string>): CredentialMaterial;
+}
+
+interface CredentialCandidate {
+  scope: InfisicalCredentialScope;
+  source: InfisicalCredentialScope;
+  providerName: string;
+  material: CredentialMaterial;
+}
+
+interface StoredBinding {
+  scope: InfisicalCredentialScope;
+  source: InfisicalCredentialScope;
+  providerName: string;
+}
+
+type ProviderRecord = Prisma.ProviderGetPayload<{
+  include: { allocations: { select: { projectId: true; percentage: true } } };
+}>;
+
+class InfisicalSyncError extends Error {
+  constructor(readonly code: string) {
+    super(code);
+    this.name = "InfisicalSyncError";
+  }
+}
+
+const DEFAULT_BASE_URL = "https://app.infisical.com";
+const DEFAULT_ENVIRONMENT = "prod";
+const DEFAULT_SECRET_PATH = "/";
+const REQUEST_TIMEOUT_MS = 10_000;
+const MAX_RESPONSE_BYTES = 128 * 1024;
+const MAX_SECRET_VALUE_BYTES = 64 * 1024;
+
+// Project IDs identify Infisical projects; they are not credentials. Verified
+// defaults keep the Render bootstrap to the three Universal Auth ID/secret
+// pairs while still allowing an operator to override an ID or path.
+const SOURCE_DEFINITIONS: readonly SourceDefinition[] = [
+  {
+    source: "st",
+    clientIdEnv: "INFISICAL_ST_CLIENT_ID",
+    clientSecretEnv: "INFISICAL_ST_CLIENT_SECRET",
+    projectIdEnv: "INFISICAL_ST_PROJECT_ID",
+    pathEnv: "INFISICAL_ST_SECRET_PATH",
+    defaultProjectId: "39d93bb7-76f9-498c-8b50-a7def52e072f",
+  },
+  {
+    source: "ct",
+    clientIdEnv: "INFISICAL_CT_CLIENT_ID",
+    clientSecretEnv: "INFISICAL_CT_CLIENT_SECRET",
+    projectIdEnv: "INFISICAL_CT_PROJECT_ID",
+    pathEnv: "INFISICAL_CT_SECRET_PATH",
+    defaultProjectId: "f61a79de-8d77-4f0b-9361-4b7208598290",
+  },
+  {
+    source: "shared",
+    clientIdEnv: "INFISICAL_SHARED_CLIENT_ID",
+    clientSecretEnv: "INFISICAL_SHARED_CLIENT_SECRET",
+    projectIdEnv: "INFISICAL_SHARED_PROJECT_ID",
+    pathEnv: "INFISICAL_SHARED_SECRET_PATH",
+    defaultProjectId: "18f563a3-9c88-454c-96eb-28fc9678f3ba",
+  },
+] as const;
+
+function appAttempts(
+  source: "st" | "ct",
+  required: readonly string[],
+  sharedFallback = false,
+  optional?: readonly string[]
+): readonly CredentialAttempt[] {
+  return [
+    { source, required, optional },
+    ...(sharedFallback ? [{ source: "shared" as const, required, optional }] : []),
+  ];
+}
+
+// Exact allowlist derived from the three project roots and limited to keys a
+// current monitor adapter can validate or use for usage/quota/billing. Blind
+// market-data adapters and all brokerage credentials are intentionally absent.
+const CREDENTIAL_MAPPINGS: readonly CredentialMapping[] = [
+  {
+    scope: "st",
+    providerName: "deepseek",
+    attempts: appAttempts("st", ["DEEPSEEK_API_KEY"]),
+    build: (values) => ({ apiKey: values.get("DEEPSEEK_API_KEY") }),
+  },
+  {
+    scope: "st",
+    providerName: "hetzner",
+    attempts: appAttempts("st", ["HETZNER_API_TOKEN"]),
+    build: (values) => ({ apiKey: values.get("HETZNER_API_TOKEN") }),
+  },
+  {
+    scope: "st",
+    providerName: "pinecone",
+    attempts: appAttempts("st", ["PINECONE_API_KEY"]),
+    build: (values) => ({ apiKey: values.get("PINECONE_API_KEY") }),
+  },
+  {
+    scope: "st",
+    providerName: "resend",
+    attempts: appAttempts("st", ["RESEND_API_KEY"], true),
+    build: (values) => ({ apiKey: values.get("RESEND_API_KEY") }),
+  },
+  {
+    scope: "st",
+    providerName: "sentry",
+    attempts: appAttempts("st", ["SENTRY_AUTH_TOKEN", "SENTRY_ORG"]),
+    build: (values) => ({
+      apiKey: values.get("SENTRY_AUTH_TOKEN"),
+      publicConfig: { orgSlug: values.get("SENTRY_ORG") ?? "" },
+    }),
+  },
+  {
+    scope: "ct",
+    providerName: "openai",
+    attempts: appAttempts("ct", ["OPENAI_API_KEY"]),
+    build: (values) => ({ apiKey: values.get("OPENAI_API_KEY") }),
+  },
+  {
+    scope: "ct",
+    providerName: "deepseek",
+    attempts: appAttempts("ct", ["DEEPSEEK_API_KEY"]),
+    build: (values) => ({ apiKey: values.get("DEEPSEEK_API_KEY") }),
+  },
+  {
+    scope: "ct",
+    providerName: "google-ai",
+    attempts: appAttempts("ct", ["GEMINI_API_KEY"]),
+    build: (values) => ({ apiKey: values.get("GEMINI_API_KEY") }),
+  },
+  {
+    scope: "ct",
+    providerName: "intrinio",
+    attempts: appAttempts("ct", ["INTRINIO_API_KEY"]),
+    build: (values) => ({ apiKey: values.get("INTRINIO_API_KEY") }),
+  },
+  {
+    scope: "ct",
+    providerName: "llamaindex",
+    attempts: appAttempts("ct", ["LLAMAPARSE_API_KEY"]),
+    build: (values) => ({ apiKey: values.get("LLAMAPARSE_API_KEY") }),
+  },
+  {
+    scope: "ct",
+    providerName: "mistral",
+    attempts: appAttempts("ct", ["MISTRAL_API_KEY"]),
+    build: (values) => ({ apiKey: values.get("MISTRAL_API_KEY") }),
+  },
+  {
+    scope: "ct",
+    providerName: "resend",
+    attempts: appAttempts("ct", ["RESEND_API_KEY"], true),
+    build: (values) => ({ apiKey: values.get("RESEND_API_KEY") }),
+  },
+  {
+    scope: "ct",
+    providerName: "stripe",
+    attempts: appAttempts("ct", ["STRIPE_SECRET_KEY"]),
+    build: (values) => ({ apiKey: values.get("STRIPE_SECRET_KEY") }),
+  },
+  {
+    scope: "ct",
+    providerName: "twelvedata",
+    attempts: appAttempts("ct", ["TWELVEDATA_API_KEY"], true),
+    build: (values) => ({ apiKey: values.get("TWELVEDATA_API_KEY") }),
+  },
+  {
+    scope: "shared",
+    providerName: "langfuse",
+    attempts: [
+      {
+        source: "shared",
+        required: ["LANGFUSE_PUBLIC_KEY", "LANGFUSE_SECRET_KEY"],
+        optional: ["LANGFUSE_BASE_URL"],
+      },
+    ],
+    build: (values) => ({
+      publicConfig: {
+        publicKey: values.get("LANGFUSE_PUBLIC_KEY") ?? "",
+        ...(values.get("LANGFUSE_BASE_URL")
+          ? { host: values.get("LANGFUSE_BASE_URL")! }
+          : {}),
+      },
+      secretConfig: { secretKey: values.get("LANGFUSE_SECRET_KEY") ?? "" },
+    }),
+  },
+  {
+    scope: "shared",
+    providerName: "twilio",
+    attempts: [
+      {
+        source: "shared",
+        required: ["TWILIO_ACCOUNT_SID", "TWILIO_AUTH_TOKEN"],
+      },
+    ],
+    build: (values) => ({
+      apiKey: values.get("TWILIO_AUTH_TOKEN"),
+      publicConfig: { accountId: values.get("TWILIO_ACCOUNT_SID") ?? "" },
+    }),
+  },
+] as const;
+
+const PROJECT_NAMES: Readonly<Record<"st" | "ct", string>> = {
+  st: "SocraticTrade.com",
+  ct: "Congress.Trade",
+};
+
+const SCOPE_LABELS: Readonly<Record<InfisicalCredentialScope, string>> = {
+  st: "SocraticTrade.com",
+  ct: "Congress.Trade",
+  shared: "Shared",
+};
+
+let syncInFlight: Promise<InfisicalCredentialSyncResult> | null = null;
+
+function cleanEnv(name: string): string | undefined {
+  const value = process.env[name]?.trim();
+  return value || undefined;
+}
+
+function configuredSources(): SourceConfig[] {
+  const environment = cleanEnv("INFISICAL_ENV") ?? DEFAULT_ENVIRONMENT;
+  return SOURCE_DEFINITIONS.map((definition) => ({
+    ...definition,
+    clientId: cleanEnv(definition.clientIdEnv),
+    clientSecret: cleanEnv(definition.clientSecretEnv),
+    projectId: cleanEnv(definition.projectIdEnv) ?? definition.defaultProjectId,
+    environment,
+    secretPath: cleanEnv(definition.pathEnv) ?? DEFAULT_SECRET_PATH,
+  }));
+}
+
+function emptyResult(enabled: boolean): InfisicalCredentialSyncResult {
+  return {
+    enabled,
+    configured: false,
+    sources: SOURCE_DEFINITIONS.map(({ source }) => ({
+      source,
+      configured: false,
+      status: enabled ? "unconfigured" : "disabled",
+      available: 0,
+      missing: 0,
+      failed: 0,
+    })),
+    created: 0,
+    updated: 0,
+    unchanged: 0,
+    missing: 0,
+    failed: 0,
+  };
+}
+
+function infisicalBaseUrl(): string {
+  let url: URL;
+  try {
+    url = new URL(cleanEnv("INFISICAL_BASE_URL") ?? DEFAULT_BASE_URL);
+  } catch {
+    throw new InfisicalSyncError("invalid_base_url");
+  }
+  const allowedHosts = new Set([
+    "app.infisical.com",
+    "us.infisical.com",
+    "eu.infisical.com",
+  ]);
+  if (
+    url.protocol !== "https:" ||
+    !allowedHosts.has(url.hostname) ||
+    (url.pathname !== "/" && url.pathname !== "") ||
+    url.search ||
+    url.hash
+  ) {
+    throw new InfisicalSyncError("invalid_base_url");
+  }
+  return url.origin;
+}
+
+async function fetchBounded(input: string, init: RequestInit): Promise<Response> {
+  try {
+    return await fetch(input, {
+      ...init,
+      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+      redirect: "error",
+    });
+  } catch {
+    throw new InfisicalSyncError("network_error");
+  }
+}
+
+async function cancelBodyQuietly(
+  body: ReadableStream<Uint8Array> | null
+): Promise<void> {
+  try {
+    await body?.cancel();
+  } catch {
+    // The caller is already rejecting this response. Cancellation is best-effort.
+  }
+}
+
+async function readJsonObject(response: Response): Promise<Record<string, unknown>> {
+  const declaredLength = Number(response.headers.get("content-length"));
+  if (Number.isFinite(declaredLength) && declaredLength > MAX_RESPONSE_BYTES) {
+    await cancelBodyQuietly(response.body);
+    throw new InfisicalSyncError("response_too_large");
+  }
+
+  const reader = response.body?.getReader();
+  if (!reader) throw new InfisicalSyncError("invalid_json");
+  const chunks: Uint8Array[] = [];
+  let totalBytes = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      totalBytes += value.byteLength;
+      if (totalBytes > MAX_RESPONSE_BYTES) {
+        try {
+          await reader.cancel();
+        } catch {
+          // The bounded read still fails closed if the transport cannot cancel.
+        }
+        throw new InfisicalSyncError("response_too_large");
+      }
+      chunks.push(value);
+    }
+  } catch (error) {
+    if (error instanceof InfisicalSyncError) throw error;
+    throw new InfisicalSyncError("response_read_failed");
+  }
+
+  const text = Buffer.concat(
+    chunks.map((chunk) => Buffer.from(chunk.buffer, chunk.byteOffset, chunk.byteLength)),
+    totalBytes
+  ).toString("utf8");
+  try {
+    const parsed: unknown = JSON.parse(text);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      throw new Error("not an object");
+    }
+    return parsed as Record<string, unknown>;
+  } catch {
+    throw new InfisicalSyncError("invalid_json");
+  }
+}
+
+async function login(baseUrl: string, source: SourceConfig): Promise<string> {
+  const response = await fetchBounded(
+    `${baseUrl}/api/v1/auth/universal-auth/login`,
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        clientId: source.clientId,
+        clientSecret: source.clientSecret,
+      }),
+    }
+  );
+  if (!response.ok) {
+    await cancelBodyQuietly(response.body);
+    throw new InfisicalSyncError(`auth_http_${response.status}`);
+  }
+  const body = await readJsonObject(response);
+  const token = body.accessToken;
+  if (typeof token !== "string" || !token) {
+    throw new InfisicalSyncError("auth_invalid_response");
+  }
+  return token;
+}
+
+async function preflightSourceScope(
+  baseUrl: string,
+  source: SourceConfig,
+  token: string
+): Promise<void> {
+  const params = new URLSearchParams({
+    projectId: source.projectId,
+    environment: source.environment,
+    secretPath: source.secretPath,
+    viewSecretValue: "false",
+    expandSecretReferences: "false",
+    recursive: "false",
+    includePersonalOverrides: "false",
+    includeImports: "false",
+  });
+  const response = await fetchBounded(`${baseUrl}/api/v4/secrets?${params}`, {
+    headers: { authorization: `Bearer ${token}` },
+  });
+  if (!response.ok) {
+    await cancelBodyQuietly(response.body);
+    throw new InfisicalSyncError(`scope_http_${response.status}`);
+  }
+  const body = await readJsonObject(response);
+  if (!Array.isArray(body.secrets)) {
+    throw new InfisicalSyncError("scope_invalid_response");
+  }
+}
+
+async function fetchSecret(
+  baseUrl: string,
+  source: SourceConfig,
+  token: string,
+  secretName: string
+): Promise<string | undefined> {
+  const params = new URLSearchParams({
+    projectId: source.projectId,
+    environment: source.environment,
+    secretPath: source.secretPath,
+    type: "shared",
+    viewSecretValue: "true",
+    expandSecretReferences: "true",
+    includeImports: "false",
+  });
+  const response = await fetchBounded(
+    `${baseUrl}/api/v4/secrets/${encodeURIComponent(secretName)}?${params}`,
+    { headers: { authorization: `Bearer ${token}` } }
+  );
+  if (response.status === 404) {
+    await cancelBodyQuietly(response.body);
+    return undefined;
+  }
+  if (!response.ok) {
+    await cancelBodyQuietly(response.body);
+    throw new InfisicalSyncError(`secret_http_${response.status}`);
+  }
+  const body = await readJsonObject(response);
+  const secret = body.secret;
+  if (!secret || typeof secret !== "object" || Array.isArray(secret)) {
+    throw new InfisicalSyncError("secret_invalid_response");
+  }
+  const value = (secret as Record<string, unknown>).secretValue;
+  if (typeof value !== "string" || !value.trim()) return undefined;
+  if (Buffer.byteLength(value, "utf8") > MAX_SECRET_VALUE_BYTES) {
+    throw new InfisicalSyncError("secret_too_large");
+  }
+  return value;
+}
+
+function requiredNamesBySource(): Map<InfisicalCredentialScope, string[]> {
+  const names = new Map<InfisicalCredentialScope, Set<string>>(
+    SOURCE_DEFINITIONS.map(({ source }) => [source, new Set<string>()])
+  );
+  for (const mapping of CREDENTIAL_MAPPINGS) {
+    for (const attempt of mapping.attempts) {
+      const target = names.get(attempt.source)!;
+      for (const name of attempt.required) target.add(name);
+      for (const name of attempt.optional ?? []) target.add(name);
+    }
+  }
+  return new Map(
+    [...names].map(([source, values]) => [source, [...values].sort()])
+  );
+}
+
+async function readSource(
+  baseUrl: string,
+  source: SourceConfig,
+  names: readonly string[]
+): Promise<SourceRead> {
+  const hasId = Boolean(source.clientId);
+  const hasSecret = Boolean(source.clientSecret);
+  if (!hasId && !hasSecret) {
+    return {
+      source: source.source,
+      authenticated: false,
+      values: new Map(),
+      missing: new Set(),
+      errors: new Map(),
+      result: {
+        source: source.source,
+        configured: false,
+        status: "unconfigured",
+        available: 0,
+        missing: 0,
+        failed: 0,
+      },
+    };
+  }
+  if (!hasId || !hasSecret) {
+    return {
+      source: source.source,
+      authenticated: false,
+      values: new Map(),
+      missing: new Set(),
+      errors: new Map(names.map((name) => [name, "incomplete_credentials"])),
+      result: {
+        source: source.source,
+        configured: false,
+        status: "incomplete",
+        available: 0,
+        missing: 0,
+        failed: names.length,
+        errorCode: "incomplete_credentials",
+      },
+    };
+  }
+
+  let token: string;
+  try {
+    token = await login(baseUrl, source);
+    await preflightSourceScope(baseUrl, source, token);
+  } catch (error) {
+    const code = error instanceof InfisicalSyncError ? error.code : "auth_failed";
+    return {
+      source: source.source,
+      authenticated: false,
+      values: new Map(),
+      missing: new Set(),
+      errors: new Map(names.map((name) => [name, code])),
+      result: {
+        source: source.source,
+        configured: true,
+        status: "error",
+        available: 0,
+        missing: 0,
+        failed: names.length,
+        errorCode: code,
+      },
+    };
+  }
+
+  const entries = await Promise.all(
+    names.map(async (name) => {
+      try {
+        const value = await fetchSecret(baseUrl, source, token, name);
+        return { name, value };
+      } catch (error) {
+        return {
+          name,
+          errorCode:
+            error instanceof InfisicalSyncError ? error.code : "secret_read_failed",
+        };
+      }
+    })
+  );
+  const values = new Map<string, string>();
+  const missing = new Set<string>();
+  const errors = new Map<string, string>();
+  for (const entry of entries) {
+    if (entry.errorCode) errors.set(entry.name, entry.errorCode);
+    else if (entry.value === undefined) missing.add(entry.name);
+    else values.set(entry.name, entry.value);
+  }
+  return {
+    source: source.source,
+    authenticated: true,
+    values,
+    missing,
+    errors,
+    result: {
+      source: source.source,
+      configured: true,
+      status: errors.size > 0 ? "partial" : "synced",
+      available: values.size,
+      missing: missing.size,
+      failed: errors.size,
+      ...(errors.size > 0
+        ? { errorCode: "one_or_more_secret_reads_failed" }
+        : {}),
+    },
+  };
+}
+
+function resolveMapping(
+  mapping: CredentialMapping,
+  reads: ReadonlyMap<InfisicalCredentialScope, SourceRead>
+): { candidate?: CredentialCandidate; missing?: true; failed?: true } {
+  for (let index = 0; index < mapping.attempts.length; index++) {
+    const attempt = mapping.attempts[index];
+    const source = reads.get(attempt.source)!;
+    if (!source.authenticated) return { failed: true };
+    if (attempt.required.some((name) => source.errors.has(name))) {
+      return { failed: true };
+    }
+    const requiredMissing = attempt.required.some(
+      (name) => !source.values.has(name)
+    );
+    if (requiredMissing) {
+      if (index + 1 < mapping.attempts.length) continue;
+      return { missing: true };
+    }
+    const values = new Map(source.values);
+    for (const optional of attempt.optional ?? []) {
+      if (source.errors.has(optional)) values.delete(optional);
+    }
+    const material = mapping.build(values);
+    return {
+      candidate: {
+        scope: mapping.scope,
+        source: attempt.source,
+        providerName: mapping.providerName,
+        material,
+      },
+    };
+  }
+  return { missing: true };
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function bindingFor(provider: ProviderRecord): StoredBinding | undefined {
+  try {
+    const config = providerConfigForServer(provider.config, provider.secretConfig);
+    const value = config.infisicalCredential;
+    if (
+      !isRecord(value) ||
+      (value.scope !== "st" && value.scope !== "ct" && value.scope !== "shared") ||
+      (value.source !== "st" && value.source !== "ct" && value.source !== "shared") ||
+      typeof value.providerName !== "string"
+    ) {
+      return undefined;
+    }
+    return value as unknown as StoredBinding;
+  } catch {
+    return undefined;
+  }
+}
+
+function providerMatchesMaterial(
+  provider: ProviderRecord,
+  material: CredentialMaterial
+): boolean {
+  try {
+    if (
+      material.apiKey &&
+      (!provider.apiKey || decrypt(provider.apiKey) !== material.apiKey)
+    ) {
+      return false;
+    }
+    const config = providerConfigForServer(provider.config, provider.secretConfig);
+    for (const [key, value] of Object.entries(material.publicConfig ?? {})) {
+      if (config[key] !== value) return false;
+    }
+    for (const [key, value] of Object.entries(material.secretConfig ?? {})) {
+      if (config[key] !== value) return false;
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function hasScopeHint(
+  provider: ProviderRecord,
+  scope: InfisicalCredentialScope,
+  projectId: string | undefined
+): boolean {
+  if (projectId && provider.allocations.some((row) => row.projectId === projectId)) {
+    return true;
+  }
+  const label = provider.label?.toLowerCase().replace(/[^a-z0-9]+/g, "") ?? "";
+  if (scope === "st") return label.includes("socratictrade");
+  if (scope === "ct") return label.includes("congresstrade");
+  return label.includes("shared");
+}
+
+function hasAnyScopeHint(provider: ProviderRecord): boolean {
+  if (provider.allocations.length > 0) return true;
+  const label = provider.label?.toLowerCase().replace(/[^a-z0-9]+/g, "") ?? "";
+  return (
+    label.includes("socratictrade") ||
+    label.includes("congresstrade") ||
+    label.includes("shared")
+  );
+}
+
+function hasHistoricalLabel(provider: ProviderRecord): boolean {
+  return /(?:^|[^a-z])(old|legacy|retired)(?:$|[^a-z])/i.test(
+    provider.label ?? ""
+  );
+}
+
+function selectTarget(
+  candidate: CredentialCandidate,
+  providers: readonly ProviderRecord[],
+  claimed: ReadonlySet<string>,
+  projectId: string | undefined,
+  mappingCount: number
+): ProviderRecord | undefined {
+  const canonical = canonicalProviderKey(candidate.providerName);
+  const available = providers.filter(
+    (provider) =>
+      provider.type.trim().toLowerCase() === "builtin" &&
+      canonicalProviderKey(provider.name) === canonical &&
+      !claimed.has(provider.id)
+  );
+  const bound = available.filter((provider) => {
+    const binding = bindingFor(provider);
+    return (
+      binding?.scope === candidate.scope &&
+      canonicalProviderKey(binding.providerName) === canonical
+    );
+  });
+  if (bound.length > 1) throw new InfisicalSyncError("ambiguous_bound_provider");
+  if (bound.length === 1) return bound[0];
+
+  const hinted = available.filter((provider) =>
+    hasScopeHint(provider, candidate.scope, projectId)
+  );
+  const hintedExact = hinted.filter((provider) =>
+    providerMatchesMaterial(provider, candidate.material)
+  );
+  if (hintedExact.length === 1) return hintedExact[0];
+  if (hinted.length === 1 && !hasHistoricalLabel(hinted[0])) return hinted[0];
+  if (hinted.length === 1) {
+    throw new InfisicalSyncError("historical_provider_requires_exact_match");
+  }
+  if (hinted.length > 1) throw new InfisicalSyncError("ambiguous_scoped_provider");
+
+  // Exact current credential material is a safe way to adopt a legacy row
+  // whose label is a service/domain (for example `updates.jays.services`)
+  // rather than an app name. Exclude rows explicitly scoped elsewhere.
+  const unscopedExact = available.filter(
+    (provider) =>
+      !hasAnyScopeHint(provider) &&
+      providerMatchesMaterial(provider, candidate.material)
+  );
+  if (unscopedExact.length === 1) return unscopedExact[0];
+  if (unscopedExact.length > 1) {
+    throw new InfisicalSyncError("ambiguous_exact_provider");
+  }
+
+  if (mappingCount === 1) {
+    // A row already labeled/allocated to another app scope is never a safe
+    // singleton adoption target, even if it is the only provider of this kind.
+    // This preserves a manually valid ST Gemini row when only CT exposes a
+    // GEMINI_API_KEY in Infisical (and vice versa).
+    const unscoped = available.filter((provider) => !hasAnyScopeHint(provider));
+    const exact = unscoped.filter((provider) =>
+      providerMatchesMaterial(provider, candidate.material)
+    );
+    if (exact.length === 1) return exact[0];
+    if (unscoped.length === 1) return unscoped[0];
+  }
+  return undefined;
+}
+
+function jsonInput(value: Record<string, unknown>): Prisma.InputJsonValue {
+  return Object.keys(value).length > 0
+    ? (value as Prisma.InputJsonObject)
+    : (Prisma.JsonNull as unknown as Prisma.InputJsonValue);
+}
+
+async function ensureScopeProjects(
+  scopes: ReadonlySet<InfisicalCredentialScope>
+): Promise<Map<InfisicalCredentialScope, string>> {
+  const result = new Map<InfisicalCredentialScope, string>();
+  const projects = await prisma.project.findMany({
+    select: { id: true, name: true },
+  });
+  for (const scope of ["st", "ct"] as const) {
+    if (!scopes.has(scope)) continue;
+    const key = canonicalProjectKey(PROJECT_NAMES[scope]);
+    let project = projects.find(
+      (candidate) => canonicalProjectKey(candidate.name) === key
+    );
+    if (!project) {
+      try {
+        project = await prisma.project.create({
+          data: {
+            name: PROJECT_NAMES[scope],
+            nameKey: key,
+          },
+          select: { id: true, name: true },
+        });
+        projects.push(project);
+      } catch (error) {
+        if (!(error instanceof Prisma.PrismaClientKnownRequestError) || error.code !== "P2002") {
+          throw error;
+        }
+        const refreshed = await prisma.project.findMany({
+          select: { id: true, name: true },
+        });
+        project = refreshed.find(
+          (candidate) => canonicalProjectKey(candidate.name) === key
+        );
+        if (!project) throw error;
+      }
+    }
+    result.set(scope, project.id);
+  }
+  return result;
+}
+
+function mergedStoredConfig(provider: ProviderRecord): {
+  publicConfig: Record<string, unknown>;
+  secretConfig: Record<string, unknown>;
+  hadLegacySecrets: boolean;
+} {
+  const split = splitProviderConfig(provider.config);
+  const encrypted = decryptProviderSecretConfig(provider.secretConfig);
+  return {
+    publicConfig: split.publicConfig,
+    secretConfig: mergeProviderConfig(split.secretConfig, encrypted),
+    hadLegacySecrets: hasProviderSecrets(split.secretConfig),
+  };
+}
+
+async function applyCandidates(candidates: readonly CredentialCandidate[]): Promise<{
+  created: number;
+  updated: number;
+  unchanged: number;
+  failed: number;
+}> {
+  const projects = await ensureScopeProjects(
+    new Set(candidates.map((candidate) => candidate.scope))
+  );
+  const providers = await prisma.provider.findMany({
+    where: { type: "builtin" },
+    include: {
+      allocations: { select: { projectId: true, percentage: true } },
+    },
+    orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+  });
+  const mappedScopesByProvider = new Map<
+    string,
+    Set<InfisicalCredentialScope>
+  >();
+  for (const mapping of CREDENTIAL_MAPPINGS) {
+    const key = canonicalProviderKey(mapping.providerName);
+    const scopes = mappedScopesByProvider.get(key) ?? new Set();
+    scopes.add(mapping.scope);
+    mappedScopesByProvider.set(key, scopes);
+  }
+  const claimed = new Set<string>();
+  let created = 0;
+  let updated = 0;
+  let unchanged = 0;
+  let failed = 0;
+
+  for (const candidate of candidates) {
+    try {
+      const projectId = projects.get(candidate.scope);
+      const target = selectTarget(
+        candidate,
+        providers,
+        claimed,
+        projectId,
+        mappedScopesByProvider.get(canonicalProviderKey(candidate.providerName))
+          ?.size ?? 1
+      );
+      const definition = BUILT_IN_PROVIDERS.find(
+        (item) => item.name === candidate.providerName
+      );
+      if (!definition) throw new InfisicalSyncError("unknown_provider_mapping");
+      const binding: StoredBinding = {
+        scope: candidate.scope,
+        source: candidate.source,
+        providerName: candidate.providerName,
+      };
+
+      if (!target) {
+        const secretConfig = {
+          ...(candidate.material.secretConfig ?? {}),
+          infisicalCredential: binding,
+        };
+        const provider = await prisma.provider.create({
+          data: {
+            name: definition.name,
+            displayName: definition.displayName,
+            type: "builtin",
+            category: definition.category,
+            label: SCOPE_LABELS[candidate.scope],
+            apiKey: candidate.material.apiKey
+              ? encrypt(candidate.material.apiKey)
+              : null,
+            config: jsonInput(candidate.material.publicConfig ?? {}),
+            secretConfig: encryptJson(secretConfig),
+            refreshIntervalMin: definition.defaultRefreshIntervalMin ?? 60,
+            ...(projectId
+              ? {
+                  allocations: {
+                    create: { projectId, percentage: 100 },
+                  },
+                }
+              : {}),
+          },
+          include: {
+            allocations: { select: { projectId: true, percentage: true } },
+          },
+        });
+        providers.push(provider);
+        claimed.add(provider.id);
+        created++;
+        continue;
+      }
+
+      claimed.add(target.id);
+      const stored = mergedStoredConfig(target);
+      const existingBinding = bindingFor(target);
+      const materialMatches = providerMatchesMaterial(target, candidate.material);
+      const allocationPresent =
+        !projectId || target.allocations.some((row) => row.projectId === projectId);
+      const labelPresent = Boolean(target.label?.trim());
+      const bindingMatches =
+        existingBinding?.scope === binding.scope &&
+        existingBinding.source === binding.source &&
+        canonicalProviderKey(existingBinding.providerName) ===
+          canonicalProviderKey(binding.providerName);
+      if (
+        materialMatches &&
+        bindingMatches &&
+        allocationPresent &&
+        labelPresent &&
+        !stored.hadLegacySecrets
+      ) {
+        unchanged++;
+        continue;
+      }
+
+      const publicConfig = {
+        ...stored.publicConfig,
+        ...(candidate.material.publicConfig ?? {}),
+      };
+      const secretConfig = {
+        ...stored.secretConfig,
+        ...(candidate.material.secretConfig ?? {}),
+        infisicalCredential: binding,
+      };
+      const existingKeyMatches = candidate.material.apiKey
+        ? target.apiKey && decrypt(target.apiKey) === candidate.material.apiKey
+        : true;
+      await prisma.$transaction(async (tx) => {
+        const write = await tx.provider.updateMany({
+          // Provider credential/config edits increment this generation in the
+          // normal API route. A mismatch means a human edit won the race; roll
+          // back rather than clobbering it with the pre-read merge.
+          where: {
+            id: target.id,
+            alertConfigGeneration: target.alertConfigGeneration,
+          },
+          data: {
+            ...(candidate.material.apiKey && !existingKeyMatches
+              ? { apiKey: encrypt(candidate.material.apiKey) }
+              : {}),
+            config: jsonInput(publicConfig),
+            secretConfig: encryptJson(secretConfig),
+            ...(labelPresent ? {} : { label: SCOPE_LABELS[candidate.scope] }),
+            alertConfigGeneration: { increment: 1 },
+          },
+        });
+        if (write.count !== 1) {
+          throw new InfisicalSyncError("concurrent_provider_edit");
+        }
+        if (projectId && !allocationPresent) {
+          await tx.providerProjectAllocation.upsert({
+            where: {
+              providerId_projectId: { providerId: target.id, projectId },
+            },
+            create: { providerId: target.id, projectId, percentage: 100 },
+            update: {},
+          });
+        }
+      });
+      updated++;
+    } catch {
+      failed++;
+    }
+  }
+  return { created, updated, unchanged, failed };
+}
+
+async function syncOnce(): Promise<InfisicalCredentialSyncResult> {
+  const enabled = cleanEnv("INFISICAL_PROVIDER_SYNC_ENABLED") !== "false";
+  const result = emptyResult(enabled);
+  if (!enabled) return result;
+
+  const sources = configuredSources();
+  result.configured = sources.some(
+    (source) => Boolean(source.clientId && source.clientSecret)
+  );
+  if (!sources.some((source) => source.clientId || source.clientSecret)) {
+    return result;
+  }
+
+  let baseUrl: string;
+  try {
+    baseUrl = infisicalBaseUrl();
+  } catch (error) {
+    const errorCode =
+      error instanceof InfisicalSyncError ? error.code : "invalid_base_url";
+    result.sources = sources.map((source) => ({
+      source: source.source,
+      configured: Boolean(source.clientId && source.clientSecret),
+      status: source.clientId || source.clientSecret ? "error" : "unconfigured",
+      available: 0,
+      missing: 0,
+      failed: 0,
+      ...(source.clientId || source.clientSecret ? { errorCode } : {}),
+    }));
+    result.failed = CREDENTIAL_MAPPINGS.length;
+    return result;
+  }
+
+  const namesBySource = requiredNamesBySource();
+  const sourceReads = await Promise.all(
+    sources.map((source) =>
+      readSource(baseUrl, source, namesBySource.get(source.source) ?? [])
+    )
+  );
+  const reads = new Map(sourceReads.map((source) => [source.source, source]));
+  result.sources = sourceReads.map((source) => source.result);
+
+  const candidates: CredentialCandidate[] = [];
+  for (const mapping of CREDENTIAL_MAPPINGS) {
+    try {
+      const resolved = resolveMapping(mapping, reads);
+      if (resolved.candidate) candidates.push(resolved.candidate);
+      else if (resolved.missing) result.missing++;
+      else result.failed++;
+    } catch {
+      result.failed++;
+    }
+  }
+
+  if (candidates.length > 0) {
+    const applied = await withInternalUsageWriteAdmission(() =>
+      applyCandidates(candidates)
+    );
+    result.created = applied.created;
+    result.updated = applied.updated;
+    result.unchanged = applied.unchanged;
+    result.failed += applied.failed;
+  }
+  return result;
+}
+
+/**
+ * Pull an exact, monitor-functional allowlist from three Infisical scopes and
+ * rotate encrypted last-known-good Provider credentials. Concurrent callers
+ * share one run; source/read/apply failures never blank an existing value.
+ */
+export async function syncProviderCredentialsFromInfisical(): Promise<InfisicalCredentialSyncResult> {
+  if (syncInFlight) return syncInFlight;
+  const run = syncOnce();
+  syncInFlight = run;
+  try {
+    return await run;
+  } finally {
+    if (syncInFlight === run) syncInFlight = null;
+  }
+}

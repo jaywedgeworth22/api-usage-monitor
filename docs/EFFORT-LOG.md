@@ -223,13 +223,20 @@ Protocol: /Users/jay/apps/EFFORT-LOG-PROTOCOL.md (canonical). Live board: this f
 - **Render `/api/ready` liveness compatibility recovery (CODEX, emergency owner-directed 2026-07-14) — SUPERSEDED / LOCAL FOLLOW-UP NOT LANDING.** PR #180 merged as `40afc027` with green local/hosted gates, but its first exact-revision `/api/ready` request timed out beyond 10 seconds. A local `codex-render-ready-skip-probe` follow-up passed 73 files / 446 tests, lint, TypeScript, migration, backup, startup, build, and isolated code review, but it became stale when overlapping PR #181 merged and the live Render path synchronized to `/api/health`. The branch was never pushed and will not land; recovery continues through the #181 path-sync redeploy above.
 - **Render SQLite readiness/restart-loop repair (CODEX, PR #178 merged as `d03b1b8`, branch `codex-render-sqlite-readiness`, 2026-07-14) — MERGED / FOLLOW-UP REQUIRED.** Render's paid Starter service is `not_suspended`; this was not a plan/usage-limit failure. Root cause at deployed `cdee64b4`: boot-time retention ran a full exclusive `VACUUM` against the ~129.7 MB SQLite file, strict `/api/ready` probes piled up/timed out (`Prisma P1008`), and Render killed/restarted the sole instance into the same maintenance cycle, producing intermittent `x-render-routing: dynamic-paid-error` 502s. The repair makes scheduled VACUUM explicit-opt-in, uses database-independent `/api/health` in declared Render config, coalesces uncancellable SQLite readiness probes, and adds a bounded database-only cold-start grace that never re-arms after first success. Independent hostile review found no P0/P1/P2; Node 24 full `npm run verify` passed (73 files / 443 tests plus lint, TypeScript, migration, backup, startup-config, and build), and GitHub CI/CodeQL/gitleaks passed. Live service metadata now reports `/api/health`; exact-current-main redeploy and sustained runtime verification remain pending. Emergency retention overrides remain temporary; no plan or billing change occurred.
 - **Infisical provider-credential auto-sync (CODEX delegated implementation + security/runtime reviewers, owner-directed
-  2026-07-14) — IN PROGRESS / REBASED LANE.** Branch `codex-infisical-provider-sync-current-main`, isolated worktree
-  `/Users/jay/apps/api-usage-monitor-infisical-provider-sync-current-main`, based on fetched `origin/main` `663ad936`.
+  2026-07-14) — IMPLEMENTED / SECURITY HOLD REMEDIATED / FOCUSED GATES GREEN / HANDOFF READY.** Branch `codex-infisical-provider-sync-current-main`, isolated worktree
+  `/Users/jay/apps/api-usage-monitor-infisical-provider-sync-current-main`, rebased 2026-07-15 onto fetched `origin/main` `21220bc3`.
   The stale dirty `codex-infisical-provider-sync` worktree is preserved read-only while scoped changes are ported.
   Build a value-redacting, scope-aware bridge from the Socratic.Trade, Congress.Trade, and shared
   Infisical machine identities into encrypted API Usage Monitor provider credentials. Project
   scopes must remain distinct, shared values are fallback-only, and no secret values may enter
-  logs, git, browser payloads, or provider metadata.
+  logs, git, browser payloads, or provider metadata. The exact functional allowlist covers 16 app-scoped/shared
+  integrations; shared values are fallback-only, live-style old/current duplicate labels require an exact key match,
+  and a manually valid ST Gemini row remains untouched because the verified ST `prod` `/` scope has no `GEMINI_API_KEY`.
+  Security remediation adds a value-disabled official v4 list-scope preflight before per-key 404 can authorize fallback,
+  static mapping multiplicity despite partial source failure, streamed/canceled 128 KiB response enforcement, and Render
+  pre-migration backup retention `1`. Node 24 focused Vitest passes 24/24 across sync and polling, TypeScript and scoped
+  ESLint pass, and diff-check is clean.
+  Scope excludes broker billing and production mutation; no push/PR/deploy by the delegated implementation lane.
 - **Live provider reconciliation cleanup (CODEX + verifier, owner-directed 2026-07-13) — LIVE.** Branch
   `codex-live-provider-reconciliation`, PR
   https://github.com/jaywedgeworth22/api-usage-monitor/pull/171, isolated worktree
