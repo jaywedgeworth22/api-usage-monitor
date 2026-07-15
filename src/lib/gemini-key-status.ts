@@ -64,7 +64,7 @@ export function hasGeminiBillingConfig(
 ): boolean {
   return Boolean(
     cleanString(config.billingDataset) ||
-      cleanString(config.serviceAccountJson)
+      cleanString(config.billingTable)
   );
 }
 

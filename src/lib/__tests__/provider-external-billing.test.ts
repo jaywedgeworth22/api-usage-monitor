@@ -201,4 +201,82 @@ describe("reconcileProviderExternalBilling", () => {
       },
     ]);
   });
+
+  it("preserves a prior Gemini request total through an empty query and updates on later data", async () => {
+    await reconcileProviderExternalBilling(providerId, {
+      source: "google-cloud-monitoring-requests",
+      authoritative: true,
+      records: [
+        {
+          externalId: "gemini-requests-mtd",
+          kind: "account",
+          serviceName: "Gemini API aggregate requests",
+          planName: "Service Runtime aggregate fallback",
+          status: "active",
+          currentPeriodStart: "2026-07-01T00:00:00.000Z",
+          currentPeriodEnd: "2026-07-13T20:00:00.000Z",
+          usageQuantity: 12,
+          usageUnit: "requests",
+          rollupRole: "metadata",
+          dateKind: "report_through",
+        },
+      ],
+    });
+
+    await reconcileProviderExternalBilling(providerId, {
+      source: "google-cloud-monitoring-requests",
+      authoritative: false,
+      records: [],
+    });
+
+    expect(
+      await prisma.providerExternalBilling.findUnique({
+        where: {
+          providerId_source_externalId: {
+            providerId,
+            source: "google-cloud-monitoring-requests",
+            externalId: "gemini-requests-mtd",
+          },
+        },
+      })
+    ).toMatchObject({
+      usageQuantity: 12,
+      currentPeriodEnd: new Date("2026-07-13T20:00:00.000Z"),
+    });
+
+    await reconcileProviderExternalBilling(providerId, {
+      source: "google-cloud-monitoring-requests",
+      authoritative: true,
+      records: [
+        {
+          externalId: "gemini-requests-mtd",
+          kind: "account",
+          serviceName: "Gemini API aggregate requests",
+          planName: "Service Runtime aggregate fallback",
+          status: "active",
+          currentPeriodStart: "2026-07-01T00:00:00.000Z",
+          currentPeriodEnd: "2026-07-13T20:05:00.000Z",
+          usageQuantity: 19,
+          usageUnit: "requests",
+          rollupRole: "metadata",
+          dateKind: "report_through",
+        },
+      ],
+    });
+
+    expect(
+      await prisma.providerExternalBilling.findUnique({
+        where: {
+          providerId_source_externalId: {
+            providerId,
+            source: "google-cloud-monitoring-requests",
+            externalId: "gemini-requests-mtd",
+          },
+        },
+      })
+    ).toMatchObject({
+      usageQuantity: 19,
+      currentPeriodEnd: new Date("2026-07-13T20:05:00.000Z"),
+    });
+  });
 });

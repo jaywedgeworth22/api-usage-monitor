@@ -155,14 +155,15 @@ function quotaDescription(item: BillingInventoryItem): { primary: string; second
     };
   }
   if (item.requestLimit != null) {
+    const unit = item.usageUnit || "requests";
     return {
       primary:
         item.requestUsage == null
           ? `${formatCompact(item.requestLimit)} limit`
           : `${formatCompact(item.requestUsage)} / ${formatCompact(item.requestLimit)}`,
       secondary: item.requestLimitWindow
-        ? `requests / ${item.requestLimitWindow}`
-        : "requests",
+        ? `${unit} / ${item.requestLimitWindow}`
+        : unit,
     };
   }
   if (item.spendLimitUsd != null) {

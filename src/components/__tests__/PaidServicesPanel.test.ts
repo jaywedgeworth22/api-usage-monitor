@@ -229,4 +229,48 @@ describe("PaidServicesPanel", () => {
     expect(html).toContain("USD only");
     expect(html).toContain("1 non-USD excluded");
   });
+
+  it("uses provider-reported token units for token quota limits", () => {
+    const html = renderToStaticMarkup(
+      createElement(PaidServicesPanel, {
+        providers: [
+          {
+            id: "gemini",
+            name: "google-ai",
+            displayName: "Gemini",
+            type: "builtin",
+            externalBilling: [
+              {
+                source: "google-cloud-monitoring-quota-limits",
+                externalId: "token-limit",
+                kind: "account",
+                serviceName: "Gemini tokens per minute",
+                planName: "Cloud Monitoring quota limit",
+                status: "active",
+                amountUsd: null,
+                currency: null,
+                billingInterval: null,
+                currentPeriodStart: null,
+                currentPeriodEnd: "2026-07-13T20:00:00.000Z",
+                nextRenewalAt: null,
+                requestLimit: 2_000_000,
+                requestLimitWindow: "tokens per minute per project",
+                spendLimitUsd: null,
+                spendLimitWindow: null,
+                usageUnit: "tokens",
+                rollupRole: "metadata",
+                dateKind: "report_through",
+                syncedAt: new Date().toISOString(),
+              },
+            ],
+          },
+        ],
+        subscriptions: [],
+      })
+    );
+
+    expect(html).toContain("2M limit");
+    expect(html).toContain("tokens / tokens per minute per project");
+    expect(html).not.toContain("requests / tokens per minute per project");
+  });
 });

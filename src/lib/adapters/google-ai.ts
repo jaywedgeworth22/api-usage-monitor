@@ -2,6 +2,7 @@ import {
   AdapterError,
   fetchJson,
   headerNumber,
+  type AdapterExternalBillingSync,
   type AdapterInvocationContext,
   type UsageResult,
 } from "./helpers";
@@ -9,6 +10,10 @@ import {
   fetchGoogleCloudBilling,
   hasGoogleCloudBillingConfig,
 } from "./google-cloud-billing";
+import {
+  fetchGoogleCloudMonitoring,
+  type GoogleCloudMonitoringResult,
+} from "./google-cloud-monitoring";
 import {
   geminiApiKeyFingerprint,
   geminiBillingConfigFingerprint,
@@ -52,6 +57,17 @@ function combinedPartialError(errors: AdapterError[]): AdapterError | undefined 
   );
 }
 
+function configuredString(value: unknown): boolean {
+  return typeof value === "string" && value.trim().length > 0;
+}
+
+function monitoringConfigurationError(message: string): AdapterError {
+  return new AdapterError(message, {
+    code: "CONFIGURATION_ERROR",
+    retryable: false,
+  });
+}
+
 export async function fetchUsage(
   apiKey: string,
   config: Record<string, unknown> = {},
@@ -65,9 +81,32 @@ export async function fetchUsage(
   const apiKeyReadable = context?.apiKeyReadable ?? true;
   const canValidateKey = apiKeyConfigured && apiKeyReadable && apiKey.trim() !== "";
   const secretConfigReadable = context?.secretConfigReadable ?? true;
+  const serviceAccountConfigured =
+    configuredString(config.serviceAccountJson) ||
+    context?.secretConfigConfigured === true;
+  const monitoringProjectConfigured = configuredString(config.googleProjectId);
+  const billingRequested = hasGoogleCloudBillingConfig(config);
+  const monitoringConfigured =
+    monitoringProjectConfigured ||
+    (serviceAccountConfigured && !billingRequested);
+  const monitoringConfigurationStatus = !monitoringConfigured
+    ? "not_configured"
+    : !monitoringProjectConfigured
+      ? "project_required"
+      : !serviceAccountConfigured
+        ? "credential_required"
+        : !secretConfigReadable
+          ? "error"
+          : "configured";
+  const canFetchMonitoring =
+    serviceAccountConfigured &&
+    monitoringProjectConfigured &&
+    secretConfigReadable;
   const billingConfigured =
-    hasGoogleCloudBillingConfig(config) ||
-    (context?.secretConfigConfigured === true && !secretConfigReadable);
+    billingRequested ||
+    (configuredString(config.billingDataset) &&
+      context?.secretConfigConfigured === true &&
+      !secretConfigReadable);
   const canFetchBilling = billingConfigured && secretConfigReadable;
   const billingConfigFingerprint = canFetchBilling
     ? geminiBillingConfigFingerprint(config)
@@ -86,6 +125,12 @@ export async function fetchUsage(
           retryable: false,
         })
       : null;
+  const monitoringConfigurationErrorValue =
+    monitoringConfigurationStatus === "error"
+      ? monitoringConfigurationError(
+          "Stored Google Cloud Monitoring credential cannot be decrypted"
+        )
+      : null;
   const modelRequest = canValidateKey
     ? fetchJson(
         "https://generativelanguage.googleapis.com/v1beta/models",
@@ -103,7 +148,7 @@ export async function fetchUsage(
         })
       )
     : Promise.resolve({ value: null, error: unreadableKeyError });
-  const [modelOutcome, billingOutcome] = await Promise.all([
+  const [modelOutcome, billingOutcome, monitoringOutcome] = await Promise.all([
     modelRequest,
     canFetchBilling
       ? fetchGoogleCloudBilling(config).then(
@@ -114,10 +159,23 @@ export async function fetchUsage(
           })
         )
       : Promise.resolve({ value: null, error: unreadableBillingError }),
+    canFetchMonitoring
+      ? fetchGoogleCloudMonitoring(config).then(
+          (value) => ({ value, error: null }),
+          (error) => ({
+            value: null,
+            error: adapterError(error, "Google Cloud Monitoring sync failed"),
+          })
+        )
+      : Promise.resolve({
+          value: null,
+          error: monitoringConfigurationErrorValue,
+        }),
   ]);
 
   const response = modelOutcome.value;
   const billing = billingOutcome.value;
+  const monitoring = monitoringOutcome.value as GoogleCloudMonitoringResult | null;
   const validationOutcome: KeyValidationOutcome = !apiKeyConfigured
     ? "not_configured"
     : !canValidateKey
@@ -147,7 +205,12 @@ export async function fetchUsage(
       : validationOutcome === "unreadable"
         ? unreadableKeyError
         : null;
-  const partialErrors = [keyValidationError, billingOutcome.error].filter(
+  const partialErrors = [
+    keyValidationError,
+    billingOutcome.error,
+    monitoringOutcome.error,
+    monitoring?.partialError,
+  ].filter(
     (error): error is AdapterError => error != null
   );
   const data = (response?.data ?? {}) as { models?: unknown[] };
@@ -167,6 +230,30 @@ export async function fetchUsage(
     validationOutcome === "valid"
       ? headers.get("x-ratelimit-reset")
       : null;
+  const externalBillingSyncs: AdapterExternalBillingSync[] = [
+    ...(validationOutcome === "valid"
+      ? [
+          {
+            source: "google-gemini-rate-limits",
+            authoritative: true,
+            records:
+              limit == null
+                ? []
+                : [
+                    {
+                      externalId: "gemini-api-key",
+                      kind: "account" as const,
+                      planName: "Gemini API quota",
+                      status: "active",
+                      requestLimit: limit,
+                      requestLimitWindow: "provider-defined",
+                    },
+                  ],
+          },
+        ]
+      : []),
+    ...(monitoring?.externalBillingSyncs ?? []),
+  ];
 
   return {
     balance: null,
@@ -174,7 +261,7 @@ export async function fetchUsage(
     costWindowStart: billing?.windowStart ?? null,
     costWindowEnd: billing?.windowEnd ?? null,
     costScope: billing ? "calendar_month_to_date" : undefined,
-    totalRequests: null,
+    totalRequests: monitoring?.totalRequests ?? null,
     credits: remaining,
     rawData: {
       keyValidation: {
@@ -217,32 +304,83 @@ export async function fetchUsage(
             configured: false,
             note: "A Gemini API key does not expose account billing. Configure the standard Cloud Billing BigQuery export for direct spend.",
           },
+      monitoring: monitoring
+        ? {
+            configured: true,
+            status: monitoring.status,
+            projectId: monitoring.projectId,
+            windowStart: monitoring.windowStart,
+            windowEnd: monitoring.windowEnd,
+            reportThrough: monitoring.reportThrough,
+            descriptorDiscovery: monitoring.descriptorDiscovery,
+            requests: monitoring.requests,
+            quotaUsage: {
+              status: monitoring.quotaUsage.status,
+              descriptorCount: monitoring.quotaUsage.descriptorCount,
+              queryFailureCount: monitoring.quotaUsage.queryFailureCount,
+              emptyRecentGaugeCount:
+                monitoring.quotaUsage.emptyRecentGaugeCount,
+              availableCount: monitoring.quotaUsage.availableCount,
+              retainedCount: monitoring.quotaUsage.retainedCount,
+              truncated: monitoring.quotaUsage.truncated,
+              errorCode: monitoring.quotaUsage.errorCode,
+              httpStatus: monitoring.quotaUsage.httpStatus,
+              retryable: monitoring.quotaUsage.retryable,
+            },
+            quotaLimits: {
+              status: monitoring.quotaLimits.status,
+              descriptorCount: monitoring.quotaLimits.descriptorCount,
+              queryFailureCount: monitoring.quotaLimits.queryFailureCount,
+              emptyRecentGaugeCount:
+                monitoring.quotaLimits.emptyRecentGaugeCount,
+              availableCount: monitoring.quotaLimits.availableCount,
+              retainedCount: monitoring.quotaLimits.retainedCount,
+              truncated: monitoring.quotaLimits.truncated,
+              errorCode: monitoring.quotaLimits.errorCode,
+              httpStatus: monitoring.quotaLimits.httpStatus,
+              retryable: monitoring.quotaLimits.retryable,
+            },
+          }
+        : monitoringConfigurationStatus === "project_required"
+          ? {
+              configured: false,
+              status: "project_required",
+              projectId: null,
+              note: "Set the exact Gemini googleProjectId to enable project-level request and quota monitoring.",
+            }
+        : monitoringConfigurationStatus === "credential_required"
+          ? {
+              configured: false,
+              status: "credential_required",
+              projectId: String(config.googleProjectId).trim(),
+              note: "Add the encrypted Google service-account JSON and grant it Monitoring Viewer on the Gemini project.",
+            }
+        : monitoringConfigured && monitoringOutcome.error
+          ? {
+              configured: true,
+              status: "error",
+              projectId: monitoringProjectConfigured
+                ? String(config.googleProjectId).trim()
+                : null,
+              errorCode: monitoringOutcome.error.code,
+              httpStatus: monitoringOutcome.error.status,
+              retryable: monitoringOutcome.error.retryable,
+            }
+          : {
+              configured: false,
+              note: "Set the exact Gemini project ID and grant the encrypted service account Monitoring Viewer to read project-level request and quota metrics.",
+            },
       capabilities: {
         nonBillableKeyValidation: validationOutcome === "valid",
         billingCost: billing?.status === "ready",
+        monitoringUsage:
+          monitoring?.status === "ready" || monitoring?.status === "partial",
         subscriptionStatus: false,
       },
     },
     postPersistError: combinedPartialError(partialErrors),
     externalBilling: billing?.externalBilling,
-    externalBillingSyncs: validationOutcome === "valid"
-      ? [{
-          source: "google-gemini-rate-limits",
-          authoritative: true,
-          records:
-            limit == null
-              ? []
-              : [
-                  {
-                    externalId: "gemini-api-key",
-                    kind: "account",
-                    planName: "Gemini API quota",
-                    status: "active",
-                    requestLimit: limit,
-                    requestLimitWindow: "provider-defined",
-                  },
-                ],
-        }]
-      : undefined,
+    externalBillingSyncs:
+      externalBillingSyncs.length > 0 ? externalBillingSyncs : undefined,
   };
 }

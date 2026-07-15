@@ -52,6 +52,59 @@ export function withoutGoogleBillingConfig(
   return remaining;
 }
 
+export function validateGoogleIntegrationSubmission(input: {
+  config: Record<string, unknown>;
+  protectedConfigFields?: string[];
+  plan: ProviderPlan;
+}): ProviderPlan {
+  const configured = (key: string) =>
+    hasConfiguredProviderField(
+      input.config,
+      key,
+      input.protectedConfigFields ?? []
+    );
+  const projectConfigured = configured("googleProjectId");
+  const serviceAccountConfigured = configured("serviceAccountJson");
+  const billingRequested =
+    configured("billingDataset") || configured("billingTable");
+  // A service account with a billing dataset/table can be a billing-only
+  // credential. Without a billing target, the shared credential expresses
+  // Monitoring intent and therefore needs the exact Gemini project.
+  const monitoringRequested =
+    projectConfigured || (serviceAccountConfigured && !billingRequested);
+
+  if (
+    projectConfigured &&
+    !/^[a-z][a-z0-9-]{4,61}[a-z0-9]$/.test(
+      String(input.config.googleProjectId).trim()
+    )
+  ) {
+    throw new Error("Exact Gemini project ID is not a valid Google Cloud project ID");
+  }
+  if (monitoringRequested && !projectConfigured) {
+    throw new Error(
+      "Exact Gemini project ID is required for Cloud Monitoring"
+    );
+  }
+  if (monitoringRequested && !serviceAccountConfigured) {
+    throw new Error(
+      "Google service-account JSON is required for Cloud Monitoring"
+    );
+  }
+  if (billingRequested && !configured("billingDataset")) {
+    throw new Error(
+      "Billing export dataset is required when a billing table is configured"
+    );
+  }
+  if (billingRequested && !serviceAccountConfigured) {
+    throw new Error(
+      "Google service-account JSON is required for Cloud Billing"
+    );
+  }
+
+  return billingRequested ? actualUsageBillingPlan(input.plan) : input.plan;
+}
+
 interface Provider {
   id?: string;
   name: string;
@@ -336,27 +389,13 @@ export default function AddProviderModal({
             secretConfigOperations = [
               { path: ["serviceAccountJson"], action: "clear" },
             ];
-          } else if (
-            String(config.billingDataset ?? "").trim() ||
-            hasConfiguredProviderField(
+          } else {
+            plan = validateGoogleIntegrationSubmission({
               config,
-              "serviceAccountJson",
-              editProvider?.secretConfigMeta?.fields ?? []
-            )
-          ) {
-            if (!String(config.billingDataset ?? "").trim()) {
-              throw new Error("Billing export dataset is required with a service account");
-            }
-            if (
-              !hasConfiguredProviderField(
-                config,
-                "serviceAccountJson",
-                editProvider?.secretConfigMeta?.fields ?? []
-              )
-            ) {
-              throw new Error("Read-only service-account JSON is required with a billing dataset");
-            }
-            plan = actualUsageBillingPlan(plan);
+              protectedConfigFields:
+                editProvider?.secretConfigMeta?.fields ?? [],
+              plan,
+            });
           }
         }
         if (selectedDef.needsAccountId && !String(config.accountId ?? "").trim()) {
@@ -794,13 +833,13 @@ export default function AddProviderModal({
                 />
                 <span>
                   <span className="block text-sm font-medium text-red-800">
-                    Disconnect Google Cloud Billing
+                    Disconnect Google Cloud integrations
                   </span>
                   <span className="mt-0.5 block text-xs text-red-700">
-                    On save, remove the billing dataset, optional project/table,
-                    and encrypted service-account JSON. The Gemini API key,
-                    manual price, renewal date, and unrelated configuration stay
-                    unchanged.
+                    On save, remove the billing dataset, Gemini project/table,
+                    and encrypted service-account JSON. Cloud Billing and Cloud
+                    Monitoring will both disconnect. The Gemini API key, manual
+                    price, renewal date, and unrelated configuration stay unchanged.
                   </span>
                 </span>
               </label>

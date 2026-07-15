@@ -24,6 +24,15 @@ function serviceAccountJson(): string {
   });
 }
 
+function oauthScope(body: unknown): string | null {
+  const assertion = new URLSearchParams(String(body)).get("assertion");
+  if (!assertion) return null;
+  const claims = JSON.parse(
+    Buffer.from(assertion.split(".")[1], "base64url").toString("utf8")
+  ) as { scope?: unknown };
+  return typeof claims.scope === "string" ? claims.scope : null;
+}
+
 const fields = [
   "project_id",
   "project_number",
@@ -61,6 +70,8 @@ function mockGoogle(options: {
   queryCompletesAsync?: boolean;
   tablePending?: boolean;
   includeRateLimitHeaders?: boolean;
+  monitoringStatus?: number;
+  monitoringRequestCount?: number;
 } = {}) {
   const queryRows = options.rows ?? [billingRow("gemini-prod", "8.25")];
   const fetchMock = vi.fn((input: string | URL | Request, init?: RequestInit) => {
@@ -86,6 +97,50 @@ function mockGoogle(options: {
       expect(init?.method).toBe("POST");
       expect(String(init?.body)).not.toContain("PRIVATE KEY");
       return Promise.resolve(jsonResponse({ access_token: "oauth-token" }));
+    }
+    if (url.startsWith("https://monitoring.googleapis.com/v3/")) {
+      expect(init?.headers).toMatchObject({ Authorization: "Bearer oauth-token" });
+      if (options.monitoringStatus && options.monitoringStatus !== 200) {
+        return Promise.resolve(
+          jsonResponse({ error: "monitoring forbidden" }, options.monitoringStatus)
+        );
+      }
+      if (url.includes("/projects/gemini-prod/metricDescriptors")) {
+        return Promise.resolve(jsonResponse({ metricDescriptors: [] }));
+      }
+      expect(url).toContain("/projects/gemini-prod/timeSeries");
+      const filter = new URL(url).searchParams.get("filter") ?? "";
+      if (filter.includes("serviceruntime.googleapis.com/api/request_count")) {
+        return Promise.resolve(
+          jsonResponse({
+            timeSeries: [
+              {
+                metric: {
+                  type: "serviceruntime.googleapis.com/api/request_count",
+                  labels: {},
+                },
+                resource: {
+                  type: "consumed_api",
+                  labels: {
+                    project_id: "gemini-prod",
+                    service: "generativelanguage.googleapis.com",
+                    location: "global",
+                  },
+                },
+                points: [
+                  {
+                    interval: { endTime: "2026-07-13T20:00:00Z" },
+                    value: {
+                      int64Value: String(options.monitoringRequestCount ?? 14),
+                    },
+                  },
+                ],
+              },
+            ],
+          })
+        );
+      }
+      return Promise.resolve(jsonResponse({ timeSeries: [] }));
     }
     if (url.includes("/datasets/billing_export/tables")) {
       expect(init?.headers).toMatchObject({ Authorization: "Bearer oauth-token" });
@@ -258,6 +313,12 @@ describe("google-ai billing adapter", () => {
 
     expect(result.totalCost).toBe(8.25);
     expect(result.costScope).toBe("calendar_month_to_date");
+    const tokenCall = fetchMock.mock.calls.find(
+      ([url]) => String(url) === "https://oauth2.googleapis.com/token"
+    );
+    expect(oauthScope(tokenCall?.[1]?.body)).toBe(
+      "https://www.googleapis.com/auth/bigquery.readonly"
+    );
     expect(new Date(result.costWindowStart!).toISOString()).toBe("2026-07-01T00:00:00.000Z");
     expect(result.externalBilling?.records).toEqual(
       expect.arrayContaining([
@@ -285,6 +346,112 @@ describe("google-ai billing adapter", () => {
     });
     expect(JSON.stringify(result)).not.toContain("PRIVATE KEY");
     expect(fetchMock.mock.calls.some(([input]) => String(input).includes("resource_v1"))).toBe(false);
+  });
+
+  it("adds project request/quota monitoring without changing BigQuery cash cost", async () => {
+    mockGoogle({ monitoringRequestCount: 14 });
+
+    const result = await fetchUsage("gemini-key", {
+      billingDataset: "billing-data-project.billing_export",
+      serviceAccountJson: serviceAccountJson(),
+      googleProjectId: "gemini-prod",
+    });
+
+    expect(result.totalCost).toBe(8.25);
+    expect(result.totalRequests).toBe(14);
+    expect(result.externalBilling).toMatchObject({
+      source: "google-cloud-billing-export",
+      authoritative: true,
+    });
+    expect(result.externalBillingSyncs?.map((sync) => sync.source)).toEqual([
+      "google-gemini-rate-limits",
+      "google-cloud-monitoring-requests",
+      "google-cloud-monitoring-native-quota-usage",
+      "google-cloud-monitoring-native-quota-limits",
+    ]);
+    expect(result.rawData).toMatchObject({
+      billing: { status: "ready" },
+      monitoring: {
+        configured: true,
+        status: "ready",
+        projectId: "gemini-prod",
+        requests: { status: "ready", total: 14 },
+      },
+      capabilities: { billingCost: true, monitoringUsage: true },
+    });
+    expect(result.postPersistError).toBeUndefined();
+  });
+
+  it("preserves exact cash cost when Monitoring permissions are denied", async () => {
+    mockGoogle({ monitoringStatus: 403 });
+
+    const result = await fetchUsage("gemini-key", {
+      billingDataset: "billing-data-project.billing_export",
+      serviceAccountJson: serviceAccountJson(),
+      googleProjectId: "gemini-prod",
+    });
+
+    expect(result.totalCost).toBe(8.25);
+    expect(result.totalRequests).toBeNull();
+    expect(result.externalBilling).toMatchObject({
+      source: "google-cloud-billing-export",
+      authoritative: true,
+    });
+    expect(result.externalBillingSyncs?.map((sync) => sync.source)).toEqual([
+      "google-gemini-rate-limits",
+    ]);
+    expect(result.rawData).toMatchObject({
+      billing: { status: "ready" },
+      monitoring: {
+        configured: true,
+        status: "permission_denied",
+        requests: { status: "error", httpStatus: 403 },
+      },
+      capabilities: { billingCost: true, monitoringUsage: false },
+    });
+    expect(result.postPersistError).toMatchObject({
+      code: "HTTP_ERROR",
+      status: 403,
+      retryable: false,
+    });
+  });
+
+  it("supports Monitoring with the shared credential when no billing export is configured", async () => {
+    mockGoogle({ monitoringRequestCount: 9 });
+
+    const result = await fetchUsage("gemini-key", {
+      serviceAccountJson: serviceAccountJson(),
+      googleProjectId: "gemini-prod",
+    });
+
+    expect(result.totalCost).toBeNull();
+    expect(result.totalRequests).toBe(9);
+    expect(result.rawData).toMatchObject({
+      billing: { configured: false },
+      monitoring: { configured: true, status: "ready" },
+    });
+    expect(result.postPersistError).toBeUndefined();
+  });
+
+  it("reports incomplete optional Monitoring configuration without failing key or billing checks", async () => {
+    mockGoogle();
+
+    const result = await fetchUsage("gemini-key", {
+      serviceAccountJson: serviceAccountJson(),
+    });
+
+    expect(result.totalCost).toBeNull();
+    expect(result.totalRequests).toBeNull();
+    expect(result.rawData).toMatchObject({
+      keyValidation: { outcome: "valid" },
+      billing: { configured: false },
+      monitoring: {
+        configured: false,
+        status: "project_required",
+        projectId: null,
+      },
+    });
+    expect(result.postPersistError).toBeUndefined();
   });
 
   it("keeps authoritative billing when model-list key validation is invalid", async () => {
