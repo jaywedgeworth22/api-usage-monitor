@@ -78,6 +78,7 @@ const typeColors: Record<string, string> = {
   resend: "bg-sky-500",
   pushover: "bg-lime-500",
   apify: "bg-orange-600",
+  firecrawl: "bg-red-600",
   stripe: "bg-indigo-600",
   robinhood: "bg-green-500",
   alpaca: "bg-gray-600",
@@ -87,7 +88,7 @@ const typeColors: Record<string, string> = {
 };
 
 const creditBasedProviders = new Set([
-  "llamaindex", "voyage", "langfuse", "apify",
+  "llamaindex", "voyage", "langfuse", "apify", "firecrawl",
 ]);
 
 export default function ProviderCard({

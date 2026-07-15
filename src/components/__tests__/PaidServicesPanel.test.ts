@@ -142,6 +142,52 @@ describe("PaidServicesPanel", () => {
     expect(html).toContain("reported through");
   });
 
+  it("shows Firecrawl extras without inventing provider-reported usage", () => {
+    const html = renderToStaticMarkup(
+      createElement(PaidServicesPanel, {
+        providers: [
+          {
+            id: "firecrawl",
+            name: "firecrawl",
+            displayName: "Firecrawl",
+            type: "builtin",
+            externalBilling: [
+              {
+                source: "firecrawl-team-credit-usage",
+                externalId: "team-credit-plan",
+                kind: "plan",
+                serviceName: "Firecrawl API",
+                planName: null,
+                status: null,
+                amountUsd: null,
+                currency: null,
+                billingInterval: null,
+                currentPeriodStart: null,
+                currentPeriodEnd: "2026-08-01T00:00:00.000Z",
+                nextRenewalAt: null,
+                requestLimit: 1_000,
+                requestLimitWindow: "billing period",
+                spendLimitUsd: null,
+                spendLimitWindow: null,
+                remainingQuantity: 1_250,
+                usageUnit: "credits",
+                rollupRole: "metadata",
+                dateKind: "period_end",
+                syncedAt: new Date().toISOString(),
+              },
+            ],
+          },
+        ],
+        subscriptions: [],
+      })
+    );
+
+    expect(html).toContain("1,250 remaining");
+    expect(html).toContain("1,000 / billing period limit");
+    expect(html).toContain("period ends");
+    expect(html).not.toContain("credits used");
+  });
+
   it("makes the USD-only recurring summary explicit when native-currency services exist", () => {
     const html = renderToStaticMarkup(
       createElement(PaidServicesPanel, {

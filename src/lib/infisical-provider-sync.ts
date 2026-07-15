@@ -255,6 +255,12 @@ const CREDENTIAL_MAPPINGS: readonly CredentialMapping[] = [
   },
   {
     scope: "shared",
+    providerName: "firecrawl",
+    attempts: [{ source: "shared", required: ["FIRECRAWL_API_KEY"] }],
+    build: (values) => ({ apiKey: values.get("FIRECRAWL_API_KEY") }),
+  },
+  {
+    scope: "shared",
     providerName: "langfuse",
     attempts: [
       {

@@ -382,6 +382,18 @@ const CATALOG: Record<CatalogProviderName, ProviderIntegrationProfile> = {
     limitations: ["Estimated current bill depends on the plan/usage fields returned by Apify and may differ from a finalized invoice."],
     source: "src/lib/adapters/apify.ts",
   }),
+  firecrawl: defineProfile({
+    name: "firecrawl", displayName: "Firecrawl", category: "Data", mode: "partial",
+    summary: "Reads the authenticated team's current plan-credit allowance, remaining credits, and available billing-period boundaries.",
+    reads: ["Current team plan-credit allowance, remaining credits, and billing-period start/end from the non-generative account endpoint."],
+    stores: ["Selected credit totals and normalized billing-period timestamps; no crawled content, URLs, API-key value, activity records, or raw provider response."],
+    credentialInputs: ["Firecrawl API key."],
+    billing: { visibility: "metadata", summary: "Plan allowance, remaining credits, and available billing-period boundaries are direct. Plan tier, price, actual USD spend, subscription renewal, and invoices are not exposed." },
+    canAdd: ["Historical credit usage can be mapped from Firecrawl's separate account endpoint without making crawl requests."],
+    cannotAdd: ["Credit counts cannot be converted to USD or labeled as a paid subscription without an authoritative price or plan response."],
+    limitations: ["The current endpoint does not report credits used. The monitor never subtracts remaining credits from the plan allowance because add-on credits can make the balance exceed that allowance.", "Billing-period start and end are independently nullable, and a period end is not claimed as a quota reset or subscription renewal."],
+    source: "src/lib/adapters/firecrawl.ts",
+  }),
   llamaindex: defineProfile({
     name: "llamaindex", displayName: "LlamaIndex Cloud", category: "Data", mode: "partial",
     summary: "Discovers accessible organizations and reads paginated UTC calendar-month-to-date product-credit usage without running parsing or inference.",
