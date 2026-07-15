@@ -129,6 +129,19 @@ interface SecretCreate {
   valueFingerprint: string;
 }
 
+const FIXED_RESPONSE_IDENTITY_CASES = [
+  ["missing secretKey", "secretKey", undefined],
+  ["mismatched secretKey", "secretKey", "WRONG_SECRET"],
+  ["missing shared type", "type", undefined],
+  ["mismatched shared type", "type", "personal"],
+  ["missing workspace", "workspace", undefined],
+  ["mismatched workspace", "workspace", "wrong-project"],
+  ["missing environment", "environment", undefined],
+  ["mismatched environment", "environment", "dev"],
+  ["missing secretPath", "secretPath", undefined],
+  ["mismatched secretPath", "secretPath", "/wrong"],
+] as const;
+
 let testDir: string;
 let prisma: typeof import("@/lib/prisma").prisma;
 let decrypt: typeof import("@/lib/crypto").decrypt;
@@ -191,6 +204,8 @@ function installInfisicalMock(
     createStatus?: number;
     oversizedCreate?: boolean;
     postCreateReadValue?: string;
+    createResponseOverrides?: Record<string, unknown>;
+    exactReadResponseOverrides?: Record<string, unknown>;
     afterFirstMissingStGeminiRead?: () => void | Promise<void>;
   } = {}
 ): {
@@ -328,9 +343,10 @@ function installInfisicalMock(
             secretKey: name,
             secretValue,
             type: "shared",
-            projectId: body.projectId,
+            workspace: body.projectId,
             environment: body.environment,
             secretPath: body.secretPath,
+            ...options.createResponseOverrides,
           },
         });
       }
@@ -367,9 +383,10 @@ function installInfisicalMock(
               secretKey: name,
               secretValue: value,
               type: "shared",
-              projectId: url.searchParams.get("projectId"),
+              workspace: url.searchParams.get("projectId"),
               environment: url.searchParams.get("environment"),
               secretPath: url.searchParams.get("secretPath"),
+              ...options.exactReadResponseOverrides,
             },
           });
     })
@@ -1019,6 +1036,31 @@ describe("Infisical provider credential sync", () => {
     });
     expect(fetchSpy).not.toHaveBeenCalled();
   });
+
+  it("keeps ordinary non-bootstrap reads compatible when response identity metadata is absent", async () => {
+    configureSources("st");
+    const deepseekKey = "ordinary-read-with-value-only-response";
+    installInfisicalMock(
+      { st: { DEEPSEEK_API_KEY: deepseekKey } },
+      {
+        exactReadResponseOverrides: {
+          secretKey: undefined,
+          type: undefined,
+          workspace: undefined,
+          environment: undefined,
+          secretPath: undefined,
+        },
+      }
+    );
+
+    const result = await syncProviderCredentialsFromInfisical();
+
+    expect(result.created).toBe(1);
+    const provider = await prisma.provider.findFirstOrThrow({
+      where: { name: "deepseek" },
+    });
+    expect(decrypt(provider.apiKey!)).toBe(deepseekKey);
+  });
 });
 
 describe("one-time ST Gemini Infisical bootstrap", () => {
@@ -1451,6 +1493,85 @@ describe("one-time ST Gemini Infisical bootstrap", () => {
     expect(capture.events.some((event) => event.startsWith("DELETE "))).toBe(false);
     expectRedacted(result, [key!]);
   });
+
+  it.each(FIXED_RESPONSE_IDENTITY_CASES)(
+    "rejects a 2xx create response with %s",
+    async (_caseName, field, value) => {
+      enableStGeminiBootstrap();
+      const { provider, key } = await seedStGeminiProvider();
+      const capture = installInfisicalMock(
+        { st: {} },
+        { createResponseOverrides: { [field]: value } }
+      );
+
+      const result = await bootstrapStGeminiCredentialToInfisical();
+
+      expect(result).toMatchObject({
+        attempted: true,
+        status: "error",
+        errorCode: "create_scope_mismatch",
+      });
+      expect(capture.secretCreates).toHaveLength(1);
+      expect(
+        capture.events.filter(
+          (event) => event === "GET /api/v4/secrets/GEMINI_API_KEY"
+        )
+      ).toHaveLength(1);
+      const sameCyclePull = await syncProviderCredentialsFromInfisical({
+        suppressStGemini: true,
+      });
+      expect(sameCyclePull.suppressed).toBe(1);
+      const preserved = await prisma.provider.findUniqueOrThrow({
+        where: { id: provider.id },
+      });
+      expect(decrypt(preserved.apiKey!)).toBe(key);
+      expect(preserved.secretConfig).toBeNull();
+      expectRedacted(result, [key!, SOURCE_ENV.st.clientSecret]);
+      expect(JSON.stringify(vi.mocked(console.info).mock.calls)).not.toContain(
+        key
+      );
+    }
+  );
+
+  it.each(FIXED_RESPONSE_IDENTITY_CASES)(
+    "rejects an exact post-create read with %s and suppresses the same-cycle pull",
+    async (_caseName, field, value) => {
+      enableStGeminiBootstrap();
+      const { provider, key } = await seedStGeminiProvider();
+      const capture = installInfisicalMock(
+        { st: {} },
+        { exactReadResponseOverrides: { [field]: value } }
+      );
+
+      const result = await bootstrapStGeminiCredentialToInfisical();
+
+      expect(result).toMatchObject({
+        attempted: true,
+        status: "error",
+        errorCode: "post_create_scope_mismatch",
+      });
+      expect(capture.secretCreates).toHaveLength(1);
+      expect(
+        capture.events.filter(
+          (event) => event === "GET /api/v4/secrets/GEMINI_API_KEY"
+        )
+      ).toHaveLength(2);
+
+      const sameCyclePull = await syncProviderCredentialsFromInfisical({
+        suppressStGemini: true,
+      });
+      expect(sameCyclePull.suppressed).toBe(1);
+      const preserved = await prisma.provider.findUniqueOrThrow({
+        where: { id: provider.id },
+      });
+      expect(decrypt(preserved.apiKey!)).toBe(key);
+      expect(preserved.secretConfig).toBeNull();
+      expectRedacted(result, [key!, SOURCE_ENV.st.clientSecret]);
+      expect(JSON.stringify(vi.mocked(console.info).mock.calls)).not.toContain(
+        key
+      );
+    }
+  );
 
   it("rejects a 2xx create whose exact post-create read has a different value", async () => {
     enableStGeminiBootstrap();

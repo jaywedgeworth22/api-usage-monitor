@@ -26,6 +26,12 @@ post-create read prove the fixed scope contains the validated fingerprint.
 - A successful create response is followed by an exact value-bearing read of
   the fixed project/environment/path/name/type. The value fingerprint must
   equal the freshly validated monitor key before the same-cycle pull proceeds.
+  Infisical v4 response identity is checked using its documented fields:
+  `workspace` (the fixed ST project ID), `secretKey`, `type`, `environment`,
+  and `secretPath`. All five are mandatory for bootstrap create/post-create
+  verification; request-side `projectId` is never accepted as response proof.
+  Ordinary steady-state secret reads remain value-compatible when upstream
+  omits response identity metadata.
 
 Any failed or ambiguous precondition stops before creation. An existing equal
 value is a no-op; an existing different value is a hard conflict. While the

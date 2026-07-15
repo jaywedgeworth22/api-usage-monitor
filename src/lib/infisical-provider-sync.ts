@@ -547,9 +547,10 @@ async function preflightSourceScope(
 interface SecretRecordRead {
   found: boolean;
   value?: string;
+  secret?: Record<string, unknown>;
 }
 
-function requireReturnedSecretScope(
+function requireFixedBootstrapSecretIdentity(
   secret: Record<string, unknown>,
   source: SourceConfig,
   secretName: string,
@@ -558,12 +559,15 @@ function requireReturnedSecretScope(
   const expected: ReadonlyArray<readonly [string, string]> = [
     ["secretKey", secretName],
     ["type", "shared"],
-    ["projectId", source.projectId],
+    // Infisical v4 responses identify the project with `workspace`; request
+    // bodies and query strings use `projectId`. Do not accept the request-side
+    // alias as proof that a response came from the fixed bootstrap project.
+    ["workspace", source.projectId],
     ["environment", source.environment],
     ["secretPath", source.secretPath],
   ];
   for (const [field, value] of expected) {
-    if (field in secret && secret[field] !== value) {
+    if (secret[field] !== value) {
       throw new InfisicalSyncError(errorCode);
     }
   }
@@ -601,12 +605,6 @@ async function fetchSecretRecord(
   if (!isRecord(secret)) {
     throw new InfisicalSyncError("secret_invalid_response");
   }
-  requireReturnedSecretScope(
-    secret,
-    source,
-    secretName,
-    "secret_scope_mismatch"
-  );
   const value = secret.secretValue;
   if (typeof value !== "string") {
     throw new InfisicalSyncError("secret_invalid_response");
@@ -614,7 +612,29 @@ async function fetchSecretRecord(
   if (Buffer.byteLength(value, "utf8") > MAX_SECRET_VALUE_BYTES) {
     throw new InfisicalSyncError("secret_too_large");
   }
-  return { found: true, value };
+  return { found: true, value, secret };
+}
+
+async function fetchBootstrapSecretRecord(
+  baseUrl: string,
+  source: SourceConfig,
+  token: string,
+  secretName: string,
+  scopeErrorCode: string
+): Promise<SecretRecordRead> {
+  const record = await fetchSecretRecord(baseUrl, source, token, secretName);
+  if (record.found) {
+    if (!record.secret) {
+      throw new InfisicalSyncError(scopeErrorCode);
+    }
+    requireFixedBootstrapSecretIdentity(
+      record.secret,
+      source,
+      secretName,
+      scopeErrorCode
+    );
+  }
+  return record;
 }
 
 async function fetchSecret(
@@ -657,14 +677,10 @@ async function createSecret(
   }
   const body = await readJsonObject(response);
   const secret = body.secret;
-  if (
-    !isRecord(secret) ||
-    secret.secretKey !== secretName ||
-    secret.type !== "shared"
-  ) {
+  if (!isRecord(secret)) {
     throw new InfisicalSyncError("create_invalid_response");
   }
-  requireReturnedSecretScope(
+  requireFixedBootstrapSecretIdentity(
     secret,
     source,
     secretName,
@@ -689,7 +705,13 @@ async function verifyCreatedSecret(
   secretName: string,
   expectedFingerprint: string
 ): Promise<void> {
-  const created = await fetchSecretRecord(baseUrl, source, token, secretName);
+  const created = await fetchBootstrapSecretRecord(
+    baseUrl,
+    source,
+    token,
+    secretName,
+    "post_create_scope_mismatch"
+  );
   if (!created.found) {
     throw new InfisicalSyncError("post_create_secret_missing");
   }
@@ -1086,11 +1108,12 @@ export async function bootstrapStGeminiCredentialToInfisical(): Promise<StGemini
     const baseUrl = infisicalBaseUrl();
     const token = await login(baseUrl, source);
     const names = await preflightSourceScope(baseUrl, source, token);
-    const existing = await fetchSecretRecord(
+    const existing = await fetchBootstrapSecretRecord(
       baseUrl,
       source,
       token,
-      ST_GEMINI_SECRET_NAME
+      ST_GEMINI_SECRET_NAME,
+      "bootstrap_scope_mismatch"
     );
     if (names.has(ST_GEMINI_SECRET_NAME) && !existing.found) {
       throw new InfisicalSyncError("scope_inconsistent_missing_secret");
