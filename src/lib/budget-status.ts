@@ -30,7 +30,7 @@ import { subscriptionChargeIdempotencyKey } from "@/lib/subscription-charge-iden
 
 // Budget-status computation for the read endpoint (GET /api/budget-status).
 //
-// Consuming apps (e.g. Agentic Trading's cost-aware feedback loop) poll this to decide whether to
+// Consuming apps (e.g. Socratic Trade's cost-aware feedback loop) poll this to decide whether to
 // throttle spend. Spend is combined across BOTH channels the monitor tracks:
 //   - poll snapshots  (UsageSnapshot.totalCost — cumulative cost the poll adapter reported)
 //   - pushed telemetry (ExternalUsageEvent.costUsd — month-to-date, the ONLY signal for providers

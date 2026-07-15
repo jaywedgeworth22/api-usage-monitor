@@ -11,8 +11,8 @@ which map onto the same `ExternalUsageEvent` table (see "Claude Code OTLP ingest
 ## Cross-app contract (keep in sync)
 
 This repo is the **server half** of the usage-telemetry contract. The client half is
-`@jaywedgeworth22/congress-trading-shared`'s `src/usageTelemetry.ts`, and Agentic Trading
-(App B) is the primary producer (`src/lib/usage-monitor-push.ts`). The ingest event shape,
+`@jaywedgeworth22/congress-trading-shared`'s `src/usageTelemetry.ts`, and Socratic Trade
+(formerly Agentic Trading, App B) is the primary producer (`src/lib/usage-monitor-push.ts`). The ingest event shape,
 enum sets, and the idempotency-key algorithm **must stay byte-for-byte identical** across:
 
 - `congress-trading-shared/src/usageTelemetry.ts` (Zod schemas + `deriveUsageTelemetryIdempotencyKey`)
