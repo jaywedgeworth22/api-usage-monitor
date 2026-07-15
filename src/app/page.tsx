@@ -42,6 +42,10 @@ interface Provider {
   estimatedMonthlyCostUsd: number;
   projectedEomUsd: number;
   spentUsd?: number;
+  receiptCashPaidUsd?: number;
+  receiptCashEventCount?: number;
+  observedVariableUsageUsd?: number;
+  estimatedApiEquivalentUsd?: number;
   snapshotCostFetchedAt?: string | null;
   spendCoverage: ProviderCostCoverage;
   pushedCostCoverage: ProviderCostCoverage;

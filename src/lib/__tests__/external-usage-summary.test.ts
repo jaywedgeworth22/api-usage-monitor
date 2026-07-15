@@ -10,6 +10,7 @@ vi.mock("@/lib/prisma", () => ({ prisma: prismaMock }));
 import {
   sumMonthToDateExternalCostAttribution,
   sumMonthToDateExternalCostByProvider,
+  sumMonthToDateReceiptCashByProviderId,
   summarizeExternalUsageEvents,
 } from "../external-usage-events";
 
@@ -444,6 +445,102 @@ describe("summarizeExternalUsageEvents", () => {
         sourceApp: "socratic-trade",
         projectId: "project-a",
         costUsd: 15,
+      }),
+    ]);
+  });
+
+  it("keeps exact receipt cash separate across raw rows and rollups", async () => {
+    const providerId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+    const receipt = (digest: string) => ({
+      sourceApp: "billing-receipt-import",
+      service: "api-prepaid-funding",
+      label: "receipt_cash_paid",
+      keyRef: `provider:${providerId}:billing-receipt:${digest.repeat(64)}`,
+      billingMode: "actual",
+      metricType: "cost",
+      unit: "usd",
+      confidence: "actual",
+    });
+    prismaMock.externalUsageEvent.groupBy.mockResolvedValueOnce([
+      {
+        ...receipt("a"),
+        _sum: { costUsd: 12.5 },
+        _count: { _all: 1 },
+      },
+    ]);
+    prismaMock.externalUsageEventDailyRollup.findMany.mockResolvedValueOnce([
+      {
+        ...receipt("b"),
+        totalCostUsd: 34.75,
+        eventCount: 2,
+      },
+    ]);
+
+    const receiptNow = new Date("2026-07-15T12:00:00.000Z");
+    const receipts = await sumMonthToDateReceiptCashByProviderId(
+      new Date("2026-07-01T00:00:00.000Z"),
+      new Date("2026-07-03T00:00:00.000Z"),
+      receiptNow
+    );
+    expect(receipts.get(providerId)).toEqual({ paidUsd: 47.25, eventCount: 3 });
+    expect(prismaMock.externalUsageEvent.groupBy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          occurredAt: {
+            gte: new Date("2026-07-03T00:00:00.000Z"),
+            lte: receiptNow,
+          },
+        }),
+      })
+    );
+    expect(prismaMock.externalUsageEventDailyRollup.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({ latestOccurredAt: { lte: receiptNow } }),
+      })
+    );
+
+    prismaMock.externalUsageEvent.findMany.mockResolvedValueOnce([
+      {
+        id: "receipt-raw",
+        provider: "anthropic",
+        environment: null,
+        projectId: null,
+        quantity: 0,
+        costUsd: 12.5,
+        requests: 0,
+        limit: null,
+        limitWindow: null,
+        occurredAt: new Date("2026-07-03T00:00:00.000Z"),
+        ...receipt("a"),
+      },
+    ]);
+    prismaMock.externalUsageEventDailyRollup.findMany.mockResolvedValueOnce([
+      {
+        provider: "anthropic",
+        environment: null,
+        projectId: null,
+        eventCount: 2,
+        pricedEventCount: 2,
+        unpricedEventCount: 0,
+        unclassifiedCostEventCount: 0,
+        totalCostUsd: 34.75,
+        totalRequests: 0,
+        totalQuantity: 0,
+        maxLimit: null,
+        limitWindow: null,
+        latestOccurredAt: new Date("2026-06-30T00:00:00.000Z"),
+        ...receipt("b"),
+      },
+    ]);
+    const summary = await summarizeExternalUsageEvents(
+      new Date("2026-06-01T00:00:00.000Z"),
+      new Date("2026-07-01T00:00:00.000Z")
+    );
+    expect(summary.groups).toEqual([
+      expect.objectContaining({
+        receiptCashPaidUsd: 47.25,
+        totalCostUsd: 0,
+        estimatedApiEquivalentUsd: 0,
       }),
     ]);
   });

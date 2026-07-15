@@ -156,6 +156,10 @@ describe("DashboardProviderWorkspace", () => {
     const html = renderWorkspace([
       provider("account-one", {
         spentUsd: 100,
+        receiptCashPaidUsd: 47.25,
+        receiptCashEventCount: 3,
+        observedVariableUsageUsd: 40,
+        estimatedApiEquivalentUsd: 9_000,
         projectedEomUsd: 150,
         plan: {
           fixedMonthlyCostUsd: null,
@@ -196,6 +200,8 @@ describe("DashboardProviderWorkspace", () => {
 
     expect(html).toContain("Not aggregated");
     expect(html).toContain("$100.00 spent");
+    expect(html).toContain("$47.25 receipt cash");
+    expect(html).toContain("$9,000.00 Claude estimate excluded");
     expect(html).toContain("$200.00 spent");
     expect(html).toContain("$50.00 budget");
     expect(html).toContain("$75.00 budget");

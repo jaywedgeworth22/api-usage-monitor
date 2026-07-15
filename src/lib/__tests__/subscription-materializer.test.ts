@@ -341,6 +341,102 @@ describe("materializeDueSubscriptions + project attribution (integration)", () =
     });
   });
 
+  it("max-reconciles prepaid receipt cash with observed usage and adds the subscription period", async () => {
+    const provider = await prisma.provider.create({
+      data: {
+        name: "anthropic",
+        displayName: "Anthropic individual",
+        type: "push",
+        refreshIntervalMin: 60,
+      },
+    });
+    await prisma.usageSnapshot.create({
+      data: { providerId: provider.id, fetchedAt: NOW, totalCost: 42 },
+    });
+    await prisma.externalUsageEvent.createMany({
+      data: [
+        {
+          idempotencyKey: `billing-receipt:v1:${"a".repeat(64)}`,
+          sourceApp: "billing-receipt-import",
+          provider: "anthropic",
+          service: "api-prepaid-funding",
+          label: "receipt_cash_paid",
+          keyRef: `provider:${provider.id}:billing-receipt:${"a".repeat(64)}`,
+          billingMode: "actual",
+          metricType: "cost",
+          unit: "usd",
+          confidence: "actual",
+          costUsd: 47.25,
+          occurredAt: NOW,
+        },
+        {
+          idempotencyKey: `billing-receipt:v1:${"d".repeat(64)}`,
+          sourceApp: "billing-receipt-import",
+          provider: "anthropic",
+          service: "api-prepaid-funding",
+          label: "receipt_cash_paid",
+          keyRef: `provider:${provider.id}:billing-receipt:${"d".repeat(64)}`,
+          billingMode: "actual",
+          metricType: "cost",
+          unit: "usd",
+          confidence: "actual",
+          costUsd: 19,
+          occurredAt: new Date("2026-06-30T23:59:59.999Z"),
+        },
+        {
+          idempotencyKey: `billing-receipt:v1:${"e".repeat(64)}`,
+          sourceApp: "billing-receipt-import",
+          provider: "anthropic",
+          service: "api-prepaid-funding",
+          label: "receipt_cash_paid",
+          keyRef: `provider:${provider.id}:billing-receipt:${"e".repeat(64)}`,
+          billingMode: "actual",
+          metricType: "cost",
+          unit: "usd",
+          confidence: "actual",
+          costUsd: 91,
+          occurredAt: new Date("2026-07-15T12:06:00.000Z"),
+        },
+        {
+          idempotencyKey: "observed-api-usage-budget-test",
+          sourceApp: "socratic-trade",
+          provider: "anthropic",
+          service: "messages",
+          billingMode: "actual",
+          metricType: "cost",
+          costUsd: 45,
+          occurredAt: NOW,
+        },
+        {
+          idempotencyKey: "claude-estimate-budget-test",
+          sourceApp: "claude-code",
+          provider: "anthropic",
+          service: "claude-code",
+          billingMode: "estimated",
+          metricType: "cost",
+          costUsd: 9_000,
+          occurredAt: NOW,
+        },
+      ],
+    });
+    await createSubscription(provider.id, { costUsd: 200 });
+    await materializeDueSubscriptions(NOW);
+
+    const status = await computeBudgetStatus(NOW);
+    const anthropic = status.providers.find((row) => row.id === provider.id)!;
+    expect(anthropic).toMatchObject({
+      receiptCashPaidUsd: 47.25,
+      receiptCashEventCount: 1,
+      observedVariableUsageUsd: 45,
+      subscriptionMonthToDateUsd: 200,
+      fixedAccruedUsd: 200,
+      estimatedApiEquivalentUsd: 9_000,
+      spentUsd: 247.25,
+      projectedEomUsd: 247.25,
+      spendCoverage: "complete",
+    });
+  });
+
   it("keeps priced pushed-only Anthropic cash spend explicitly incomplete", async () => {
     const provider = await prisma.provider.create({
       data: {
