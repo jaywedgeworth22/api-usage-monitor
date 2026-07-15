@@ -1,5 +1,6 @@
 import crypto from "crypto";
 import { prisma } from "@/lib/prisma";
+import { withInternalUsageWriteAdmission } from "@/lib/ingest-admission";
 
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 const DEFAULT_SNAPSHOT_RETENTION_DAYS = 45;
@@ -442,47 +443,49 @@ async function pruneUsageSnapshots(
 
     const groups = groupSnapshotRows(rows);
     const ids = rows.map((row) => row.id);
-    await prisma.$transaction(async (tx) => {
-      for (const group of groups) {
-        const existing = await tx.usageSnapshotDailyRollup.findUnique({
-          where: { providerId_day: { providerId: group.providerId, day: group.day } },
-          select: {
-            providerId: true,
-            day: true,
-            sampleCount: true,
-            firstFetchedAt: true,
-            lastFetchedAt: true,
-            latestBalance: true,
-            latestTotalCost: true,
-            latestTotalRequests: true,
-            latestCredits: true,
-            minBalance: true,
-            maxBalance: true,
-            maxTotalCost: true,
-            maxTotalRequests: true,
-          },
-        });
-        const merged = mergeSnapshotRollup(existing, group);
-        await tx.usageSnapshotDailyRollup.upsert({
-          where: { providerId_day: { providerId: group.providerId, day: group.day } },
-          create: merged,
-          update: {
-            sampleCount: merged.sampleCount,
-            firstFetchedAt: merged.firstFetchedAt,
-            lastFetchedAt: merged.lastFetchedAt,
-            latestBalance: merged.latestBalance,
-            latestTotalCost: merged.latestTotalCost,
-            latestTotalRequests: merged.latestTotalRequests,
-            latestCredits: merged.latestCredits,
-            minBalance: merged.minBalance,
-            maxBalance: merged.maxBalance,
-            maxTotalCost: merged.maxTotalCost,
-            maxTotalRequests: merged.maxTotalRequests,
-          },
-        });
-      }
-      await tx.usageSnapshot.deleteMany({ where: { id: { in: ids } } });
-    });
+    await withInternalUsageWriteAdmission(() =>
+      prisma.$transaction(async (tx) => {
+        for (const group of groups) {
+          const existing = await tx.usageSnapshotDailyRollup.findUnique({
+            where: { providerId_day: { providerId: group.providerId, day: group.day } },
+            select: {
+              providerId: true,
+              day: true,
+              sampleCount: true,
+              firstFetchedAt: true,
+              lastFetchedAt: true,
+              latestBalance: true,
+              latestTotalCost: true,
+              latestTotalRequests: true,
+              latestCredits: true,
+              minBalance: true,
+              maxBalance: true,
+              maxTotalCost: true,
+              maxTotalRequests: true,
+            },
+          });
+          const merged = mergeSnapshotRollup(existing, group);
+          await tx.usageSnapshotDailyRollup.upsert({
+            where: { providerId_day: { providerId: group.providerId, day: group.day } },
+            create: merged,
+            update: {
+              sampleCount: merged.sampleCount,
+              firstFetchedAt: merged.firstFetchedAt,
+              lastFetchedAt: merged.lastFetchedAt,
+              latestBalance: merged.latestBalance,
+              latestTotalCost: merged.latestTotalCost,
+              latestTotalRequests: merged.latestTotalRequests,
+              latestCredits: merged.latestCredits,
+              minBalance: merged.minBalance,
+              maxBalance: merged.maxBalance,
+              maxTotalCost: merged.maxTotalCost,
+              maxTotalRequests: merged.maxTotalRequests,
+            },
+          });
+        }
+        await tx.usageSnapshot.deleteMany({ where: { id: { in: ids } } });
+      })
+    );
 
     result.scanned += rows.length;
     result.pruned += rows.length;
@@ -503,7 +506,8 @@ async function pruneExternalUsageEvents(
     // deletion. Ingest retries can backfill a previously-null projectId; if
     // selection happened before this transaction, retention could aggregate
     // the old attribution and then delete the newly-attributed raw row.
-    const batch = await prisma.$transaction(async (tx) => {
+    const batch = await withInternalUsageWriteAdmission(() =>
+      prisma.$transaction(async (tx) => {
       const rows = await tx.externalUsageEvent.findMany({
         where: { occurredAt: { lt: cutoff } },
         orderBy: { occurredAt: "asc" },
@@ -597,13 +601,14 @@ async function pruneExternalUsageEvents(
         });
       }
       await tx.externalUsageEvent.deleteMany({ where: { id: { in: ids } } });
-      return {
-        scanned: rows.length,
-        pruned: rows.length,
-        rollupsTouched: groups.length,
-        tombstonesWritten: rows.length,
-      };
-    }, { timeout: 30_000 });
+        return {
+          scanned: rows.length,
+          pruned: rows.length,
+          rollupsTouched: groups.length,
+          tombstonesWritten: rows.length,
+        };
+      }, { timeout: 30_000 })
+    );
 
     if (batch.scanned === 0) break;
 
@@ -657,8 +662,10 @@ export async function runDataRetentionMaintenance(now = new Date()): Promise<Dat
   let compactionError: string | undefined;
   if (prunedRows > 0 && isAutomaticVacuumEnabled()) {
     try {
-      await prisma.$executeRawUnsafe("PRAGMA wal_checkpoint(TRUNCATE)");
-      await prisma.$executeRawUnsafe("VACUUM");
+      await withInternalUsageWriteAdmission(async () => {
+        await prisma.$executeRawUnsafe("PRAGMA wal_checkpoint(TRUNCATE)");
+        await prisma.$executeRawUnsafe("VACUUM");
+      });
       compacted = true;
     } catch (error) {
       compactionError = error instanceof Error ? error.message : "SQLite compaction failed";

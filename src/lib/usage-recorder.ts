@@ -17,6 +17,7 @@ import {
   isRetryablePartialSnapshot,
   withSnapshotSyncFailure,
 } from "@/lib/snapshot-sync-status";
+import { withInternalUsageWriteAdmission } from "@/lib/ingest-admission";
 
 const DEFAULT_PROVIDER_TIMEOUT_MS = 90_000;
 const providerAttemptTokens = new Map<string, symbol>();
@@ -52,43 +53,46 @@ export async function recordProviderUsage(
     const usage = await fetchProviderUsage(provider);
     assertProviderAttemptCurrent(provider.id, attemptToken, signal);
 
-    const snapshot = await prisma.$transaction(async (tx) => {
-      const billingSyncs = [
-        ...(usage.externalBilling ? [usage.externalBilling] : []),
-        ...(usage.externalBillingSyncs ?? []),
-      ];
-      for (const sync of billingSyncs) {
-        assertProviderAttemptCurrent(provider.id, attemptToken, signal);
-        await reconcileProviderExternalBilling(provider.id, sync, tx);
-      }
+    const snapshot = await withInternalUsageWriteAdmission(async () => {
+      assertProviderAttemptCurrent(provider.id, attemptToken, signal);
+      return prisma.$transaction(async (tx) => {
+        const billingSyncs = [
+          ...(usage.externalBilling ? [usage.externalBilling] : []),
+          ...(usage.externalBillingSyncs ?? []),
+        ];
+        for (const sync of billingSyncs) {
+          assertProviderAttemptCurrent(provider.id, attemptToken, signal);
+          await reconcileProviderExternalBilling(provider.id, sync, tx);
+        }
 
-      assertProviderAttemptCurrent(provider.id, attemptToken, signal);
-      const snapshot = await tx.usageSnapshot.create({
-        data: {
-          providerId: provider.id,
-          fetchedAt: new Date(),
-          balance: usage.balance,
-          totalCost: usage.totalCost,
-          fixedCostIncludedUsd: usage.fixedCostIncludedUsd,
-          costWindowStart: usage.costWindowStart
-            ? new Date(usage.costWindowStart)
-            : null,
-          costWindowEnd: usage.costWindowEnd
-            ? new Date(usage.costWindowEnd)
-            : null,
-          costScope: usage.costScope,
-          costIncludesUnknownFixed: usage.costIncludesUnknownFixed ?? false,
-          totalRequests: usage.totalRequests,
-          credits: usage.credits,
-          rawData:
-            withSnapshotSyncFailure(usage.rawData, usage.postPersistError) ??
-            undefined,
-        },
+        assertProviderAttemptCurrent(provider.id, attemptToken, signal);
+        const snapshot = await tx.usageSnapshot.create({
+          data: {
+            providerId: provider.id,
+            fetchedAt: new Date(),
+            balance: usage.balance,
+            totalCost: usage.totalCost,
+            fixedCostIncludedUsd: usage.fixedCostIncludedUsd,
+            costWindowStart: usage.costWindowStart
+              ? new Date(usage.costWindowStart)
+              : null,
+            costWindowEnd: usage.costWindowEnd
+              ? new Date(usage.costWindowEnd)
+              : null,
+            costScope: usage.costScope,
+            costIncludesUnknownFixed: usage.costIncludesUnknownFixed ?? false,
+            totalRequests: usage.totalRequests,
+            credits: usage.credits,
+            rawData:
+              withSnapshotSyncFailure(usage.rawData, usage.postPersistError) ??
+              undefined,
+          },
+        });
+        // A newer attempt may have started while SQLite was awaiting the INSERT.
+        // Throwing here rolls the whole transaction back, including billing syncs.
+        assertProviderAttemptCurrent(provider.id, attemptToken, signal);
+        return snapshot;
       });
-      // A newer attempt may have started while SQLite was awaiting the INSERT.
-      // Throwing here rolls the whole transaction back, including billing syncs.
-      assertProviderAttemptCurrent(provider.id, attemptToken, signal);
-      return snapshot;
     });
     if (usage.postPersistError) throw usage.postPersistError;
     return snapshot;

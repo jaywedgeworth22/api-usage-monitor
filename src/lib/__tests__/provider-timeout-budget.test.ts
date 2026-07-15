@@ -523,4 +523,37 @@ describe("fetchAllDueProviders per-provider timeout budget", () => {
       })
     );
   });
+
+  it("drops a provider result aborted while its database write is queued", async () => {
+    fetchProviderUsage.mockResolvedValue({
+      balance: 1,
+      totalCost: 2,
+      totalRequests: 3,
+      credits: null,
+      rawData: {},
+    });
+
+    const [{ recordProviderUsage }, { tryAcquireIngestAdmission }] = await Promise.all([
+      import("@/lib/usage-recorder"),
+      import("@/lib/ingest-admission"),
+    ]);
+    const releaseHttpWriter = tryAcquireIngestAdmission();
+    expect(releaseHttpWriter).not.toBeNull();
+
+    const controller = new AbortController();
+    const pending = recordProviderUsage(
+      providerRow("queued-abort") as never,
+      controller.signal
+    );
+    await Promise.resolve();
+    await Promise.resolve();
+    controller.abort();
+    releaseHttpWriter?.();
+
+    await expect(pending).rejects.toMatchObject({ code: "SUPERSEDED" });
+    expect(create).not.toHaveBeenCalled();
+    const releaseAfterAbort = tryAcquireIngestAdmission();
+    expect(releaseAfterAbort).not.toBeNull();
+    releaseAfterAbort?.();
+  });
 });

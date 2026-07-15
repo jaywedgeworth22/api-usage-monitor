@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
+  acquireInternalUsageWriteAdmission,
   isOtlpMetricsIngestEnabled,
   tryAcquireIngestAdmission,
+  withInternalUsageWriteAdmission,
 } from "../ingest-admission";
 
 describe("ingest admission", () => {
@@ -34,5 +36,68 @@ describe("ingest admission", () => {
     releaseFirst?.();
     expect(tryAcquireIngestAdmission()).toBeNull();
     releaseSecond?.();
+  });
+
+  it("hands queued internal writers off FIFO before admitting new HTTP work", async () => {
+    const releaseExternal = tryAcquireIngestAdmission();
+    expect(releaseExternal).not.toBeNull();
+
+    const order: string[] = [];
+    let releaseFirst: (() => void) | undefined;
+    let releaseSecond: (() => void) | undefined;
+    const first = acquireInternalUsageWriteAdmission().then((release) => {
+      order.push("first");
+      releaseFirst = release;
+    });
+    const second = acquireInternalUsageWriteAdmission().then((release) => {
+      order.push("second");
+      releaseSecond = release;
+    });
+
+    expect(tryAcquireIngestAdmission()).toBeNull();
+    releaseExternal?.();
+    await first;
+    expect(order).toEqual(["first"]);
+    expect(tryAcquireIngestAdmission()).toBeNull();
+
+    releaseFirst?.();
+    await second;
+    expect(order).toEqual(["first", "second"]);
+    expect(tryAcquireIngestAdmission()).toBeNull();
+
+    releaseSecond?.();
+    const releaseAfterQueue = tryAcquireIngestAdmission();
+    expect(releaseAfterQueue).not.toBeNull();
+    releaseAfterQueue?.();
+  });
+
+  it("releases internal admission when queued work throws", async () => {
+    await expect(
+      withInternalUsageWriteAdmission(async () => {
+        throw new Error("write failed");
+      })
+    ).rejects.toThrow("write failed");
+
+    const release = tryAcquireIngestAdmission();
+    expect(release).not.toBeNull();
+    release?.();
+  });
+
+  it("reuses an inherited internal lease instead of deadlocking nested writes", async () => {
+    const order: string[] = [];
+
+    await withInternalUsageWriteAdmission(async () => {
+      order.push("outer-start");
+      await withInternalUsageWriteAdmission(async () => {
+        order.push("nested");
+      });
+      expect(tryAcquireIngestAdmission()).toBeNull();
+      order.push("outer-end");
+    });
+
+    expect(order).toEqual(["outer-start", "nested", "outer-end"]);
+    const release = tryAcquireIngestAdmission();
+    expect(release).not.toBeNull();
+    release?.();
   });
 });

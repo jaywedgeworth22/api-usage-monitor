@@ -31,6 +31,7 @@ import {
   runUsageRetention,
   startOfUtcDay,
 } from "../usage-retention";
+import { tryAcquireIngestAdmission } from "../ingest-admission";
 
 const ORIGINAL_ENV = { ...process.env };
 
@@ -95,6 +96,30 @@ describe("usage-retention wrapper", () => {
     expect(
       isAutomaticVacuumEnabled({ DATA_RETENTION_ENABLE_VACUUM: "unexpected" })
     ).toBe(false);
+  });
+
+  it("does not hold write admission while a retention scan is waiting on a read", async () => {
+    prismaMock.provider.findMany.mockResolvedValue([]);
+    let resolveSnapshotScan: ((rows: never[]) => void) | undefined;
+    prismaMock.usageSnapshot.findMany.mockImplementationOnce(
+      () => new Promise<never[]>((resolve) => { resolveSnapshotScan = resolve; })
+    );
+    prismaMock.externalUsageEvent.findMany.mockResolvedValue([]);
+
+    const retention = runUsageRetention(new Date("2026-07-04T12:00:00.000Z"));
+    await vi.waitFor(() =>
+      expect(prismaMock.usageSnapshot.findMany).toHaveBeenCalledOnce()
+    );
+
+    const releaseHttpWriter = tryAcquireIngestAdmission();
+    expect(releaseHttpWriter).not.toBeNull();
+    releaseHttpWriter?.();
+    resolveSnapshotScan?.([]);
+
+    await expect(retention).resolves.toMatchObject({
+      usageSnapshots: { scanned: 0, pruned: 0 },
+      externalUsageEvents: { scanned: 0, pruned: 0 },
+    });
   });
 
   it("aggregates old rows before pruning them", async () => {
