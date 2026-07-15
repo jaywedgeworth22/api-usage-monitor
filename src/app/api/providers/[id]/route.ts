@@ -15,7 +15,10 @@ import {
   providerConfigForServer,
   splitProviderConfig,
 } from "@/lib/provider-secret-config";
-import { hasStoredAnthropicAdminApiKey } from "@/lib/anthropic-credentials";
+import {
+  hasStoredAnthropicAdminApiKey,
+  providerPollSnapshotExpected,
+} from "@/lib/anthropic-credentials";
 import {
   deriveGeminiBillingStatus,
   deriveGeminiKeyStatus,
@@ -182,10 +185,25 @@ export async function GET(
   const alertState = buildProviderAlertState({
     isActive: provider.isActive,
     refreshIntervalMin: provider.refreshIntervalMin,
+    snapshotExpected: providerPollSnapshotExpected({
+      name: provider.name,
+      type: provider.type,
+      apiKey,
+      config,
+      secretConfig,
+    }),
     plan: provider.plan,
     latestSnapshot,
   });
   const canonicalBudget = budget.providers.find((entry) => entry.id === id);
+  const nonBudgetAlerts = alertState.alerts.filter(
+    (alert) =>
+      alert.code !== "budget_exceeded" && alert.code !== "budget_warning"
+  );
+  const alerts =
+    canonicalBudget && provider.isActive
+      ? [...nonBudgetAlerts, ...canonicalBudget.alerts]
+      : alertState.alerts;
   const duplicateProviderIds = providerNames
     .filter(
       (entry) =>
@@ -208,7 +226,7 @@ export async function GET(
       secretConfig,
     }),
     latestSnapshot,
-    alerts: canonicalBudget?.alerts ?? alertState.alerts,
+    alerts,
     estimatedMonthlyCostUsd: alertState.estimatedMonthlyCostUsd,
     spentUsd: canonicalBudget?.spentUsd ?? latestSnapshot?.totalCost ?? 0,
     snapshotCostUsd:

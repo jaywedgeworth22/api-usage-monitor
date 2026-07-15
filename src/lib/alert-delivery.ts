@@ -2027,6 +2027,7 @@ export async function deliverProviderAlerts(options: {
     select: {
       id: true,
       name: true,
+      type: true,
       displayName: true,
       apiKey: true,
       config: true,

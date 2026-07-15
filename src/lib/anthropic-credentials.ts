@@ -15,10 +15,23 @@ export function isAnthropicAdminApiKey(value: unknown): value is string {
 
 interface StoredProviderCredentials {
   name: string;
+  type?: string | null;
   apiKey?: string | null;
   config?: unknown;
   secretConfig?: string | null;
 }
+
+const NO_POLL_SNAPSHOT_PROVIDER_KEYS = new Set([
+  "voyage",
+  "fmp",
+  "finnhub",
+  "alphavantage",
+  "marketstack",
+  "tiingo",
+  "massive",
+  "fred",
+  "robinhood",
+]);
 
 /**
  * Derive Anthropic billing capability without returning credential material.
@@ -56,7 +69,14 @@ export function hasStoredAnthropicAdminApiKey(
 export function providerPollSnapshotExpected(
   provider: StoredProviderCredentials
 ): boolean {
-  return canonicalProviderKey(provider.name) !== "anthropic"
+  const providerType = provider.type?.trim().toLowerCase();
+  if (providerType === "generic" || providerType === "push") return false;
+  if (providerType === "custom") return true;
+
+  const providerKey = canonicalProviderKey(provider.name);
+  if (NO_POLL_SNAPSHOT_PROVIDER_KEYS.has(providerKey)) return false;
+
+  return providerKey !== "anthropic"
     ? true
     : hasStoredAnthropicAdminApiKey(provider);
 }

@@ -336,3 +336,61 @@ describe("GET /api/providers/:id Gemini key status", () => {
     ]);
   });
 });
+
+describe("GET /api/providers alert visibility", () => {
+  it("keeps budget alerts visible without snapshot noise for blind providers", async () => {
+    const provider = await prisma.provider.create({
+      data: {
+        name: "fmp",
+        displayName: "FMP",
+        type: "builtin",
+        refreshIntervalMin: 60,
+        plan: {
+          create: {
+            billingMode: "actual",
+            fixedMonthlyCostUsd: 15,
+            monthlyBudgetUsd: 10,
+          },
+        },
+      },
+    });
+
+    const detailResponse = await GET(
+      new NextRequest(
+        `https://usage.jays.services/api/providers/${provider.id}`
+      ),
+      { params: Promise.resolve({ id: provider.id }) }
+    );
+    const detailBody = await detailResponse.json();
+
+    expect(detailResponse.status).toBe(200);
+    expect(detailBody.alerts).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ code: "budget_exceeded" }),
+      ])
+    );
+    expect(detailBody.alerts).not.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ code: "missing_snapshot" }),
+      ])
+    );
+
+    const collectionResponse = await GET_COLLECTION();
+    const collectionBody = await collectionResponse.json();
+    const collectionProvider = collectionBody.find(
+      (entry: { id?: unknown }) => entry.id === provider.id
+    );
+
+    expect(collectionResponse.status).toBe(200);
+    expect(collectionProvider.alerts).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ code: "budget_exceeded" }),
+      ])
+    );
+    expect(collectionProvider.alerts).not.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ code: "missing_snapshot" }),
+      ])
+    );
+  });
+});
