@@ -12,9 +12,40 @@ import {
   hasProviderSecrets,
   mergeProviderConfig,
   providerConfigForClient,
+  providerConfigForServer,
   splitProviderConfig,
 } from "@/lib/provider-secret-config";
 import { hasStoredAnthropicAdminApiKey } from "@/lib/anthropic-credentials";
+import {
+  deriveGeminiBillingStatus,
+  deriveGeminiKeyStatus,
+} from "@/lib/gemini-key-status";
+import { projectGeminiExternalBillingForClient } from "@/lib/gemini-external-billing";
+
+function decryptKey(encryptedKey: string | null): string | null {
+  if (!encryptedKey) return null;
+  try {
+    return decrypt(encryptedKey);
+  } catch {
+    return null;
+  }
+}
+
+function buildKeyPreview(decryptedKey: string | null): string | null {
+  if (!decryptedKey || decryptedKey.length <= 10) return null;
+  return `${decryptedKey.slice(0, 6)}...${decryptedKey.slice(-4)}`;
+}
+
+function serverConfig(
+  config: unknown,
+  encryptedSecretConfig: string | null
+): Record<string, unknown> | null {
+  try {
+    return providerConfigForServer(config, encryptedSecretConfig);
+  } catch {
+    return null;
+  }
+}
 
 export async function GET(
   _request: NextRequest,
@@ -83,6 +114,7 @@ export async function GET(
           costIncludesUnknownFixed: true,
           totalRequests: true,
           credits: true,
+          rawData: true,
           fetchedAt: true,
         },
       },
@@ -96,9 +128,57 @@ export async function GET(
     return NextResponse.json({ error: "Not found" }, { status: 404 });
   }
 
+  const geminiStatusSnapshot =
+    provider.type.trim().toLowerCase() === "builtin" &&
+    canonicalProviderKey(provider.name) === "google-ai"
+      ? await prisma.usageSnapshot.findFirst({
+          where: {
+            providerId: provider.id,
+            rawData: { not: Prisma.DbNull },
+          },
+          orderBy: { fetchedAt: "desc" },
+          select: { rawData: true, fetchedAt: true },
+        })
+      : null;
+
   const { snapshots, apiKey, config, secretConfig, ...rest } = provider;
   const clientConfig = providerConfigForClient(config, secretConfig);
-  const latestSnapshot = snapshots[0] ?? null;
+  const latestSnapshotWithRawData = snapshots[0] ?? null;
+  const latestSnapshot = latestSnapshotWithRawData
+    ? {
+        balance: latestSnapshotWithRawData.balance,
+        totalCost: latestSnapshotWithRawData.totalCost,
+        fixedCostIncludedUsd: latestSnapshotWithRawData.fixedCostIncludedUsd,
+        costWindowStart: latestSnapshotWithRawData.costWindowStart,
+        costWindowEnd: latestSnapshotWithRawData.costWindowEnd,
+        costScope: latestSnapshotWithRawData.costScope,
+        costIncludesUnknownFixed:
+          latestSnapshotWithRawData.costIncludesUnknownFixed,
+        totalRequests: latestSnapshotWithRawData.totalRequests,
+        credits: latestSnapshotWithRawData.credits,
+        fetchedAt: latestSnapshotWithRawData.fetchedAt,
+      }
+    : null;
+  const decryptedKey = decryptKey(apiKey);
+  const adapterConfig = serverConfig(config, secretConfig);
+  const geminiBillingStatus = deriveGeminiBillingStatus({
+    providerName: provider.name,
+    providerType: provider.type,
+    billingConfig: adapterConfig,
+    latestSnapshot: geminiStatusSnapshot,
+  });
+  const geminiKeyStatus = deriveGeminiKeyStatus({
+    providerName: provider.name,
+    providerType: provider.type,
+    apiKey: decryptedKey,
+    apiKeyConfigured: apiKey != null,
+    latestSnapshot: geminiStatusSnapshot,
+  });
+  const externalBilling = projectGeminiExternalBillingForClient(
+    rest.externalBilling,
+    geminiBillingStatus,
+    geminiKeyStatus
+  );
   const alertState = buildProviderAlertState({
     isActive: provider.isActive,
     refreshIntervalMin: provider.refreshIntervalMin,
@@ -116,19 +196,11 @@ export async function GET(
 
   return NextResponse.json({
     ...rest,
+    externalBilling,
     ...clientConfig,
-    keyPreview: apiKey
-      ? (() => {
-          try {
-            const decrypted = decrypt(apiKey);
-            return decrypted.length > 10
-              ? `${decrypted.slice(0, 6)}...${decrypted.slice(-4)}`
-              : null;
-          } catch {
-            return null;
-          }
-        })()
-      : null,
+    keyPreview: buildKeyPreview(decryptedKey),
+    geminiKeyStatus,
+    geminiBillingStatus,
     anthropicAdminApiConfigured: hasStoredAnthropicAdminApiKey({
       name: provider.name,
       apiKey,

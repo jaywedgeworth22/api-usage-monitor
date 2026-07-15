@@ -56,6 +56,31 @@ describe("ProviderIntegrationDrawer", () => {
     expect(html).toContain("SSRF-checked");
   });
 
+  it.each([
+    ["generic", "manual-service"],
+    ["push", "voyage"],
+  ])("marks %s provider polling as not applicable", (providerType, providerName) => {
+    const html = renderToStaticMarkup(
+      createElement(ProviderIntegrationDrawer, {
+        providerName,
+        providerType,
+        displayName: "Push/manual service",
+        instanceState: {
+          isActive: true,
+          primaryCredentialConfigured: false,
+          publicConfigFields: [],
+          protectedConfigFields: [],
+          externalBillingRecordCount: 0,
+          externalBillingSources: [],
+        },
+        onClose: vi.fn(),
+      })
+    );
+
+    expect(html).toContain("Not applicable · push/manual");
+    expect(html).not.toContain(">Active<");
+  });
+
   it("shows individual Anthropic billing as skipped instead of broken polling", () => {
     const html = renderToStaticMarkup(
       createElement(ProviderIntegrationDrawer, {
@@ -132,5 +157,120 @@ describe("ProviderIntegrationDrawer", () => {
 
     expect(html).toContain("Inactive");
     expect(html).not.toContain("Skipped · no organization Admin API");
+  });
+
+  it("explains that Gemini key validation is independent from billing", () => {
+    const html = renderToStaticMarkup(
+      createElement(ProviderIntegrationDrawer, {
+        providerName: "google-ai",
+        providerType: "builtin",
+        displayName: "Socratic Trade Gemini",
+        instanceState: {
+          isActive: true,
+          primaryCredentialConfigured: true,
+          keyPreview: "test-k...1234",
+          publicConfigFields: ["billingDataset", "googleProjectId"],
+          protectedConfigFields: ["serviceAccountJson"],
+          protectedConfigReadable: true,
+          lastSnapshotAt: "2026-07-14T23:00:00.000Z",
+          externalBillingRecordCount: 1,
+          externalBillingSources: ["google-cloud-billing-export"],
+          geminiKeyStatus: {
+            state: "invalid",
+            httpStatus: 403,
+            availableModelCount: null,
+            checkedAt: "2026-07-14T23:00:00.000Z",
+          },
+          geminiBillingStatus: {
+            state: "pending",
+            errorCode: null,
+            httpStatus: null,
+            retryable: false,
+            checkedAt: "2026-07-14T23:00:00.000Z",
+          },
+        },
+        onClose: vi.fn(),
+      })
+    );
+
+    expect(html).toContain("Gemini key validation");
+    expect(html).toContain("Rejected by Gemini API · HTTP 403");
+    expect(html).toContain("Generative Language API");
+    expect(html).toContain("Google Cloud Billing sync");
+    expect(html).toContain("Pending · export has not published priced rows yet");
+    expect(html).toContain("Pending is not $0");
+    expect(html).toContain("google-cloud-billing-export");
+  });
+
+  it.each([429, 503])(
+    "explains that a Gemini HTTP %i check failure is temporary",
+    (statusCode) => {
+      const html = renderToStaticMarkup(
+        createElement(ProviderIntegrationDrawer, {
+          providerName: "google-ai",
+          providerType: "builtin",
+          displayName: "Congress Trade Gemini",
+          instanceState: {
+            isActive: true,
+            primaryCredentialConfigured: true,
+            publicConfigFields: [],
+            protectedConfigFields: [],
+            externalBillingRecordCount: 0,
+            externalBillingSources: [],
+            geminiKeyStatus: {
+              state: "unavailable",
+              httpStatus: statusCode,
+              availableModelCount: null,
+              checkedAt: "2026-07-14T23:00:00.000Z",
+            },
+            geminiBillingStatus: {
+              state: "error",
+              errorCode: "HTTP_ERROR",
+              httpStatus: 503,
+              retryable: true,
+              checkedAt: "2026-07-14T23:00:00.000Z",
+            },
+          },
+          onClose: vi.fn(),
+        })
+      );
+
+      expect(html).toContain(`Check unavailable · HTTP ${statusCode}`);
+      expect(html).toContain("transient, quota, or service error");
+      expect(html).toContain("billing sync reports its own result");
+      expect(html).toContain("Failed · HTTP 503 · HTTP_ERROR");
+      expect(html).toContain("same billing configuration remains visible but incomplete");
+      expect(html).toContain("prior configuration is excluded");
+      expect(html).not.toContain("Enable the Generative Language API");
+    }
+  );
+
+  it("distinguishes an unreadable stored Gemini key from a missing key", () => {
+    const html = renderToStaticMarkup(
+      createElement(ProviderIntegrationDrawer, {
+        providerName: "google-ai",
+        providerType: "builtin",
+        displayName: "Gemini",
+        instanceState: {
+          isActive: true,
+          primaryCredentialConfigured: true,
+          publicConfigFields: [],
+          protectedConfigFields: [],
+          externalBillingRecordCount: 0,
+          externalBillingSources: [],
+          geminiKeyStatus: {
+            state: "unreadable",
+            httpStatus: null,
+            availableModelCount: null,
+            checkedAt: null,
+          },
+        },
+        onClose: vi.fn(),
+      })
+    );
+
+    expect(html).toContain("Stored key cannot be decrypted");
+    expect(html).toContain("save the Gemini key again");
+    expect(html).not.toContain("Primary credential</dt><dd class=\"mt-1 font-medium text-gray-900\">Not configured");
   });
 });

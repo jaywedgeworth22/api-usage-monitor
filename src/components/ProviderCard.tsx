@@ -23,9 +23,23 @@ interface ProviderCardProps {
   label?: string | null;
   keyPreview?: string | null;
   anthropicAdminApiConfigured?: boolean;
+  geminiKeyStatus?: {
+    state: "valid" | "invalid" | "unreadable" | "unavailable" | "unchecked" | "not_configured";
+    httpStatus: number | null;
+    availableModelCount: number | null;
+    checkedAt: string | null;
+  } | null;
+  geminiBillingStatus?: {
+    state: "ready" | "pending" | "error" | "configuration_changed" | "unchecked" | "not_configured";
+    errorCode: string | null;
+    httpStatus: number | null;
+    retryable: boolean;
+    checkedAt: string | null;
+  } | null;
   estimatedMonthlyCostUsd?: number;
   projectedEomUsd?: number;
   spentUsd?: number;
+  snapshotCostFetchedAt?: string | null;
   spendCoverage?: ProviderCostCoverage;
   pushedCostCoverage?: ProviderCostCoverage;
   pushedPricedEventCount?: number;
@@ -88,9 +102,12 @@ export default function ProviderCard({
   label,
   keyPreview,
   anthropicAdminApiConfigured,
+  geminiKeyStatus,
+  geminiBillingStatus,
   estimatedMonthlyCostUsd = 0,
   projectedEomUsd = 0,
   spentUsd,
+  snapshotCostFetchedAt,
   spendCoverage,
   pushedUnpricedEventCount = 0,
   pushedUnclassifiedCostEventCount = 0,
@@ -151,6 +168,56 @@ export default function ProviderCard({
           {keyPreview && (
             <p className="text-xs text-gray-400 truncate font-mono">{keyPreview}</p>
           )}
+          {geminiKeyStatus && (
+            <p
+              className={`mt-0.5 text-xs font-medium ${
+                geminiKeyStatus.state === "valid"
+                  ? "text-emerald-700 dark:text-emerald-300"
+                  : geminiKeyStatus.state === "invalid" ||
+                      geminiKeyStatus.state === "unreadable" ||
+                      geminiKeyStatus.state === "not_configured"
+                    ? "text-red-700 dark:text-red-300"
+                    : "text-amber-700 dark:text-amber-300"
+              }`}
+            >
+              {geminiKeyStatus.state === "valid"
+                ? "Gemini key verified"
+                : geminiKeyStatus.state === "invalid"
+                  ? "Gemini key rejected"
+                  : geminiKeyStatus.state === "unreadable"
+                    ? "Gemini key unreadable"
+                  : geminiKeyStatus.state === "not_configured"
+                    ? "Gemini key missing"
+                    : geminiKeyStatus.state === "unavailable"
+                      ? "Gemini key check unavailable"
+                    : "Gemini key unchecked"}
+            </p>
+          )}
+          {geminiBillingStatus && (
+            <p
+              className={`mt-0.5 text-xs font-medium ${
+                geminiBillingStatus.state === "ready"
+                  ? "text-emerald-700 dark:text-emerald-300"
+                  : geminiBillingStatus.state === "error"
+                    ? "text-red-700 dark:text-red-300"
+                    : geminiBillingStatus.state === "not_configured"
+                      ? "text-gray-500 dark:text-gray-400"
+                      : "text-amber-700 dark:text-amber-300"
+              }`}
+            >
+              {geminiBillingStatus.state === "ready"
+                ? "Google billing ready"
+                : geminiBillingStatus.state === "pending"
+                  ? "Google billing pending"
+                  : geminiBillingStatus.state === "error"
+                    ? "Google billing failed"
+                    : geminiBillingStatus.state === "configuration_changed"
+                      ? "Google billing config changed"
+                    : geminiBillingStatus.state === "not_configured"
+                      ? "Google billing not configured"
+                      : "Google billing unchecked"}
+            </p>
+          )}
         </div>
         <div className="ml-auto flex flex-col items-end gap-1 flex-shrink-0">
           <div className="flex items-center gap-1">
@@ -160,7 +227,10 @@ export default function ProviderCard({
               displayName={displayName}
               instanceState={{
                 isActive,
-                primaryCredentialConfigured: Boolean(keyPreview),
+                primaryCredentialConfigured:
+                  Boolean(keyPreview) ||
+                  (geminiKeyStatus != null &&
+                    geminiKeyStatus.state !== "not_configured"),
                 keyPreview,
                 anthropicAdminApiConfigured,
                 publicConfigFields: publicConfigFieldNames(config),
@@ -169,6 +239,8 @@ export default function ProviderCard({
                 lastSnapshotAt: latestSnapshot?.fetchedAt ?? null,
                 externalBillingRecordCount: externalBilling.length,
                 externalBillingSources: [...new Set(externalBilling.map((record) => record.source))].sort(),
+                geminiKeyStatus,
+                geminiBillingStatus,
               }}
             />
             <span className="rounded bg-gray-50 px-2 py-0.5 text-xs font-medium uppercase text-gray-400 dark:bg-gray-700 dark:text-gray-300">
@@ -259,6 +331,11 @@ export default function ProviderCard({
               </p>
             )}
           <p className="text-xs uppercase text-gray-400">{billingMode}</p>
+          {snapshotCostFetchedAt && (
+            <p className="mt-1 text-[10px] text-gray-500 dark:text-gray-400">
+              Cost snapshot fetched {new Date(snapshotCostFetchedAt).toLocaleString()}
+            </p>
+          )}
         </div>
       </div>
 
@@ -285,7 +362,7 @@ export default function ProviderCard({
 
       {latestSnapshot && (
         <p className="mt-3 text-xs text-gray-400 dark:text-gray-500">
-          Last updated: {new Date(latestSnapshot.fetchedAt).toLocaleString()}
+          Latest snapshot: {new Date(latestSnapshot.fetchedAt).toLocaleString()}
         </p>
       )}
     </div>

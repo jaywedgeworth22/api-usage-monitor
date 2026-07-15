@@ -1,3 +1,4 @@
+import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import {
   classifyCostCoverage,
@@ -22,6 +23,8 @@ import {
   isExternalBillingLinkCandidate,
   resolveExternalBillingPeriod,
 } from "@/lib/external-billing-link";
+import { deriveGeminiBillingStatus } from "@/lib/gemini-key-status";
+import { providerConfigForServer } from "@/lib/provider-secret-config";
 
 // Budget-status computation for the read endpoint (GET /api/budget-status).
 //
@@ -93,6 +96,17 @@ function monthStartUtc(now: Date): Date {
   return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
 }
 
+function serverConfig(
+  config: unknown,
+  encryptedSecretConfig: string | null
+): Record<string, unknown> | null {
+  try {
+    return providerConfigForServer(config, encryptedSecretConfig);
+  } catch {
+    return null;
+  }
+}
+
 function monthLabel(now: Date): string {
   const y = now.getUTCFullYear();
   const m = String(now.getUTCMonth() + 1).padStart(2, "0");
@@ -148,6 +162,9 @@ export async function computeBudgetStatus(now: Date = new Date()): Promise<Budge
         id: true,
         name: true,
         displayName: true,
+        type: true,
+        config: true,
+        secretConfig: true,
         isActive: true,
         refreshIntervalMin: true,
         plan: {
@@ -176,6 +193,7 @@ export async function computeBudgetStatus(now: Date = new Date()): Promise<Budge
             costIncludesUnknownFixed: true,
             totalRequests: true,
             credits: true,
+            rawData: true,
             fetchedAt: true,
           },
         },
@@ -249,6 +267,27 @@ export async function computeBudgetStatus(now: Date = new Date()): Promise<Budge
     }),
   ]);
 
+  const geminiProviders = providers.filter(
+    (provider) =>
+      provider.type.trim().toLowerCase() === "builtin" &&
+      canonicalProviderKey(provider.name) === "google-ai"
+  );
+  const geminiStatusSnapshots = new Map(
+    await Promise.all(
+      geminiProviders.map(async (provider) => [
+        provider.id,
+        await prisma.usageSnapshot.findFirst({
+          where: {
+            providerId: provider.id,
+            rawData: { not: Prisma.DbNull },
+          },
+          orderBy: { fetchedAt: "desc" },
+          select: { rawData: true, fetchedAt: true },
+        }),
+      ] as const)
+    )
+  );
+
   const materializedCostBySubscriptionPeriod = new Map<string, number>();
   for (const event of materializedSubscriptionEvents) {
     if (!event.metadata || typeof event.metadata !== "object" || Array.isArray(event.metadata)) {
@@ -286,6 +325,7 @@ export async function computeBudgetStatus(now: Date = new Date()): Promise<Budge
           totalCost: true,
           fixedCostIncludedUsd: true,
           costIncludesUnknownFixed: true,
+          rawData: true,
         },
       })
     : [];
@@ -330,9 +370,34 @@ export async function computeBudgetStatus(now: Date = new Date()): Promise<Budge
   const providerStatuses: ProviderBudgetStatus[] = providers.map((p) => {
     const plan = p.plan;
     const latestSnapshot = p.snapshots[0] ?? null;
+    const currentBillingConfig = serverConfig(p.config, p.secretConfig);
+    const geminiBillingStatus = deriveGeminiBillingStatus({
+      providerName: p.name,
+      providerType: p.type,
+      billingConfig: currentBillingConfig,
+      latestSnapshot: geminiStatusSnapshots.get(p.id) ?? null,
+    });
     const latestCostSnapshot = latestCostByProviderId.get(p.id) ?? null;
+    const geminiCostIdentityStatus = deriveGeminiBillingStatus({
+      providerName: p.name,
+      providerType: p.type,
+      billingConfig: currentBillingConfig,
+      latestSnapshot: latestCostSnapshot,
+    });
     const fixedMonthlyCostUsd = plan?.fixedMonthlyCostUsd ?? 0;
-    const snapshotCostUsd = latestCostSnapshot?.totalCost ?? null;
+    const billingConfigurationChanged =
+      geminiBillingStatus?.state === "configuration_changed" ||
+      geminiCostIdentityStatus?.state === "configuration_changed";
+    const billingSnapshotQuarantined =
+      billingConfigurationChanged ||
+      geminiBillingStatus?.state === "not_configured" ||
+      geminiCostIdentityStatus?.state === "not_configured";
+    // A fingerprint mismatch or removed billing configuration means the prior
+    // snapshot belongs to an identity that is no longer current. Quarantine it
+    // instead of charging old-project dollars to this provider row.
+    const snapshotCostUsd = billingSnapshotQuarantined
+      ? null
+      : latestCostSnapshot?.totalCost ?? null;
     const snapshotFixedCostIncludedUsd = Math.max(
       0,
       Math.min(
@@ -398,7 +463,9 @@ export async function computeBudgetStatus(now: Date = new Date()): Promise<Budge
       linkedMaterializedFixedUsd
     );
     const snapshotCostIncludesUnknownFixed =
-      latestCostSnapshot?.costIncludesUnknownFixed ?? false;
+      snapshotCostUsd != null
+        ? latestCostSnapshot?.costIncludesUnknownFixed ?? false
+        : false;
     const fixedCostConflict =
       (fixedMonthlyCostUsd > 0 &&
         (pushed.subscriptionPushed > 0 || snapshotFixedCostIncludedUsd > 0)) ||
@@ -448,6 +515,12 @@ export async function computeBudgetStatus(now: Date = new Date()): Promise<Budge
     ) {
       spendCoverage = "partial";
     }
+    const geminiBillingIncomplete =
+      geminiBillingStatus != null && geminiBillingStatus.state !== "ready";
+    if (geminiBillingIncomplete && spendCoverage === "complete") {
+      spendCoverage =
+        hasKnownVariableCost || fixedAccruedUsd > 0 ? "partial" : "unknown";
+    }
     const forecastedSubscriptionRenewalsUsd = forecastSubscriptionRenewals(
       p.subscriptions,
       now
@@ -484,6 +557,26 @@ export async function computeBudgetStatus(now: Date = new Date()): Promise<Budge
           "Provider-reported and manual fixed costs may overlap; link or remove the manual entry after reconciling the provider billing record.",
       });
     }
+    if (p.isActive && geminiBillingIncomplete) {
+      const message =
+        billingConfigurationChanged
+          ? "Google Cloud Billing configuration changed; prior-configuration cost is excluded until the new configuration is verified."
+          : geminiBillingStatus.state === "error"
+          ? "Google Cloud Billing sync failed; spend is last known and coverage is incomplete."
+          : geminiBillingStatus.state === "pending"
+            ? "Google Cloud Billing export is pending; pending is not $0 and spend coverage is incomplete."
+            : geminiBillingStatus.state === "unchecked"
+              ? "Google Cloud Billing has not been checked for the current configuration."
+              : "Google Cloud Billing is not configured; Gemini API spend coverage is incomplete.";
+      budgetAlerts.push({
+        code: "billing_sync_incomplete",
+        severity:
+          billingConfigurationChanged || geminiBillingStatus.state === "error"
+            ? "warning"
+            : "info",
+        message,
+      });
+    }
 
     let status: BudgetStatusLevel;
     let remainingUsd: number | null;
@@ -510,7 +603,9 @@ export async function computeBudgetStatus(now: Date = new Date()): Promise<Budge
       monthlyBudgetUsd,
       fixedMonthlyCostUsd,
       snapshotCostUsd,
-      snapshotCostFetchedAt: latestCostSnapshot?.fetchedAt.toISOString() ?? null,
+      snapshotCostFetchedAt: billingSnapshotQuarantined
+        ? null
+        : latestCostSnapshot?.fetchedAt.toISOString() ?? null,
       snapshotFixedCostIncludedUsd,
       snapshotCostIncludesUnknownFixed,
       pushedMonthToDateUsd,

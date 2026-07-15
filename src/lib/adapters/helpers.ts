@@ -21,6 +21,24 @@ export interface UsageResult {
    */
   externalBilling?: AdapterExternalBillingSync;
   externalBillingSyncs?: AdapterExternalBillingSync[];
+  /**
+   * Persist the safe partial result first, then surface this adapter failure to
+   * scheduler/manual-fetch callers. This is used when independent sub-checks
+   * produce useful connection health even though another sub-check failed.
+   */
+  postPersistError?: AdapterError;
+}
+
+/**
+ * Server-side credential state supplied by the adapter router. Adapters should
+ * use this only when separate credentials power independent read channels.
+ * It is never derived from or exposed through provider-supplied config.
+ */
+export interface AdapterInvocationContext {
+  apiKeyConfigured: boolean;
+  apiKeyReadable: boolean;
+  secretConfigConfigured: boolean;
+  secretConfigReadable: boolean;
 }
 
 export interface AdapterExternalBillingRecord {
@@ -174,8 +192,8 @@ function resolveDefaultTimeoutMs(): number {
 }
 
 // Strips query strings from a URL before it can end up in an Error message.
-// Several adapters pass API keys as query params (e.g. google-ai.ts's
-// ?key=...) - those must never leak into persisted fetch-all error arrays
+// Some adapters must pass credentials as query params (for example Pushover's
+// token parameter) - those must never leak into persisted fetch-all error arrays
 // or logs.
 export function redactUrlForError(url: string): string {
   const queryIndex = url.indexOf("?");

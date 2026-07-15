@@ -48,6 +48,19 @@ export interface Provider {
   label: string | null;
   keyPreview?: string | null;
   anthropicAdminApiConfigured?: boolean;
+  geminiKeyStatus?: {
+    state: "valid" | "invalid" | "unreadable" | "unavailable" | "unchecked" | "not_configured";
+    httpStatus: number | null;
+    availableModelCount: number | null;
+    checkedAt: string | null;
+  } | null;
+  geminiBillingStatus?: {
+    state: "ready" | "pending" | "error" | "configuration_changed" | "unchecked" | "not_configured";
+    errorCode: string | null;
+    httpStatus: number | null;
+    retryable: boolean;
+    checkedAt: string | null;
+  } | null;
   plan: ProviderPlan | null;
   allocations: { projectId: string; percentage: number }[];
   externalBilling?: ExternalBillingRecord[];
@@ -55,6 +68,7 @@ export interface Provider {
   alerts: ProviderAlert[];
   estimatedMonthlyCostUsd: number;
   spentUsd?: number;
+  snapshotCostFetchedAt?: string | null;
   projectedEomUsd?: number;
   spendCoverage: ProviderCostCoverage;
   pushedCostCoverage: ProviderCostCoverage;
@@ -327,6 +341,9 @@ function SettingsPageContent() {
       }
       await fetchProviders();
     } catch (err) {
+      // Some adapters persist safe partial connection health before surfacing
+      // an independent billing or transient upstream failure.
+      await fetchProviders();
       setError(err instanceof Error ? err.message : "Failed to fetch");
     } finally {
       setActionLoading(null);

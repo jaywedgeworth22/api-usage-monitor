@@ -108,4 +108,87 @@ describe("ProviderTable cost coverage", () => {
     expect(organizationHtml).toContain("Fetch Now");
     expect(organizationHtml).toContain("Active");
   });
+
+  it("hides Fetch Now for generic and push-only providers", () => {
+    const manualHtml = renderTable([
+      provider({
+        id: "manual",
+        name: "manual-service",
+        displayName: "Manual service",
+        type: "generic",
+      }),
+    ]);
+    const pushHtml = renderTable([
+      provider({
+        id: "push",
+        name: "voyage",
+        displayName: "Voyage push",
+        type: "push",
+      }),
+    ]);
+    const customHtml = renderTable([
+      provider({
+        id: "custom",
+        name: "custom",
+        displayName: "Custom endpoint",
+        type: "custom",
+      }),
+    ]);
+
+    expect(manualHtml).not.toContain("Fetch Now");
+    expect(manualHtml).toContain("Push / manual");
+    expect(pushHtml).not.toContain("Fetch Now");
+    expect(pushHtml).toContain("Push / manual");
+    expect(customHtml).toContain("Fetch Now");
+    expect(customHtml).toContain(">Active<");
+  });
+
+  it("shows Gemini key health separately from billing availability", () => {
+    const rejectedHtml = renderTable([
+      provider({
+        name: "google-ai",
+        displayName: "Google AI",
+        geminiKeyStatus: {
+          state: "invalid",
+          httpStatus: 403,
+          availableModelCount: null,
+          checkedAt: "2026-07-14T23:00:00.000Z",
+        },
+        geminiBillingStatus: {
+          state: "pending",
+          errorCode: null,
+          httpStatus: null,
+          retryable: false,
+          checkedAt: "2026-07-14T23:00:00.000Z",
+        },
+        snapshotCostFetchedAt: "2026-07-10T20:00:00.000Z",
+      }),
+    ]);
+
+    expect(rejectedHtml).toContain("Key rejected");
+    expect(rejectedHtml).toContain("Verify &amp; fetch");
+    expect(rejectedHtml).toContain("Billing pending");
+    expect(rejectedHtml).toContain("Cost snapshot fetched");
+    expect(rejectedHtml).toContain(">Active<");
+  });
+
+  it("shows a transient Gemini check as unavailable instead of rejected", () => {
+    const unavailableHtml = renderTable([
+      provider({
+        name: "google-ai",
+        displayName: "Google AI",
+        geminiKeyStatus: {
+          state: "unavailable",
+          httpStatus: 503,
+          availableModelCount: null,
+          checkedAt: "2026-07-14T23:00:00.000Z",
+        },
+      }),
+    ]);
+
+    expect(unavailableHtml).toContain("Check unavailable");
+    expect(unavailableHtml).toContain("Verify &amp; fetch");
+    expect(unavailableHtml).not.toContain("Key rejected");
+    expect(unavailableHtml).toContain(">Active<");
+  });
 });

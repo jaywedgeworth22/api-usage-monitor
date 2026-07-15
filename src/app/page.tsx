@@ -23,11 +23,25 @@ interface Provider {
   label: string | null;
   keyPreview?: string | null;
   anthropicAdminApiConfigured?: boolean;
+  geminiKeyStatus?: {
+    state: "valid" | "invalid" | "unreadable" | "unavailable" | "unchecked" | "not_configured";
+    httpStatus: number | null;
+    availableModelCount: number | null;
+    checkedAt: string | null;
+  } | null;
+  geminiBillingStatus?: {
+    state: "ready" | "pending" | "error" | "configuration_changed" | "unchecked" | "not_configured";
+    errorCode: string | null;
+    httpStatus: number | null;
+    retryable: boolean;
+    checkedAt: string | null;
+  } | null;
   config?: Record<string, unknown>;
   secretConfigMeta?: { configured: boolean; fields: string[]; readable: boolean };
   estimatedMonthlyCostUsd: number;
   projectedEomUsd: number;
   spentUsd?: number;
+  snapshotCostFetchedAt?: string | null;
   spendCoverage: ProviderCostCoverage;
   pushedCostCoverage: ProviderCostCoverage;
   pushedPricedEventCount: number;
@@ -372,9 +386,12 @@ export default function DashboardPage() {
               anthropicAdminApiConfigured={
                 provider.anthropicAdminApiConfigured
               }
+              geminiKeyStatus={provider.geminiKeyStatus}
+              geminiBillingStatus={provider.geminiBillingStatus}
               estimatedMonthlyCostUsd={provider.estimatedMonthlyCostUsd}
               projectedEomUsd={provider.projectedEomUsd}
               spentUsd={provider.spentUsd}
+              snapshotCostFetchedAt={provider.snapshotCostFetchedAt}
               spendCoverage={provider.spendCoverage}
               pushedCostCoverage={provider.pushedCostCoverage}
               pushedPricedEventCount={provider.pushedPricedEventCount}

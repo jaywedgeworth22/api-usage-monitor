@@ -16,6 +16,7 @@ let materializeDueSubscriptions: typeof import("../subscription-materializer").m
 let computeProjectBudgetStatus: typeof import("../budget-status").computeProjectBudgetStatus;
 let computeBudgetStatus: typeof import("../budget-status").computeBudgetStatus;
 let putSubscription: typeof import("@/app/api/subscriptions/[id]/route").PUT;
+let geminiBillingConfigFingerprint: typeof import("../gemini-key-status").geminiBillingConfigFingerprint;
 
 const NOW = new Date("2026-07-15T12:00:00.000Z");
 
@@ -74,6 +75,7 @@ beforeAll(async () => {
     "../subscription-materializer"
   ));
   ({ computeProjectBudgetStatus, computeBudgetStatus } = await import("../budget-status"));
+  ({ geminiBillingConfigFingerprint } = await import("../gemini-key-status"));
   ({ PUT: putSubscription } = await import("@/app/api/subscriptions/[id]/route"));
 }, 60_000);
 
@@ -533,6 +535,197 @@ describe("materializeDueSubscriptions + project attribution (integration)", () =
     expect(result.snapshotCostUsd).toBe(50);
     expect(result.snapshotCostFetchedAt).toBe("2026-07-10T00:00:00.000Z");
     expect(result.spentUsd).toBe(50);
+  });
+
+  it("marks last-known Gemini cost partial after a newer billing failure", async () => {
+    const billingConfig = {
+      billingDataset: "billing-project.billing_export",
+      googleProjectId: "gemini-production",
+      serviceAccountJson: "test-service-account-json",
+    };
+    const provider = await prisma.provider.create({
+      data: {
+        name: "google-ai",
+        displayName: "Google AI",
+        type: "builtin",
+        config: billingConfig,
+      },
+    });
+    const configFingerprint = geminiBillingConfigFingerprint(billingConfig);
+    await prisma.usageSnapshot.createMany({
+      data: [
+        {
+          providerId: provider.id,
+          fetchedAt: new Date("2026-07-10T00:00:00Z"),
+          totalCost: 50,
+          costWindowStart: new Date("2026-07-01T00:00:00Z"),
+          costScope: "calendar_month_to_date",
+          rawData: {
+            billing: {
+              configured: true,
+              status: "ready",
+              configFingerprint,
+            },
+          },
+        },
+        {
+          providerId: provider.id,
+          fetchedAt: NOW,
+          totalCost: null,
+          rawData: {
+            billing: {
+              configured: true,
+              status: "error",
+              errorCode: "HTTP_ERROR",
+              httpStatus: 503,
+              retryable: true,
+              configFingerprint,
+            },
+          },
+        },
+      ],
+    });
+
+    const status = await computeBudgetStatus(NOW);
+    const result = status.providers.find((item) => item.id === provider.id)!;
+
+    expect(result.snapshotCostUsd).toBe(50);
+    expect(result.snapshotCostFetchedAt).toBe("2026-07-10T00:00:00.000Z");
+    expect(result.spentUsd).toBe(50);
+    expect(result.spendCoverage).toBe("partial");
+    expect(result.alerts).toContainEqual(
+      expect.objectContaining({
+        code: "billing_sync_incomplete",
+        severity: "warning",
+      })
+    );
+  });
+
+  it("quarantines Gemini cost from a previous billing configuration", async () => {
+    const previousConfig = {
+      billingDataset: "billing-project.billing_export",
+      googleProjectId: "old-project",
+      serviceAccountJson: "old-test-service-account-json",
+    };
+    const currentConfig = {
+      ...previousConfig,
+      googleProjectId: "current-project",
+      serviceAccountJson: "current-test-service-account-json",
+    };
+    const provider = await prisma.provider.create({
+      data: {
+        name: "google-ai",
+        displayName: "Google AI",
+        type: "builtin",
+        config: currentConfig,
+      },
+    });
+    await prisma.usageSnapshot.createMany({
+      data: [
+        {
+          providerId: provider.id,
+          fetchedAt: new Date("2026-07-10T00:00:00Z"),
+          totalCost: 50,
+          costWindowStart: new Date("2026-07-01T00:00:00Z"),
+          costScope: "calendar_month_to_date",
+          rawData: {
+            billing: {
+              configured: true,
+              status: "ready",
+              configFingerprint:
+                geminiBillingConfigFingerprint(previousConfig),
+            },
+          },
+        },
+        {
+          providerId: provider.id,
+          fetchedAt: NOW,
+          totalCost: null,
+          rawData: {
+            billing: {
+              configured: true,
+              status: "error",
+              errorCode: "HTTP_ERROR",
+              httpStatus: 503,
+              retryable: true,
+              configFingerprint:
+                geminiBillingConfigFingerprint(currentConfig),
+            },
+          },
+        },
+      ],
+    });
+
+    const status = await computeBudgetStatus(NOW);
+    const result = status.providers.find((item) => item.id === provider.id)!;
+
+    expect(result.snapshotCostUsd).toBeNull();
+    expect(result.snapshotCostFetchedAt).toBeNull();
+    expect(result.spentUsd).toBe(0);
+    expect(result.spendCoverage).toBe("unknown");
+    expect(result.alerts).toContainEqual(
+      expect.objectContaining({
+        code: "billing_sync_incomplete",
+        severity: "warning",
+        message: expect.stringContaining("prior-configuration cost is excluded"),
+      })
+    );
+  });
+
+  it("quarantines prior Gemini cost after billing configuration is removed", async () => {
+    const previousConfig = {
+      billingDataset: "billing-project.billing_export",
+      googleProjectId: "old-project",
+      serviceAccountJson: "old-test-service-account-json",
+    };
+    const provider = await prisma.provider.create({
+      data: {
+        name: "google-ai",
+        displayName: "Google AI",
+        type: "builtin",
+        config: { statusKeyRef: "gemini-primary" },
+      },
+    });
+    await prisma.providerPlan.create({
+      data: { providerId: provider.id, monthlyBudgetUsd: 10 },
+    });
+    await prisma.usageSnapshot.create({
+      data: {
+        providerId: provider.id,
+        fetchedAt: new Date("2026-07-10T00:00:00Z"),
+        totalCost: 50,
+        costWindowStart: new Date("2026-07-01T00:00:00Z"),
+        costScope: "calendar_month_to_date",
+        rawData: {
+          billing: {
+            configured: true,
+            status: "ready",
+            configFingerprint:
+              geminiBillingConfigFingerprint(previousConfig),
+          },
+        },
+      },
+    });
+
+    const status = await computeBudgetStatus(NOW);
+    const result = status.providers.find((item) => item.id === provider.id)!;
+
+    expect(result.snapshotCostUsd).toBeNull();
+    expect(result.snapshotCostFetchedAt).toBeNull();
+    expect(result.spentUsd).toBe(0);
+    expect(result.spendCoverage).toBe("unknown");
+    expect(result.status).toBe("ok");
+    expect(status.summary.totalSpentUsd).toBe(0);
+    expect(result.alerts).not.toContainEqual(
+      expect.objectContaining({ code: "budget_exceeded" })
+    );
+    expect(result.alerts).toContainEqual(
+      expect.objectContaining({
+        code: "billing_sync_incomplete",
+        severity: "info",
+        message: expect.stringContaining("not configured"),
+      })
+    );
   });
 
   it("excludes a prior-month provider cost window after UTC month rollover", async () => {

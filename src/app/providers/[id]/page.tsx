@@ -19,6 +19,19 @@ interface Provider {
   config?: Record<string, unknown>;
   keyPreview?: string | null;
   anthropicAdminApiConfigured?: boolean;
+  geminiKeyStatus?: {
+    state: "valid" | "invalid" | "unreadable" | "unavailable" | "unchecked" | "not_configured";
+    httpStatus: number | null;
+    availableModelCount: number | null;
+    checkedAt: string | null;
+  } | null;
+  geminiBillingStatus?: {
+    state: "ready" | "pending" | "error" | "configuration_changed" | "unchecked" | "not_configured";
+    errorCode: string | null;
+    httpStatus: number | null;
+    retryable: boolean;
+    checkedAt: string | null;
+  } | null;
   secretConfigMeta?: { configured: boolean; fields: string[]; readable: boolean };
   refreshIntervalMin: number;
   isActive: boolean;
@@ -28,6 +41,7 @@ interface Provider {
   spentUsd?: number;
   projectedEomUsd?: number;
   snapshotCostUsd?: number | null;
+  snapshotCostFetchedAt?: string | null;
   pushedMonthToDateUsd?: number;
   pushedCostCoverage: ProviderCostCoverage;
   pushedPricedEventCount: number;
@@ -244,7 +258,10 @@ export default function ProviderDetailPage() {
             className="mt-2"
             instanceState={{
               isActive: provider.isActive,
-              primaryCredentialConfigured: Boolean(provider.keyPreview),
+              primaryCredentialConfigured:
+                Boolean(provider.keyPreview) ||
+                (provider.geminiKeyStatus != null &&
+                  provider.geminiKeyStatus.state !== "not_configured"),
               keyPreview: provider.keyPreview,
               anthropicAdminApiConfigured:
                 provider.anthropicAdminApiConfigured,
@@ -254,6 +271,8 @@ export default function ProviderDetailPage() {
               lastSnapshotAt: provider.latestSnapshot?.fetchedAt ?? latest?.fetchedAt ?? null,
               externalBillingRecordCount: provider.externalBilling?.length ?? 0,
               externalBillingSources: [...new Set((provider.externalBilling ?? []).map((record) => record.source))].sort(),
+              geminiKeyStatus: provider.geminiKeyStatus,
+              geminiBillingStatus: provider.geminiBillingStatus,
             }}
           />
         </div>
@@ -320,6 +339,11 @@ export default function ProviderDetailPage() {
           <p className="text-lg font-semibold text-amber-600 dark:text-amber-300">
             {hasKnownSpend ? formatUsd(canonicalSpendUsd) : "Cost not reported"}
           </p>
+          {provider.snapshotCostFetchedAt && (
+            <p className="text-[10px] text-gray-500 dark:text-gray-400">
+              Cost snapshot fetched {new Date(provider.snapshotCostFetchedAt).toLocaleString()}
+            </p>
+          )}
           {spendCoverage === "partial" && unpricedEventCount > 0 ? (
             <p className="text-[10px] text-amber-600 dark:text-amber-300">
               {unpricedEventCount} unpriced event{unpricedEventCount === 1 ? "" : "s"}

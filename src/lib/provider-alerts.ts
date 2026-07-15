@@ -8,6 +8,7 @@ export interface ProviderAlert {
     | "budget_exceeded"
     | "budget_warning"
     | "fixed_cost_conflict"
+    | "billing_sync_incomplete"
     | "balance_low"
     | "credits_low"
     | "request_limit"

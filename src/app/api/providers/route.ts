@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import type { Prisma } from "@prisma/client";
+import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { encrypt, decrypt, encryptJson } from "@/lib/crypto";
 import { parseProviderCreateInput, readJsonBody } from "@/lib/provider-input";
@@ -10,18 +10,36 @@ import { canonicalProviderKey } from "@/lib/provider-identity";
 import {
   hasProviderSecrets,
   providerConfigForClient,
+  providerConfigForServer,
   splitProviderConfig,
 } from "@/lib/provider-secret-config";
 import { hasStoredAnthropicAdminApiKey } from "@/lib/anthropic-credentials";
+import {
+  deriveGeminiBillingStatus,
+  deriveGeminiKeyStatus,
+} from "@/lib/gemini-key-status";
+import { projectGeminiExternalBillingForClient } from "@/lib/gemini-external-billing";
 
-function buildKeyPreview(encryptedKey: string | null): string | null {
+function decryptKey(encryptedKey: string | null): string | null {
   if (!encryptedKey) return null;
   try {
-    const decrypted = decrypt(encryptedKey);
-    if (decrypted.length <= 10) return null;
-    const first = decrypted.slice(0, 6);
-    const last = decrypted.slice(-4);
-    return `${first}...${last}`;
+    return decrypt(encryptedKey);
+  } catch {
+    return null;
+  }
+}
+
+function buildKeyPreview(decryptedKey: string | null): string | null {
+  if (!decryptedKey || decryptedKey.length <= 10) return null;
+  return `${decryptedKey.slice(0, 6)}...${decryptedKey.slice(-4)}`;
+}
+
+function serverConfig(
+  config: unknown,
+  encryptedSecretConfig: string | null
+): Record<string, unknown> | null {
+  try {
+    return providerConfigForServer(config, encryptedSecretConfig);
   } catch {
     return null;
   }
@@ -104,11 +122,32 @@ export async function GET() {
           costIncludesUnknownFixed: true,
           totalRequests: true,
           credits: true,
+          rawData: true,
           fetchedAt: true,
         },
       },
     },
   }), computeBudgetStatus()]);
+  const geminiProviders = providers.filter(
+    (provider) =>
+      provider.type.trim().toLowerCase() === "builtin" &&
+      canonicalProviderKey(provider.name) === "google-ai"
+  );
+  const geminiStatusSnapshots = new Map(
+    await Promise.all(
+      geminiProviders.map(async (provider) => [
+        provider.id,
+        await prisma.usageSnapshot.findFirst({
+          where: {
+            providerId: provider.id,
+            rawData: { not: Prisma.DbNull },
+          },
+          orderBy: { fetchedAt: "desc" },
+          select: { rawData: true, fetchedAt: true },
+        }),
+      ] as const)
+    )
+  );
   const budgetByProviderId = new Map(
     budget.providers.map((entry) => [entry.id, entry])
   );
@@ -124,7 +163,43 @@ export async function GET() {
   const result = providers.map((p) => {
     const { snapshots, apiKey, config, secretConfig, ...rest } = p;
     const clientConfig = providerConfigForClient(config, secretConfig);
-    const latestSnapshot = snapshots[0] ?? null;
+    const latestSnapshotWithRawData = snapshots[0] ?? null;
+    const latestSnapshot = latestSnapshotWithRawData
+      ? {
+          balance: latestSnapshotWithRawData.balance,
+          totalCost: latestSnapshotWithRawData.totalCost,
+          fixedCostIncludedUsd: latestSnapshotWithRawData.fixedCostIncludedUsd,
+          costWindowStart: latestSnapshotWithRawData.costWindowStart,
+          costWindowEnd: latestSnapshotWithRawData.costWindowEnd,
+          costScope: latestSnapshotWithRawData.costScope,
+          costIncludesUnknownFixed:
+            latestSnapshotWithRawData.costIncludesUnknownFixed,
+          totalRequests: latestSnapshotWithRawData.totalRequests,
+          credits: latestSnapshotWithRawData.credits,
+          fetchedAt: latestSnapshotWithRawData.fetchedAt,
+        }
+      : null;
+    const decryptedKey = decryptKey(apiKey);
+    const adapterConfig = serverConfig(config, secretConfig);
+    const geminiStatusSnapshot = geminiStatusSnapshots.get(p.id) ?? null;
+    const geminiBillingStatus = deriveGeminiBillingStatus({
+      providerName: p.name,
+      providerType: p.type,
+      billingConfig: adapterConfig,
+      latestSnapshot: geminiStatusSnapshot,
+    });
+    const geminiKeyStatus = deriveGeminiKeyStatus({
+      providerName: p.name,
+      providerType: p.type,
+      apiKey: decryptedKey,
+      apiKeyConfigured: apiKey != null,
+      latestSnapshot: geminiStatusSnapshot,
+    });
+    const externalBilling = projectGeminiExternalBillingForClient(
+      rest.externalBilling,
+      geminiBillingStatus,
+      geminiKeyStatus
+    );
     const alertState = buildProviderAlertState({
       isActive: p.isActive,
       refreshIntervalMin: p.refreshIntervalMin,
@@ -138,8 +213,11 @@ export async function GET() {
 
     return {
       ...rest,
+      externalBilling,
       ...clientConfig,
-      keyPreview: buildKeyPreview(apiKey),
+      keyPreview: buildKeyPreview(decryptedKey),
+      geminiKeyStatus,
+      geminiBillingStatus,
       anthropicAdminApiConfigured: hasStoredAnthropicAdminApiKey({
         name: p.name,
         apiKey,

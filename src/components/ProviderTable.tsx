@@ -65,6 +65,9 @@ function providerProfile(provider: Provider) {
 
 function supportsManualFetch(provider: Provider): boolean {
   const profile = providerProfile(provider);
+  if (profile.mode === "manual" || profile.mode === "push-only") {
+    return false;
+  }
   if (profile.name !== "anthropic") return true;
   return provider.anthropicAdminApiConfigured ?? false;
 }
@@ -72,6 +75,108 @@ function supportsManualFetch(provider: Provider): boolean {
 function providerStatusLabel(provider: Provider): string {
   if (!provider.isActive) return "Inactive";
   return supportsManualFetch(provider) ? "Active" : "Push / manual";
+}
+
+function providerStatusStyle(provider: Provider): {
+  badge: string;
+  dot: string;
+} {
+  if (!provider.isActive) {
+    return {
+      badge: "bg-gray-100 text-gray-400 dark:bg-gray-700 dark:text-gray-400",
+      dot: "bg-gray-300",
+    };
+  }
+  if (supportsManualFetch(provider)) {
+    return {
+      badge: "bg-emerald-50 text-emerald-700 dark:bg-emerald-950/60 dark:text-emerald-300",
+      dot: "bg-emerald-500",
+    };
+  }
+  return {
+    badge: "bg-blue-50 text-blue-700 dark:bg-blue-950/60 dark:text-blue-300",
+    dot: "bg-blue-500",
+  };
+}
+
+function geminiKeyStatusPresentation(provider: Provider): {
+  label: string;
+  className: string;
+} | null {
+  switch (provider.geminiKeyStatus?.state) {
+    case "valid":
+      return {
+        label: "Key verified",
+        className: "text-emerald-700 dark:text-emerald-300",
+      };
+    case "invalid":
+      return {
+        label: "Key rejected",
+        className: "text-red-700 dark:text-red-300",
+      };
+    case "unreadable":
+      return {
+        label: "Key unreadable",
+        className: "text-red-700 dark:text-red-300",
+      };
+    case "unavailable":
+      return {
+        label: "Check unavailable",
+        className: "text-amber-700 dark:text-amber-300",
+      };
+    case "unchecked":
+      return {
+        label: "Key unchecked",
+        className: "text-amber-700 dark:text-amber-300",
+      };
+    case "not_configured":
+      return {
+        label: "Key missing",
+        className: "text-red-700 dark:text-red-300",
+      };
+    default:
+      return null;
+  }
+}
+
+function geminiBillingStatusPresentation(provider: Provider): {
+  label: string;
+  className: string;
+} | null {
+  switch (provider.geminiBillingStatus?.state) {
+    case "ready":
+      return {
+        label: "Billing ready",
+        className: "text-emerald-700 dark:text-emerald-300",
+      };
+    case "pending":
+      return {
+        label: "Billing pending",
+        className: "text-amber-700 dark:text-amber-300",
+      };
+    case "error":
+      return {
+        label: "Billing failed",
+        className: "text-red-700 dark:text-red-300",
+      };
+    case "configuration_changed":
+      return {
+        label: "Billing config changed",
+        className: "text-amber-700 dark:text-amber-300",
+      };
+    case "unchecked":
+      return {
+        label: "Billing unchecked",
+        className: "text-amber-700 dark:text-amber-300",
+      };
+    case "not_configured":
+      return {
+        label: "Billing not configured",
+        className: "text-gray-500 dark:text-gray-400",
+      };
+    default:
+      return null;
+  }
 }
 
 function resolvedSpendCoverage(provider: Provider) {
@@ -299,6 +404,10 @@ export default function ProviderTable({
                     const fetchedDate = formatDateObject(provider.latestSnapshot?.fetchedAt ?? null);
                     const spendCoverage = resolvedSpendCoverage(provider);
                     const unpricedCount = unpricedEventCount(provider);
+                    const statusStyle = providerStatusStyle(provider);
+                    const geminiStatus = geminiKeyStatusPresentation(provider);
+                    const geminiBillingStatus =
+                      geminiBillingStatusPresentation(provider);
 
                     return (
                       <tr
@@ -314,7 +423,10 @@ export default function ProviderTable({
                       variant="name"
                       instanceState={{
                         isActive: provider.isActive,
-                        primaryCredentialConfigured: Boolean(provider.keyPreview),
+                        primaryCredentialConfigured:
+                          Boolean(provider.keyPreview) ||
+                          (provider.geminiKeyStatus != null &&
+                            provider.geminiKeyStatus.state !== "not_configured"),
                         keyPreview: provider.keyPreview,
                         anthropicAdminApiConfigured:
                           provider.anthropicAdminApiConfigured,
@@ -324,6 +436,8 @@ export default function ProviderTable({
                         lastSnapshotAt: provider.latestSnapshot?.fetchedAt ?? null,
                         externalBillingRecordCount: provider.externalBilling?.length ?? 0,
                         externalBillingSources: [...new Set((provider.externalBilling ?? []).map((record) => record.source))].sort(),
+                        geminiKeyStatus: provider.geminiKeyStatus,
+                        geminiBillingStatus: provider.geminiBillingStatus,
                       }}
                     />
                     <p className="text-xs text-gray-400 dark:text-gray-500">{provider.name}</p>
@@ -346,30 +460,28 @@ export default function ProviderTable({
                   </span>
                 </td>
                 <td data-label="Status" className="px-6 py-4 hidden sm:table-cell">
-                  <button
-                    type="button"
-                    aria-label={`${provider.isActive ? "Deactivate" : "Activate"} ${provider.displayName}`}
-                    onClick={() => onToggleActive(provider)}
-                    disabled={actionLoading === provider.id}
-                    className={`inline-flex items-center gap-1.5 text-xs font-medium px-2 py-1 rounded-full transition-colors ${
-                      provider.isActive
-                        ? supportsManualFetch(provider)
-                          ? "bg-emerald-50 text-emerald-700 dark:bg-emerald-950/60 dark:text-emerald-300"
-                          : "bg-blue-50 text-blue-700 dark:bg-blue-950/60 dark:text-blue-300"
-                        : "bg-gray-100 text-gray-400 dark:bg-gray-700 dark:text-gray-400"
-                    }`}
-                  >
-                    <span
-                      className={`w-1.5 h-1.5 rounded-full ${
-                        provider.isActive
-                          ? supportsManualFetch(provider)
-                            ? "bg-emerald-500"
-                            : "bg-blue-500"
-                          : "bg-gray-300"
-                      }`}
-                    />
-                    {providerStatusLabel(provider)}
-                  </button>
+                  <div className="flex flex-col items-start gap-1">
+                    <button
+                      type="button"
+                      aria-label={`${provider.isActive ? "Deactivate" : "Activate"} ${provider.displayName}`}
+                      onClick={() => onToggleActive(provider)}
+                      disabled={actionLoading === provider.id}
+                      className={`inline-flex items-center gap-1.5 text-xs font-medium px-2 py-1 rounded-full transition-colors ${statusStyle.badge}`}
+                    >
+                      <span className={`w-1.5 h-1.5 rounded-full ${statusStyle.dot}`} />
+                      {providerStatusLabel(provider)}
+                    </button>
+                    {geminiStatus && (
+                      <span className={`text-[10px] font-medium ${geminiStatus.className}`}>
+                        {geminiStatus.label}
+                      </span>
+                    )}
+                    {geminiBillingStatus && (
+                      <span className={`text-[10px] font-medium ${geminiBillingStatus.className}`}>
+                        {geminiBillingStatus.label}
+                      </span>
+                    )}
+                  </div>
                 </td>
                 <td data-label="Spend / Budget" className="px-6 py-4">
                   <div className="text-xs">
@@ -386,6 +498,11 @@ export default function ProviderTable({
                       </p>
                     ) : (
                       <p className="text-gray-500 dark:text-gray-400">Projection unavailable</p>
+                    )}
+                    {provider.snapshotCostFetchedAt && (
+                      <p className="text-[10px] text-gray-500 dark:text-gray-400">
+                        Cost snapshot fetched {new Date(provider.snapshotCostFetchedAt).toLocaleString()}
+                      </p>
                     )}
                     {spendCoverage === "partial" && unpricedCount > 0 && (
                       <p className="text-amber-600 dark:text-amber-300">
@@ -468,7 +585,11 @@ export default function ProviderTable({
                         disabled={actionLoading === provider.id}
                         className="rounded-md bg-blue-50 px-3 py-1.5 text-xs font-medium text-blue-600 transition-colors hover:bg-blue-100 disabled:opacity-50 dark:bg-blue-950/60 dark:text-blue-300 dark:hover:bg-blue-900/60"
                       >
-                        {actionLoading === provider.id ? "..." : "Fetch Now"}
+                        {actionLoading === provider.id
+                          ? "..."
+                          : providerProfile(provider).name === "google-ai"
+                            ? "Verify & fetch"
+                            : "Fetch Now"}
                       </button>
                     ) : null}
                     <button

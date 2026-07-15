@@ -1,4 +1,5 @@
 import type { BuiltInProviderName } from "@/lib/provider-definitions";
+import { canonicalProviderKey } from "@/lib/provider-identity";
 
 export type IntegrationMode =
   | "direct"
@@ -142,13 +143,13 @@ const CATALOG: Record<CatalogProviderName, ProviderIntegrationProfile> = {
   }),
   "google-ai": defineProfile({
     name: "google-ai", displayName: "Google AI", category: "LLM/AI", mode: "partial",
-    summary: "Validates the Gemini key without inference and, when configured, reads actual Gemini API month-to-date spend from the standard Cloud Billing BigQuery export.",
+    summary: "Validates a Cloud Console- or AI Studio-managed Gemini key without inference and, when configured, independently reads actual Gemini API month-to-date spend from the standard Cloud Billing BigQuery export.",
     reads: ["Available model count and any rate-limit headers returned by the Gemini API.", "Gemini API regular cost, credits, project, SKU, usage quantity, and report-through time from the configured standard billing export."],
-    credentialInputs: ["Gemini API key.", "Optional billing dataset plus one encrypted read-only service-account JSON credential; project/table overrides are needed only when discovery is ambiguous."],
+    credentialInputs: ["Gemini API key managed in Google Cloud Console or Google AI Studio; the request uses the official x-goog-api-key header.", "Optional billing dataset plus one encrypted read-only service-account JSON credential; the exact Gemini project is required when one export contains multiple projects."],
     billing: { visibility: "actual", summary: "Actual calendar-month Gemini API net cost is direct when Cloud Billing export is configured; AI Studio prepaid balance, paid tier, transactions, and renewal remain unavailable." },
     canAdd: ["Producer telemetry can supplement delayed billing export with request/token detail while BigQuery remains the cost authority."],
-    cannotAdd: ["The Gemini API key itself has no public AI Studio balance, transaction, tier, or renewal endpoint."],
-    limitations: ["Cloud Billing export is delayed, can take days to backfill initially, and requires an unambiguous Gemini project when the dataset contains more than one."],
+    cannotAdd: ["The Gemini API key itself has no public AI Studio balance, transaction, tier, or renewal endpoint.", "Gemini rate limits apply per project and model, not per key; a model-list key check does not enumerate Cloud Console quota settings."],
+    limitations: ["Cloud Billing export is delayed, can take days to backfill initially, and requires an exact Gemini project when the dataset contains more than one.", "A replacement key is shown as unchecked until Verify & fetch binds a fresh validation result to that credential."],
     source: "src/lib/adapters/google-ai.ts",
   }),
   deepseek: defineProfile({
@@ -460,9 +461,6 @@ const CATALOG: Record<CatalogProviderName, ProviderIntegrationProfile> = {
 };
 
 const ALIASES: Readonly<Record<string, CatalogProviderName>> = {
-  google: "google-ai",
-  googleai: "google-ai",
-  google_ai: "google-ai",
   agent_sync_relay: "agent-sync-relay",
 };
 
@@ -472,9 +470,14 @@ export function getProviderIntegrationProfile(
   providerName: string,
   providerType?: string
 ): ProviderIntegrationProfile {
-  if (providerType === "custom") return CATALOG.custom;
-  if (providerType === "generic") return CATALOG.generic;
+  const normalizedType = providerType?.trim().toLowerCase();
+  if (normalizedType === "custom") return CATALOG.custom;
+  if (normalizedType === "generic" || normalizedType === "push") {
+    return CATALOG.generic;
+  }
   const normalized = providerName.trim().toLowerCase();
-  const canonical = ALIASES[normalized] ?? normalized;
+  const identity = canonicalProviderKey(providerName);
+  const canonical =
+    identity === "google-ai" ? identity : ALIASES[normalized] ?? normalized;
   return CATALOG[canonical as CatalogProviderName] ?? CATALOG.generic;
 }
