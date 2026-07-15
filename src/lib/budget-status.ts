@@ -388,10 +388,14 @@ export async function computeBudgetStatus(now: Date = new Date()): Promise<Budge
     const billingConfigurationChanged =
       geminiBillingStatus?.state === "configuration_changed" ||
       geminiCostIdentityStatus?.state === "configuration_changed";
-    // A fingerprint mismatch means the prior snapshot belongs to another
-    // dataset/project/service-account identity. Quarantine it instead of
-    // charging old-project dollars to the newly configured provider row.
-    const snapshotCostUsd = billingConfigurationChanged
+    const billingSnapshotQuarantined =
+      billingConfigurationChanged ||
+      geminiBillingStatus?.state === "not_configured" ||
+      geminiCostIdentityStatus?.state === "not_configured";
+    // A fingerprint mismatch or removed billing configuration means the prior
+    // snapshot belongs to an identity that is no longer current. Quarantine it
+    // instead of charging old-project dollars to this provider row.
+    const snapshotCostUsd = billingSnapshotQuarantined
       ? null
       : latestCostSnapshot?.totalCost ?? null;
     const snapshotFixedCostIncludedUsd = Math.max(
@@ -599,7 +603,7 @@ export async function computeBudgetStatus(now: Date = new Date()): Promise<Budge
       monthlyBudgetUsd,
       fixedMonthlyCostUsd,
       snapshotCostUsd,
-      snapshotCostFetchedAt: billingConfigurationChanged
+      snapshotCostFetchedAt: billingSnapshotQuarantined
         ? null
         : latestCostSnapshot?.fetchedAt.toISOString() ?? null,
       snapshotFixedCostIncludedUsd,

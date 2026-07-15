@@ -672,6 +672,62 @@ describe("materializeDueSubscriptions + project attribution (integration)", () =
     );
   });
 
+  it("quarantines prior Gemini cost after billing configuration is removed", async () => {
+    const previousConfig = {
+      billingDataset: "billing-project.billing_export",
+      googleProjectId: "old-project",
+      serviceAccountJson: "old-test-service-account-json",
+    };
+    const provider = await prisma.provider.create({
+      data: {
+        name: "google-ai",
+        displayName: "Google AI",
+        type: "builtin",
+        config: { statusKeyRef: "gemini-primary" },
+      },
+    });
+    await prisma.providerPlan.create({
+      data: { providerId: provider.id, monthlyBudgetUsd: 10 },
+    });
+    await prisma.usageSnapshot.create({
+      data: {
+        providerId: provider.id,
+        fetchedAt: new Date("2026-07-10T00:00:00Z"),
+        totalCost: 50,
+        costWindowStart: new Date("2026-07-01T00:00:00Z"),
+        costScope: "calendar_month_to_date",
+        rawData: {
+          billing: {
+            configured: true,
+            status: "ready",
+            configFingerprint:
+              geminiBillingConfigFingerprint(previousConfig),
+          },
+        },
+      },
+    });
+
+    const status = await computeBudgetStatus(NOW);
+    const result = status.providers.find((item) => item.id === provider.id)!;
+
+    expect(result.snapshotCostUsd).toBeNull();
+    expect(result.snapshotCostFetchedAt).toBeNull();
+    expect(result.spentUsd).toBe(0);
+    expect(result.spendCoverage).toBe("unknown");
+    expect(result.status).toBe("ok");
+    expect(status.summary.totalSpentUsd).toBe(0);
+    expect(result.alerts).not.toContainEqual(
+      expect.objectContaining({ code: "budget_exceeded" })
+    );
+    expect(result.alerts).toContainEqual(
+      expect.objectContaining({
+        code: "billing_sync_incomplete",
+        severity: "info",
+        message: expect.stringContaining("not configured"),
+      })
+    );
+  });
+
   it("excludes a prior-month provider cost window after UTC month rollover", async () => {
     const provider = await prisma.provider.create({
       data: { name: "rolled-cost", displayName: "Rolled Cost", type: "builtin" },
