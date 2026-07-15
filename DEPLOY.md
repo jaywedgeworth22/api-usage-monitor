@@ -101,6 +101,11 @@ not copied from the obsolete gray-cloud setup.
   opt-in compaction above)
 - `ADAPTER_HTTP_TIMEOUT_MS` / `ADAPTER_PROVIDER_TIMEOUT_MS` (optional bounded
   upstream-request and per-provider polling budgets)
+- `INFISICAL_ST_GEMINI_BOOTSTRAP_ENABLED` (optional, defaults to `false`;
+  one-time create-only bootstrap for the fixed current SocraticTrade.com Gemini
+  provider into the fixed ST `prod` `/` `GEMINI_API_KEY`). It never updates or
+  deletes an Infisical secret. Enable only for the reviewed migration run and
+  disable immediately after its sanitized result is observed.
 - `USAGE_SCHEDULER_ENABLED` (optional, defaults to `true`; emergency isolation
   switch for the in-process provider polling scheduler). Setting it to `false`
   stops automatic provider snapshots but does not disable pushed usage/OTLP

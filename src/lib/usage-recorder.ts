@@ -7,8 +7,10 @@ import {
 } from "@/lib/usage-maintenance";
 import { ensureAgentSyncProviderSeeded } from "@/lib/ensure-agent-sync-provider";
 import {
+  bootstrapStGeminiCredentialToInfisical,
   syncProviderCredentialsFromInfisical,
   type InfisicalCredentialSyncResult,
+  type StGeminiInfisicalBootstrapResult,
 } from "@/lib/infisical-provider-sync";
 import {
   markSchedulerStarted,
@@ -137,6 +139,9 @@ export interface FetchAllProvidersResult {
   skipped: number;
   errors: ProviderFetchError[];
   outcomes: ProviderFetchOutcome[];
+  // Safe status/code only. The one-time bootstrap never returns credential
+  // material or an upstream response body.
+  credentialBootstrap?: StGeminiInfisicalBootstrapResult;
   // Safe counts/status codes only; no Infisical names, tokens, or values.
   credentialSync?: InfisicalCredentialSyncResult;
 }
@@ -152,12 +157,23 @@ export async function fetchAllDueProviders(): Promise<FetchAllProvidersResult> {
 
   const run = (async () => {
     await withInternalUsageWriteAdmission(() => ensureAgentSyncProviderSeeded());
+    // The default-off, exact ST Gemini bootstrap must run before the normal
+    // one-way Infisical pull so a successful create can be adopted and bound
+    // in this same provider-maintenance pass.
+    const credentialBootstrap =
+      await bootstrapStGeminiCredentialToInfisical();
+    const suppressStGeminiPull =
+      credentialBootstrap.enabled &&
+      credentialBootstrap.status !== "created" &&
+      credentialBootstrap.status !== "already_present_same";
     let credentialSync: InfisicalCredentialSyncResult;
     try {
       // Network reads happen before the sync helper takes the internal SQLite
       // writer lease, so Infisical latency never blocks usage ingest. Any
       // failure keeps encrypted last-known-good credentials in place.
-      credentialSync = await syncProviderCredentialsFromInfisical();
+      credentialSync = await syncProviderCredentialsFromInfisical({
+        suppressStGemini: suppressStGeminiPull,
+      });
       if (credentialSync.failed > 0) {
         console.warn(
           `[infisical-provider-sync] retained last-known-good credentials for ${credentialSync.failed} failed mapping(s)`
@@ -319,6 +335,7 @@ export async function fetchAllDueProviders(): Promise<FetchAllProvidersResult> {
       skipped,
       errors,
       outcomes,
+      credentialBootstrap,
       credentialSync,
     };
   })();
