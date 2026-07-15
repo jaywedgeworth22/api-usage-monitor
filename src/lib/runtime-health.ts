@@ -7,6 +7,11 @@ export interface SchedulerRunSummary {
   failures: number;
   skipped: number;
   maintenanceHealthy: boolean;
+  // Whether THIS tick's provider-fetch phase (successes/failures ratio,
+  // skipped excluded) was degraded - see isProviderFetchTickDegraded in
+  // usage-recorder.ts. Distinct from maintenanceHealthy: a tick can succeed
+  // (maintenance healthy) while most provider polls still failed.
+  providerFetchDegraded: boolean;
   cloudflareLegacyHandoff: CloudflareLegacyHandoffStatus;
 }
 
@@ -18,18 +23,40 @@ export interface SchedulerRuntimeStatus {
   lastTickSucceeded: boolean | null;
   consecutiveFailures: number;
   firstFailureAt: string | null;
+  // Streak of consecutive ticks whose provider-fetch phase was degraded.
+  // Kept separate from consecutiveFailures/lastTickSucceeded so an upstream
+  // provider-fetch outage never flips lastTickSucceeded or feeds the
+  // repeated_tick_failures readiness reason - see runUsagePollingSchedulerTick.
+  consecutiveProviderFetchDegradedTicks: number;
+  firstProviderFetchDegradedAt: string | null;
   lastRun: SchedulerRunSummary | null;
 }
 
 export interface SchedulerReadiness {
   ok: boolean;
-  reason: "not_started" | "repeated_tick_failures" | "tick_stalled" | "tick_stale" | null;
+  reason:
+    | "not_started"
+    | "repeated_tick_failures"
+    | "tick_stalled"
+    | "tick_stale"
+    | "provider_fetch_degraded"
+    | null;
   staleAfterMs: number;
   failureThreshold: number;
+  // True once consecutiveProviderFetchDegradedTicks has reached
+  // providerFetchDegradedTickThreshold. Reported independently of `reason`
+  // (which only names one primary cause) so callers can see a provider-fetch
+  // outage even while some other condition is the reported blocking reason.
+  providerFetchDegraded: boolean;
+  providerFetchDegradedTickThreshold: number;
 }
 
 const DEFAULT_SCHEDULER_STALE_AFTER_MS = 45 * 60 * 1_000;
 const DEFAULT_SCHEDULER_FAILURE_THRESHOLD = 3;
+// Bounded so a single flaky provider poll (one degraded tick) can't flap
+// /api/ready's scheduler.readinessReason - only a sustained run of degraded
+// ticks (default: 3 in a row, ~45min at the 15min poll cadence) surfaces it.
+const DEFAULT_PROVIDER_FETCH_DEGRADED_TICK_THRESHOLD = 3;
 
 function schedulerStaleAfterMs(): number {
   const configured = Number(process.env.SCHEDULER_STALE_AFTER_MS);
@@ -43,6 +70,15 @@ function schedulerFailureThreshold(): number {
   return Number.isSafeInteger(configured) && configured > 0
     ? configured
     : DEFAULT_SCHEDULER_FAILURE_THRESHOLD;
+}
+
+function providerFetchDegradedTickThreshold(): number {
+  const configured = Number(
+    process.env.PROVIDER_FETCH_DEGRADED_TICK_THRESHOLD
+  );
+  return Number.isSafeInteger(configured) && configured > 0
+    ? configured
+    : DEFAULT_PROVIDER_FETCH_DEGRADED_TICK_THRESHOLD;
 }
 
 interface RuntimeHealthState {
@@ -64,6 +100,8 @@ const state =
       lastTickSucceeded: null,
       consecutiveFailures: 0,
       firstFailureAt: null,
+      consecutiveProviderFetchDegradedTicks: 0,
+      firstProviderFetchDegradedAt: null,
       lastRun: null,
     },
   });
@@ -77,6 +115,7 @@ function normalizeSchedulerRunSummary(
     failures: summary.failures,
     skipped: summary.skipped,
     maintenanceHealthy: summary.maintenanceHealthy,
+    providerFetchDegraded: summary.providerFetchDegraded,
     cloudflareLegacyHandoff: summary.cloudflareLegacyHandoff,
   };
 }
@@ -105,6 +144,17 @@ export function markSchedulerTickCompleted(
     state.scheduler.consecutiveFailures += 1;
     state.scheduler.firstFailureAt ??= at.toISOString();
   }
+  // A tick with no lastRun (fetch/maintenance threw before producing a
+  // summary) carries no provider-fetch signal at all, so it resets the
+  // streak rather than extending or clearing it as "recovered" - there is no
+  // basis to claim either.
+  if (lastRun?.providerFetchDegraded) {
+    state.scheduler.consecutiveProviderFetchDegradedTicks += 1;
+    state.scheduler.firstProviderFetchDegradedAt ??= at.toISOString();
+  } else {
+    state.scheduler.consecutiveProviderFetchDegradedTicks = 0;
+    state.scheduler.firstProviderFetchDegradedAt = null;
+  }
   state.scheduler.lastRun = lastRun
     ? normalizeSchedulerRunSummary(lastRun)
     : null;
@@ -123,22 +173,46 @@ export function getSchedulerReadiness(now = new Date()): SchedulerReadiness {
   const scheduler = state.scheduler;
   const staleAfterMs = schedulerStaleAfterMs();
   const failureThreshold = schedulerFailureThreshold();
+  const degradedTickThreshold = providerFetchDegradedTickThreshold();
+  const providerFetchDegraded =
+    scheduler.consecutiveProviderFetchDegradedTicks >= degradedTickThreshold;
   if (!scheduler.startedAt) {
-    return { ok: false, reason: "not_started", staleAfterMs, failureThreshold };
+    return {
+      ok: false,
+      reason: "not_started",
+      staleAfterMs,
+      failureThreshold,
+      providerFetchDegraded,
+      providerFetchDegradedTickThreshold: degradedTickThreshold,
+    };
   }
   if (
     scheduler.tickInProgress &&
     scheduler.lastTickStartedAt &&
     now.getTime() - new Date(scheduler.lastTickStartedAt).getTime() > staleAfterMs
   ) {
-    return { ok: false, reason: "tick_stalled", staleAfterMs, failureThreshold };
+    return {
+      ok: false,
+      reason: "tick_stalled",
+      staleAfterMs,
+      failureThreshold,
+      providerFetchDegraded,
+      providerFetchDegradedTickThreshold: degradedTickThreshold,
+    };
   }
   if (
     !scheduler.tickInProgress &&
     scheduler.lastTickCompletedAt &&
     now.getTime() - new Date(scheduler.lastTickCompletedAt).getTime() > staleAfterMs
   ) {
-    return { ok: false, reason: "tick_stale", staleAfterMs, failureThreshold };
+    return {
+      ok: false,
+      reason: "tick_stale",
+      staleAfterMs,
+      failureThreshold,
+      providerFetchDegraded,
+      providerFetchDegradedTickThreshold: degradedTickThreshold,
+    };
   }
   if (scheduler.consecutiveFailures >= failureThreshold) {
     return {
@@ -146,9 +220,33 @@ export function getSchedulerReadiness(now = new Date()): SchedulerReadiness {
       reason: "repeated_tick_failures",
       staleAfterMs,
       failureThreshold,
+      providerFetchDegraded,
+      providerFetchDegradedTickThreshold: degradedTickThreshold,
     };
   }
-  return { ok: true, reason: null, staleAfterMs, failureThreshold };
+  // Provider-fetch degradation never takes the service unready on its own -
+  // this app is still serving correctly, the outage is upstream. It only
+  // gets its own readinessReason once sustained (see
+  // providerFetchDegradedTickThreshold) so a monitor reading this endpoint
+  // can alert on it without the deploy being marked not-ready.
+  if (providerFetchDegraded) {
+    return {
+      ok: true,
+      reason: "provider_fetch_degraded",
+      staleAfterMs,
+      failureThreshold,
+      providerFetchDegraded,
+      providerFetchDegradedTickThreshold: degradedTickThreshold,
+    };
+  }
+  return {
+    ok: true,
+    reason: null,
+    staleAfterMs,
+    failureThreshold,
+    providerFetchDegraded,
+    providerFetchDegradedTickThreshold: degradedTickThreshold,
+  };
 }
 
 export function getRuntimeIdentity(): {
@@ -201,6 +299,8 @@ export function resetRuntimeHealthForTests(): void {
     lastTickSucceeded: null,
     consecutiveFailures: 0,
     firstFailureAt: null,
+    consecutiveProviderFetchDegradedTicks: 0,
+    firstProviderFetchDegradedAt: null,
     lastRun: null,
   };
 }

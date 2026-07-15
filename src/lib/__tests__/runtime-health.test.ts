@@ -36,6 +36,7 @@ describe("runtime health state", () => {
       failures: 1,
       skipped: 1,
       maintenanceHealthy: true,
+      providerFetchDegraded: false,
       cloudflareLegacyHandoff: "disabled" as const,
       targetId: "must-not-leak-target-id",
       rawEnv: "must-not-leak-env-value",
@@ -54,12 +55,15 @@ describe("runtime health state", () => {
       lastTickSucceeded: true,
       consecutiveFailures: 0,
       firstFailureAt: null,
+      consecutiveProviderFetchDegradedTicks: 0,
+      firstProviderFetchDegradedAt: null,
       lastRun: {
         total: 4,
         successes: 2,
         failures: 1,
         skipped: 1,
         maintenanceHealthy: true,
+        providerFetchDegraded: false,
         cloudflareLegacyHandoff: "disabled",
       },
     });
@@ -68,6 +72,7 @@ describe("runtime health state", () => {
         "cloudflareLegacyHandoff",
         "failures",
         "maintenanceHealthy",
+        "providerFetchDegraded",
         "skipped",
         "successes",
         "total",
@@ -136,6 +141,113 @@ describe("runtime health state", () => {
       ok: false,
       reason: "repeated_tick_failures",
       failureThreshold: 2,
+    });
+  });
+
+  it("surfaces provider-fetch degradation as a distinct signal only after sustained consecutive ticks, and resets on recovery", () => {
+    markSchedulerStarted();
+    const degradedRun = {
+      total: 6,
+      successes: 1,
+      failures: 5,
+      skipped: 0,
+      maintenanceHealthy: true,
+      providerFetchDegraded: true,
+      cloudflareLegacyHandoff: "disabled" as const,
+    };
+    const healthyRun = {
+      ...degradedRun,
+      successes: 6,
+      failures: 0,
+      providerFetchDegraded: false,
+    };
+    const skippedOnlyRun = {
+      ...degradedRun,
+      successes: 0,
+      failures: 0,
+      skipped: 6,
+      providerFetchDegraded: false,
+    };
+
+    // A single degraded tick must not flip readiness - only a sustained run
+    // does. `succeeded` here stays true throughout: provider-fetch health is
+    // deliberately independent of maintenanceHealthy/lastTickSucceeded.
+    markSchedulerTickCompleted(true, degradedRun);
+    expect(getSchedulerReadiness()).toMatchObject({ ok: true, reason: null });
+    expect(
+      getSchedulerRuntimeStatus().consecutiveProviderFetchDegradedTicks
+    ).toBe(1);
+
+    markSchedulerTickCompleted(true, degradedRun);
+    expect(getSchedulerReadiness()).toMatchObject({ ok: true, reason: null });
+
+    markSchedulerTickCompleted(true, degradedRun);
+    expect(getSchedulerReadiness()).toMatchObject({
+      ok: true,
+      reason: "provider_fetch_degraded",
+      providerFetchDegraded: true,
+      providerFetchDegradedTickThreshold: 3,
+    });
+    expect(getSchedulerRuntimeStatus()).toMatchObject({
+      consecutiveProviderFetchDegradedTicks: 3,
+      // Never affects lastTickSucceeded/consecutiveFailures - the app itself
+      // is still serving; a provider-fetch outage is upstream.
+      lastTickSucceeded: true,
+      consecutiveFailures: 0,
+    });
+
+    // A tick where nothing was attempted (all interval-gated skips) is not
+    // degraded and resets the streak.
+    markSchedulerTickCompleted(true, skippedOnlyRun);
+    expect(
+      getSchedulerRuntimeStatus().consecutiveProviderFetchDegradedTicks
+    ).toBe(0);
+    expect(getSchedulerReadiness()).toMatchObject({
+      ok: true,
+      reason: null,
+      providerFetchDegraded: false,
+    });
+
+    // Recovery: run the streak back up, then one healthy tick resets it.
+    markSchedulerTickCompleted(true, degradedRun);
+    markSchedulerTickCompleted(true, degradedRun);
+    markSchedulerTickCompleted(true, degradedRun);
+    expect(getSchedulerReadiness().reason).toBe("provider_fetch_degraded");
+    markSchedulerTickCompleted(true, healthyRun);
+    expect(getSchedulerRuntimeStatus()).toMatchObject({
+      consecutiveProviderFetchDegradedTicks: 0,
+      firstProviderFetchDegradedAt: null,
+    });
+    expect(getSchedulerReadiness()).toMatchObject({
+      ok: true,
+      reason: null,
+      providerFetchDegraded: false,
+    });
+  });
+
+  it("supports an explicit provider-fetch-degraded consecutive tick threshold", () => {
+    vi.stubEnv("PROVIDER_FETCH_DEGRADED_TICK_THRESHOLD", "2");
+    markSchedulerStarted();
+    const degradedRun = {
+      total: 2,
+      successes: 0,
+      failures: 2,
+      skipped: 0,
+      maintenanceHealthy: true,
+      providerFetchDegraded: true,
+      cloudflareLegacyHandoff: "disabled" as const,
+    };
+    markSchedulerTickCompleted(true, degradedRun);
+    expect(getSchedulerReadiness()).toMatchObject({
+      ok: true,
+      reason: null,
+      providerFetchDegradedTickThreshold: 2,
+    });
+    markSchedulerTickCompleted(true, degradedRun);
+    expect(getSchedulerReadiness()).toMatchObject({
+      ok: true,
+      reason: "provider_fetch_degraded",
+      providerFetchDegradedTickThreshold: 2,
     });
   });
 });

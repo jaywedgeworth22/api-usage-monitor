@@ -205,6 +205,13 @@ export async function GET() {
           readinessReason: schedulerReadiness.reason,
           staleAfterMs: schedulerReadiness.staleAfterMs,
           failureThreshold: schedulerReadiness.failureThreshold,
+          // Provider-fetch degradation (most attempted provider polls
+          // failing) never flips `ok` above - this app is still serving,
+          // the outage is upstream. It's surfaced here so a monitor can
+          // alert on it independently of readiness.
+          providerFetchDegraded: schedulerReadiness.providerFetchDegraded,
+          providerFetchDegradedTickThreshold:
+            schedulerReadiness.providerFetchDegradedTickThreshold,
           ...scheduler,
         },
         backup: {

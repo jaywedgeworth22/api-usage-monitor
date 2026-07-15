@@ -67,6 +67,39 @@ function providerRow(name: string) {
   };
 }
 
+// A minimal maintenance result that isUsageMaintenanceHealthy accepts as
+// healthy, so tests below can isolate the provider-fetch-degraded signal
+// from maintenance health.
+function healthyMaintenanceResult() {
+  return {
+    subscriptionAdoption: {
+      examined: 0,
+      eligible: 0,
+      adopted: 0,
+      existing: 0,
+      ambiguous: 0,
+      reconciled: 0,
+      deactivated: 0,
+      raced: 0,
+      cloudflareLegacyHandoff: "disabled" as const,
+      degradedError: null,
+    },
+    subscriptions: { examined: 0, charged: 0, eventsWritten: 0 },
+    providerRenewals: { examined: 0, advanced: 0 },
+    retention: { skipped: true as const, reason: "interval" as const },
+    alerts: {
+      evaluatedProviders: 0,
+      activeAlerts: 0,
+      sent: 0,
+      resolved: 0,
+      skipped: 0,
+      errors: [],
+      persistenceDegraded: [],
+      deferredError: null,
+    },
+  };
+}
+
 describe("fetchAllDueProviders per-provider timeout budget", () => {
   beforeEach(() => {
     vi.resetModules();
@@ -319,12 +352,16 @@ describe("fetchAllDueProviders per-provider timeout budget", () => {
     });
 
     expect(markTickStarted).toHaveBeenCalledOnce();
+    // 1 failure / 2 attempted = 0.5, meeting the default
+    // PROVIDER_FETCH_DEGRADED_FAILURE_RATIO - this tick is also
+    // provider-fetch degraded, independently of maintenanceHealthy.
     expect(markTickCompleted).toHaveBeenCalledWith(false, {
       total: 2,
       successes: 1,
       failures: 1,
       skipped: 0,
       maintenanceHealthy: false,
+      providerFetchDegraded: true,
       cloudflareLegacyHandoff: "charge_proof_missing",
     });
     expect(JSON.stringify(markTickCompleted.mock.calls)).not.toContain(
@@ -396,6 +433,7 @@ describe("fetchAllDueProviders per-provider timeout budget", () => {
       failures: 0,
       skipped: 0,
       maintenanceHealthy: false,
+      providerFetchDegraded: false,
       cloudflareLegacyHandoff: "disabled",
     });
   });
@@ -677,5 +715,114 @@ describe("fetchAllDueProviders per-provider timeout budget", () => {
     const releaseAfterAbort = tryAcquireIngestAdmission();
     expect(releaseAfterAbort).not.toBeNull();
     releaseAfterAbort?.();
+  });
+
+  describe("isProviderFetchTickDegraded", () => {
+    afterEach(() => {
+      delete process.env.PROVIDER_FETCH_DEGRADED_FAILURE_RATIO;
+    });
+
+    it("is not degraded when nothing was attempted (all skipped)", async () => {
+      const { isProviderFetchTickDegraded } = await import("@/lib/usage-recorder");
+      expect(
+        isProviderFetchTickDegraded({ successes: 0, failures: 0 })
+      ).toBe(false);
+    });
+
+    it("hits the total-outage fast path even if the configured ratio is out of range", async () => {
+      process.env.PROVIDER_FETCH_DEGRADED_FAILURE_RATIO = "2"; // outside (0,1], ignored
+      const { isProviderFetchTickDegraded } = await import("@/lib/usage-recorder");
+      expect(
+        isProviderFetchTickDegraded({ successes: 0, failures: 1 })
+      ).toBe(true);
+    });
+
+    it("is degraded once the failure ratio meets the default 0.5 threshold", async () => {
+      const { isProviderFetchTickDegraded } = await import("@/lib/usage-recorder");
+      expect(isProviderFetchTickDegraded({ successes: 1, failures: 5 })).toBe(
+        true
+      ); // 5/6 attempted
+      expect(isProviderFetchTickDegraded({ successes: 1, failures: 1 })).toBe(
+        true
+      ); // 1/2 == 0.5
+      expect(isProviderFetchTickDegraded({ successes: 3, failures: 1 })).toBe(
+        false
+      ); // 1/4 < 0.5
+    });
+
+    it("honors a configured PROVIDER_FETCH_DEGRADED_FAILURE_RATIO", async () => {
+      process.env.PROVIDER_FETCH_DEGRADED_FAILURE_RATIO = "0.25";
+      const { isProviderFetchTickDegraded } = await import("@/lib/usage-recorder");
+      expect(isProviderFetchTickDegraded({ successes: 3, failures: 1 })).toBe(
+        true
+      ); // 1/4 == 0.25
+    });
+  });
+
+  it("marks a tick provider-fetch degraded via the total-outage fast path, independent of tick success", async () => {
+    const markTickStarted = vi.fn();
+    const markTickCompleted = vi.fn();
+    const fetchProviders = vi.fn(async () => ({
+      total: 3,
+      successes: 0,
+      failures: 3,
+      skipped: 0,
+      errors: [],
+      outcomes: [],
+    }));
+    const runMaintenance = vi.fn(async () => healthyMaintenanceResult());
+    const { runUsagePollingSchedulerTick } = await import("@/lib/usage-recorder");
+
+    await runUsagePollingSchedulerTick({
+      fetchProviders,
+      runMaintenance,
+      markTickStarted,
+      markTickCompleted,
+    });
+
+    // maintenanceHealthy (and therefore `succeeded`) stays true - a
+    // provider-fetch outage must not flip lastTickSucceeded/
+    // consecutiveFailures on its own.
+    expect(markTickCompleted).toHaveBeenCalledWith(true, {
+      total: 3,
+      successes: 0,
+      failures: 3,
+      skipped: 0,
+      maintenanceHealthy: true,
+      providerFetchDegraded: true,
+      cloudflareLegacyHandoff: "disabled",
+    });
+  });
+
+  it("does not mark a skipped-only tick (nothing attempted) as provider-fetch degraded", async () => {
+    const markTickStarted = vi.fn();
+    const markTickCompleted = vi.fn();
+    const fetchProviders = vi.fn(async () => ({
+      total: 3,
+      successes: 0,
+      failures: 0,
+      skipped: 3,
+      errors: [],
+      outcomes: [],
+    }));
+    const runMaintenance = vi.fn(async () => healthyMaintenanceResult());
+    const { runUsagePollingSchedulerTick } = await import("@/lib/usage-recorder");
+
+    await runUsagePollingSchedulerTick({
+      fetchProviders,
+      runMaintenance,
+      markTickStarted,
+      markTickCompleted,
+    });
+
+    expect(markTickCompleted).toHaveBeenCalledWith(true, {
+      total: 3,
+      successes: 0,
+      failures: 0,
+      skipped: 3,
+      maintenanceHealthy: true,
+      providerFetchDegraded: false,
+      cloudflareLegacyHandoff: "disabled",
+    });
   });
 });

@@ -336,6 +336,7 @@ describe("GET /api/ready", () => {
       failures: 0,
       skipped: 0,
       maintenanceHealthy: false,
+      providerFetchDegraded: false,
       cloudflareLegacyHandoff: "charge_proof_missing" as const,
       targetId: "must-not-leak-target-id",
       rawEnv: "must-not-leak-env-value",
@@ -359,6 +360,7 @@ describe("GET /api/ready", () => {
         failures: 0,
         skipped: 0,
         maintenanceHealthy: false,
+        providerFetchDegraded: false,
         cloudflareLegacyHandoff: "charge_proof_missing",
       },
     });
@@ -367,12 +369,72 @@ describe("GET /api/ready", () => {
         "cloudflareLegacyHandoff",
         "failures",
         "maintenanceHealthy",
+        "providerFetchDegraded",
         "skipped",
         "successes",
         "total",
       ].sort()
     );
     expect(JSON.stringify(body)).not.toContain("must-not-leak");
+  });
+
+  it("stays ready after a single provider-fetch-degraded tick", async () => {
+    const degradedRun = {
+      total: 6,
+      successes: 1,
+      failures: 5,
+      skipped: 0,
+      maintenanceHealthy: true,
+      providerFetchDegraded: true,
+      cloudflareLegacyHandoff: "disabled" as const,
+    };
+    markSchedulerTickCompleted(true, degradedRun);
+
+    const response = await GET();
+    const body = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(body).toMatchObject({ ok: true, status: "ready" });
+    expect(body.checks.scheduler).toMatchObject({
+      ok: true,
+      readinessReason: null,
+      providerFetchDegraded: false,
+      consecutiveProviderFetchDegradedTicks: 1,
+    });
+  });
+
+  it("surfaces sustained provider-fetch degradation without failing readiness or HTTP liveness", async () => {
+    const degradedRun = {
+      total: 6,
+      successes: 0,
+      failures: 6,
+      skipped: 0,
+      maintenanceHealthy: true,
+      providerFetchDegraded: true,
+      cloudflareLegacyHandoff: "disabled" as const,
+    };
+    markSchedulerTickCompleted(true, degradedRun);
+    markSchedulerTickCompleted(true, degradedRun);
+    markSchedulerTickCompleted(true, degradedRun);
+
+    const response = await GET();
+    const body = await response.json();
+
+    // The service itself is still serving correctly - a provider-fetch
+    // outage is upstream, so overall readiness (`ok`/`status`) and the
+    // scheduler's own `ok` must both stay true even though the outage is
+    // now visible via readinessReason/providerFetchDegraded.
+    expect(response.status).toBe(200);
+    expect(body).toMatchObject({ ok: true, status: "ready" });
+    expect(body.checks.scheduler).toMatchObject({
+      ok: true,
+      readinessReason: "provider_fetch_degraded",
+      providerFetchDegraded: true,
+      providerFetchDegradedTickThreshold: 3,
+      consecutiveProviderFetchDegradedTicks: 3,
+      lastTickSucceeded: true,
+      consecutiveFailures: 0,
+    });
   });
 
   it("reports backup not-ready without failing HTTP liveness", async () => {

@@ -146,6 +146,39 @@ export interface FetchAllProvidersResult {
   credentialSync?: InfisicalCredentialSyncResult;
 }
 
+// A scheduler tick's provider-fetch phase is a distinct health signal from
+// per-provider budget/balance alerts: it answers "is polling itself working"
+// (credential rotation, egress/DNS breakage, an adapter regression) rather
+// than "did a provider's usage cross a threshold". Skipped providers are
+// interval-gated and were never attempted, so they are excluded from the
+// ratio below - only providers this tick actually tried to poll count.
+const DEFAULT_PROVIDER_FETCH_DEGRADED_FAILURE_RATIO = 0.5;
+
+function resolveProviderFetchDegradedFailureRatio(): number {
+  const raw = process.env.PROVIDER_FETCH_DEGRADED_FAILURE_RATIO;
+  if (raw == null || raw.trim() === "") {
+    return DEFAULT_PROVIDER_FETCH_DEGRADED_FAILURE_RATIO;
+  }
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed) || parsed <= 0 || parsed > 1) {
+    return DEFAULT_PROVIDER_FETCH_DEGRADED_FAILURE_RATIO;
+  }
+  return parsed;
+}
+
+export function isProviderFetchTickDegraded(
+  result: Pick<FetchAllProvidersResult, "successes" | "failures">
+): boolean {
+  const attempted = result.successes + result.failures;
+  if (attempted === 0) return false; // nothing attempted (all skipped) - no signal either way
+  // Total-outage fast path: everything attempted failed. Kept as an explicit
+  // check (not just relying on the ratio below) so a complete outage is
+  // always caught even if PROVIDER_FETCH_DEGRADED_FAILURE_RATIO is ever
+  // misconfigured above its intended 0-1 range.
+  if (result.successes === 0 && result.failures > 0) return true;
+  return result.failures / attempted >= resolveProviderFetchDegradedFailureRatio();
+}
+
 let fetchAllInFlight: Promise<FetchAllProvidersResult> | null = null;
 
 export async function fetchAllDueProviders(): Promise<FetchAllProvidersResult> {
@@ -372,12 +405,22 @@ export async function runUsagePollingSchedulerTick(
     const result = await (dependencies.fetchProviders ?? fetchAllDueProviders)();
     const maintenance = await (dependencies.runMaintenance ?? runUsageMaintenance)();
     const maintenanceHealthy = isUsageMaintenanceHealthy(maintenance);
+    // Deliberately NOT folded into `succeeded` (maintenanceHealthy) below: a
+    // provider-fetch outage is upstream (third-party credentials/network/API),
+    // not this app failing. Folding it in would flip lastTickSucceeded/
+    // consecutiveFailures and could eventually flip /api/ready's `ok` to
+    // false for a problem this service isn't causing and can't fix by
+    // restarting. It is tracked as its own consecutive-tick streak in
+    // runtime-health so a single flaky provider can't flap readiness, and
+    // surfaced as a distinct scheduler.providerFetchDegraded signal instead.
+    const providerFetchDegraded = isProviderFetchTickDegraded(result);
     markTickCompleted(maintenanceHealthy, {
       total: result.total,
       successes: result.successes,
       failures: result.failures,
       skipped: result.skipped,
       maintenanceHealthy,
+      providerFetchDegraded,
       cloudflareLegacyHandoff:
         maintenance.subscriptionAdoption.cloudflareLegacyHandoff,
     });
