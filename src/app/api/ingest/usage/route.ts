@@ -6,7 +6,10 @@ import {
   persistExternalUsageEvents,
   syncStatusToUsageSnapshot,
 } from "@/lib/external-usage-events";
-import { parseUsageTelemetryBatch } from "@/lib/usage-telemetry";
+import {
+  MAX_USAGE_TELEMETRY_BODY_BYTES,
+  parseUsageTelemetryBatch,
+} from "@/lib/usage-telemetry";
 import { createRateLimiter, getClientIp } from "@/lib/rate-limit";
 import {
   isBillingReceiptIngestAuthorized,
@@ -26,6 +29,10 @@ import {
   INGEST_ADMISSION_RETRY_AFTER_SECONDS,
   tryAcquireIngestAdmission,
 } from "@/lib/ingest-admission";
+import {
+  RequestBodyTooLargeError,
+  readBoundedRequestBody,
+} from "@/lib/bounded-request-body";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -63,11 +70,17 @@ export async function POST(request: NextRequest) {
 
   let events;
   try {
-    events = parseUsageTelemetryBatch(await request.json());
+    const bytes = await readBoundedRequestBody(request, {
+      maxBytes: MAX_USAGE_TELEMETRY_BODY_BYTES,
+      label: "Usage ingest payload",
+    });
+    events = parseUsageTelemetryBatch(
+      JSON.parse(new TextDecoder().decode(bytes))
+    );
   } catch (error) {
     return NextResponse.json(
       { error: error instanceof Error ? error.message : "Invalid request" },
-      { status: 400 }
+      { status: error instanceof RequestBodyTooLargeError ? 413 : 400 }
     );
   }
 
