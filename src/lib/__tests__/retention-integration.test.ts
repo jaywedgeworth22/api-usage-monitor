@@ -159,6 +159,48 @@ describe("retention integration", () => {
     expect(await prisma.externalUsageEvent.count()).toBe(1);
   });
 
+  it("keeps receipt replay, collision, and tombstone behavior lossless", async () => {
+    const provider = await prisma.provider.create({
+      data: {
+        name: "anthropic",
+        displayName: "Anthropic",
+        type: "push",
+        refreshIntervalMin: 60,
+      },
+    });
+    const digest = "c".repeat(64);
+    const receipt = {
+      idempotencyKey: `billing-receipt:v1:${digest}`,
+      sourceApp: "billing-receipt-import",
+      provider: "anthropic",
+      service: "api-prepaid-funding",
+      label: "receipt_cash_paid",
+      keyRef: `provider:${provider.id}:billing-receipt:${digest}`,
+      billingMode: "actual",
+      metricType: "cost",
+      unit: "usd",
+      confidence: "actual",
+      costUsd: 20,
+      occurredAt: new Date("2026-06-20T12:00:00.000Z"),
+    };
+
+    expect(await persistExternalUsageEvents([receipt])).toMatchObject({ persisted: 1 });
+    expect(await persistExternalUsageEvents([receipt])).toMatchObject({ persisted: 0 });
+    await expect(
+      persistExternalUsageEvents([{ ...receipt, costUsd: 25 }])
+    ).rejects.toThrow(/Idempotency key collision/);
+
+    await runDataRetentionMaintenance(NOW);
+    const replay = await persistExternalUsageEvents([receipt]);
+    expect(replay).toMatchObject({ persisted: 0, skippedPrunedDuplicates: 1 });
+    expect(await prisma.externalUsageEvent.count()).toBe(0);
+    expect(
+      await prisma.externalUsageEventTombstone.findUnique({
+        where: { idempotencyKey: receipt.idempotencyKey },
+      })
+    ).not.toBeNull();
+  });
+
   it("reports only newly inserted rows as persisted across idempotent replays", async () => {
     const existing = {
       idempotencyKey: "accepted-count-existing",

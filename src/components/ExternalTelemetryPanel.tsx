@@ -25,6 +25,7 @@ export interface ExternalUsageGroup {
   unclassifiedCostEventCount: number;
   costCoverage: ExternalCostCoverage;
   totalCostUsd: number;
+  receiptCashPaidUsd?: number;
   estimatedApiEquivalentUsd: number;
   totalRequests: number;
   totalQuantity: number;
@@ -36,6 +37,7 @@ export interface ExternalUsageGroup {
 export interface ExternalUsageSummary {
   days: number;
   totalCostUsd: number;
+  receiptCashPaidUsd?: number;
   estimatedApiEquivalentUsd: number;
   pricedEventCount: number;
   unpricedEventCount: number;
@@ -81,6 +83,7 @@ function identityToken(value: string): string {
 export default function ExternalTelemetryPanel({ usageSummary }: ExternalTelemetryPanelProps) {
   const [showAll, setShowAll] = useState(false);
   const externalCost = usageSummary.totalCostUsd;
+  const receiptCashPaid = usageSummary.receiptCashPaidUsd ?? 0;
   const estimatedApiEquivalent = usageSummary.estimatedApiEquivalentUsd;
   const externalRequests = usageSummary.totalRequests;
   const visibleGroups = showAll ? usageSummary.groups : usageSummary.groups.slice(0, 8);
@@ -116,6 +119,14 @@ export default function ExternalTelemetryPanel({ usageSummary }: ExternalTelemet
               Claude API-equivalent estimate: {usd.format(estimatedApiEquivalent)}
               <span className="block text-[10px] font-normal">
                 Excluded from cash spend · verify Anthropic Console billing
+              </span>
+            </p>
+          )}
+          {receiptCashPaid > 0 && (
+            <p className="mt-1 text-xs font-medium text-emerald-700 dark:text-emerald-300">
+              Receipt cash paid: {usd.format(receiptCashPaid)}
+              <span className="block text-[10px] font-normal">
+                Reconciled with observed usage by max, not added twice
               </span>
             </p>
           )}
@@ -159,6 +170,8 @@ export default function ExternalTelemetryPanel({ usageSummary }: ExternalTelemet
                   group.unit || (requestBased ? "requests" : group.metricType);
                 const hasEstimatedApiEquivalent =
                   group.estimatedApiEquivalentUsd > 0;
+                const groupReceiptCash = group.receiptCashPaidUsd ?? 0;
+                const hasReceiptCash = groupReceiptCash > 0;
                 const usagePercent =
                   group.limit != null && group.limit > 0
                     ? Math.min((displayedUsage / group.limit) * 100, 999)
@@ -196,12 +209,16 @@ export default function ExternalTelemetryPanel({ usageSummary }: ExternalTelemet
                     </td>
                     <td className="px-6 py-4 text-right" data-label="Usage">
                       <p className="text-sm font-semibold text-gray-900 dark:text-gray-100">
-                        {hasEstimatedApiEquivalent
+                        {hasReceiptCash
+                          ? usd.format(groupReceiptCash)
+                          : hasEstimatedApiEquivalent
                           ? usd.format(group.estimatedApiEquivalentUsd)
                           : new Intl.NumberFormat("en-US").format(displayedUsage)}
                       </p>
                       <p className="text-xs text-gray-500 dark:text-gray-400">
-                        {hasEstimatedApiEquivalent
+                        {hasReceiptCash
+                          ? "Receipt cash paid · max-reconciled with observed usage"
+                          : hasEstimatedApiEquivalent
                           ? "API-equivalent estimate · excluded from cash spend"
                           : costLabel(
                               group.totalCostUsd,

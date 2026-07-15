@@ -43,6 +43,10 @@ interface Provider {
   snapshotCostUsd?: number | null;
   snapshotCostFetchedAt?: string | null;
   pushedMonthToDateUsd?: number;
+  receiptCashPaidUsd?: number;
+  receiptCashEventCount?: number;
+  observedVariableUsageUsd?: number;
+  estimatedApiEquivalentUsd?: number;
   pushedCostCoverage: ProviderCostCoverage;
   pushedPricedEventCount: number;
   pushedUnpricedEventCount: number;
@@ -444,7 +448,7 @@ export default function ProviderDetailPage() {
         <summary className="cursor-pointer px-4 py-3 text-sm font-semibold text-gray-700 hover:bg-gray-50 dark:text-gray-200 dark:hover:bg-gray-700/40">
           Spend reconciliation
         </summary>
-        <dl className="grid grid-cols-2 gap-4 border-t border-gray-100 px-4 py-4 text-sm dark:border-gray-700 sm:grid-cols-3 lg:grid-cols-6">
+        <dl className="grid grid-cols-2 gap-4 border-t border-gray-100 px-4 py-4 text-sm dark:border-gray-700 sm:grid-cols-3 lg:grid-cols-5">
           <div>
             <dt className="text-xs text-gray-500 dark:text-gray-400">
               {spendCoverage === "partial" ? "Canonical known MTD" : "Canonical tracked MTD"}
@@ -457,6 +461,30 @@ export default function ProviderDetailPage() {
             <dt className="text-xs text-gray-500 dark:text-gray-400">Metered after max-dedupe</dt>
             <dd className="mt-1 font-medium text-gray-900 dark:text-gray-100">
               {hasKnownSpend ? formatUsd(reconciledMeteredUsd) : "Unknown"}
+            </dd>
+          </div>
+          <div>
+            <dt className="text-xs text-gray-500 dark:text-gray-400">Observed variable usage</dt>
+            <dd className="mt-1 font-medium text-gray-900 dark:text-gray-100">
+              {formatUsd(provider.observedVariableUsageUsd ?? 0)}
+            </dd>
+          </div>
+          <div>
+            <dt className="text-xs text-gray-500 dark:text-gray-400">Receipt cash paid</dt>
+            <dd className="mt-1 font-medium text-emerald-700 dark:text-emerald-300">
+              {formatUsd(provider.receiptCashPaidUsd ?? 0)}
+            </dd>
+            <dd className="mt-0.5 text-[10px] text-gray-500 dark:text-gray-400">
+              {provider.receiptCashEventCount ?? 0} exact receipt{provider.receiptCashEventCount === 1 ? "" : "s"}
+            </dd>
+          </div>
+          <div>
+            <dt className="text-xs text-gray-500 dark:text-gray-400">Claude API-equivalent</dt>
+            <dd className="mt-1 font-medium text-amber-700 dark:text-amber-300">
+              {formatUsd(provider.estimatedApiEquivalentUsd ?? 0)}
+            </dd>
+            <dd className="mt-0.5 text-[10px] text-gray-500 dark:text-gray-400">
+              Estimate only · excluded from cash spend
             </dd>
           </div>
           <div>
@@ -487,7 +515,7 @@ export default function ProviderDetailPage() {
         </dl>
         <p className="border-t border-gray-100 px-4 py-3 text-xs text-gray-500 dark:border-gray-700 dark:text-gray-400">
           {hasKnownSpend
-            ? "Canonical spend equals reconciled metered usage plus deduplicated fixed charges. The raw provider report is an overlapping input, not another amount to add."
+            ? "Canonical spend equals max(receipt cash, observed variable usage) plus deduplicated fixed charges. Claude API-equivalent estimates and the overlapping raw provider report are not added again."
             : "Usage is present without authoritative cost, so no zero-dollar spend or projection is asserted."}
           {provider.fixedCostConflict ? " Review the active fixed-cost conflict alert." : ""}
         </p>

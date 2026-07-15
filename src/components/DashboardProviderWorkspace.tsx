@@ -39,6 +39,10 @@ interface WorkspaceProvider {
   estimatedMonthlyCostUsd: number;
   projectedEomUsd: number;
   spentUsd?: number;
+  receiptCashPaidUsd?: number;
+  receiptCashEventCount?: number;
+  observedVariableUsageUsd?: number;
+  estimatedApiEquivalentUsd?: number;
   spendCoverage: ProviderCostCoverage;
   pushedCostCoverage: ProviderCostCoverage;
   pushedPricedEventCount: number;
@@ -722,6 +726,16 @@ export default function DashboardProviderWorkspace({
                                 <span className="block text-xs text-gray-500 dark:text-gray-400">
                                   {providerProjectionLabel(provider)}
                                 </span>
+                                {(provider.receiptCashPaidUsd ?? 0) > 0 && (
+                                  <span className="block text-xs text-emerald-700 dark:text-emerald-300">
+                                    {formatCurrency(provider.receiptCashPaidUsd ?? 0)} receipt cash
+                                  </span>
+                                )}
+                                {(provider.estimatedApiEquivalentUsd ?? 0) > 0 && (
+                                  <span className="block text-xs text-amber-700 dark:text-amber-300">
+                                    {formatCurrency(provider.estimatedApiEquivalentUsd ?? 0)} Claude estimate excluded
+                                  </span>
+                                )}
                                 <span className="block text-xs text-gray-500 dark:text-gray-400">
                                   {formatCurrency(provider.plan?.monthlyBudgetUsd ?? null)} budget
                                 </span>

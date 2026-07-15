@@ -6,6 +6,13 @@ import {
   normalizedProviderName,
   resolveProviderIdentity,
 } from "@/lib/provider-identity";
+import {
+  API_PREPAID_FUNDING_SERVICE,
+  BILLING_RECEIPT_SOURCE_APP,
+  RECEIPT_CASH_LABEL,
+  isReceiptCashEvent,
+  receiptCashProviderId,
+} from "@/lib/receipt-cash";
 
 export const STATUS_METRIC_TYPES = new Set(["quota_sync", "credit_balance"]);
 
@@ -76,6 +83,8 @@ export interface ExternalUsageEventSummaryGroup {
   unclassifiedCostEventCount: number;
   costCoverage: CostCoverage;
   totalCostUsd: number;
+  /** Exact cash paid on provider receipts; excluded from observed usage cost. */
+  receiptCashPaidUsd: number;
   estimatedApiEquivalentUsd: number;
   totalRequests: number;
   totalQuantity: number;
@@ -432,6 +441,7 @@ function mergeSummaryGroup(
   existing.unclassifiedCostEventCount += group.unclassifiedCostEventCount;
   existing.costCoverage = classifyCostCoverage(existing);
   existing.totalCostUsd += group.totalCostUsd;
+  existing.receiptCashPaidUsd += group.receiptCashPaidUsd;
   existing.estimatedApiEquivalentUsd += group.estimatedApiEquivalentUsd;
   existing.totalRequests += group.totalRequests;
   existing.totalQuantity += group.totalQuantity;
@@ -472,9 +482,13 @@ export async function summarizeExternalUsageEvents(
         environment: true,
         provider: true,
         service: true,
+        label: true,
+        keyRef: true,
+        billingMode: true,
         projectId: true,
         metricType: true,
         unit: true,
+        confidence: true,
         quantity: true,
         costUsd: true,
         requests: true,
@@ -489,6 +503,7 @@ export async function summarizeExternalUsageEvents(
     // reduction makes its peak memory grow linearly with event volume.
     for (const event of page) {
       const isClaudeCodeAnalytics = isClaudeCodeAnalyticsTelemetry(event);
+      const isReceiptCash = isReceiptCashEvent(event);
       mergeSummaryGroup(groups, {
         sourceApp: event.sourceApp,
         environment: event.environment,
@@ -499,12 +514,18 @@ export async function summarizeExternalUsageEvents(
         metricType: event.metricType,
         unit: event.unit,
         eventCount: 1,
-        pricedEventCount: isClaudeCodeAnalytics || event.costUsd == null ? 0 : 1,
-        unpricedEventCount: isClaudeCodeAnalytics || event.costUsd != null ? 0 : 1,
+        pricedEventCount:
+          isClaudeCodeAnalytics || isReceiptCash || event.costUsd == null ? 0 : 1,
+        unpricedEventCount:
+          isClaudeCodeAnalytics || isReceiptCash || event.costUsd != null ? 0 : 1,
         unclassifiedCostEventCount: 0,
         costCoverage:
-          !isClaudeCodeAnalytics && event.costUsd != null ? "complete" : "unknown",
-        totalCostUsd: isClaudeCodeAnalytics ? 0 : event.costUsd ?? 0,
+          !isClaudeCodeAnalytics && !isReceiptCash && event.costUsd != null
+            ? "complete"
+            : "unknown",
+        totalCostUsd:
+          isClaudeCodeAnalytics || isReceiptCash ? 0 : event.costUsd ?? 0,
+        receiptCashPaidUsd: isReceiptCash ? event.costUsd ?? 0 : 0,
         estimatedApiEquivalentUsd: isClaudeCodeAnalytics ? event.costUsd ?? 0 : 0,
         totalRequests: event.requests ?? 0,
         totalQuantity: event.quantity ?? 0,
@@ -534,9 +555,13 @@ export async function summarizeExternalUsageEvents(
             environment: true,
             provider: true,
             service: true,
+            label: true,
+            keyRef: true,
+            billingMode: true,
             projectId: true,
             metricType: true,
             unit: true,
+            confidence: true,
             eventCount: true,
             pricedEventCount: true,
             unpricedEventCount: true,
@@ -553,11 +578,12 @@ export async function summarizeExternalUsageEvents(
 
   for (const rollup of rollups) {
     const isClaudeCodeAnalytics = isClaudeCodeAnalyticsTelemetry(rollup);
+    const isReceiptCash = isReceiptCashEvent(rollup);
     const hasCoverageCounts =
       rollup.pricedEventCount != null ||
       rollup.unpricedEventCount != null ||
       rollup.unclassifiedCostEventCount != null;
-    const costCounts = isClaudeCodeAnalytics
+    const costCounts = isClaudeCodeAnalytics || isReceiptCash
       ? {
           pricedEventCount: 0,
           unpricedEventCount: 0,
@@ -582,7 +608,9 @@ export async function summarizeExternalUsageEvents(
       eventCount: rollup.eventCount,
       ...costCounts,
       costCoverage: classifyCostCoverage(costCounts),
-      totalCostUsd: isClaudeCodeAnalytics ? 0 : rollup.totalCostUsd,
+      totalCostUsd:
+        isClaudeCodeAnalytics || isReceiptCash ? 0 : rollup.totalCostUsd,
+      receiptCashPaidUsd: isReceiptCash ? rollup.totalCostUsd : 0,
       estimatedApiEquivalentUsd: isClaudeCodeAnalytics
         ? rollup.totalCostUsd
         : 0,
@@ -622,6 +650,90 @@ export interface ProviderPushedCost {
   unclassifiedCostEventCount: number;
 }
 
+export interface ProviderReceiptCash {
+  paidUsd: number;
+  eventCount: number;
+}
+
+/**
+ * Exact receipt cash is keyed by the provider UUID embedded in the importer
+ * keyRef. This prevents same-name provider rows from claiming one another's
+ * receipt evidence and continues to work after raw events become rollups.
+ */
+export async function sumMonthToDateReceiptCashByProviderId(
+  monthStart: Date,
+  rawCutoff: Date,
+  now: Date = new Date()
+): Promise<Map<string, ProviderReceiptCash>> {
+  const rawSince = monthStart > rawCutoff ? monthStart : rawCutoff;
+  const exactReceiptWhere = {
+    sourceApp: BILLING_RECEIPT_SOURCE_APP,
+    service: API_PREPAID_FUNDING_SERVICE,
+    label: RECEIPT_CASH_LABEL,
+    billingMode: "actual",
+    metricType: "cost",
+    unit: "usd",
+    confidence: "actual",
+  } as const;
+  const [rawGroups, rollups] = await Promise.all([
+    prisma.externalUsageEvent.groupBy({
+      by: [
+        "sourceApp",
+        "service",
+        "label",
+        "keyRef",
+        "billingMode",
+        "metricType",
+        "unit",
+        "confidence",
+      ],
+      where: { ...exactReceiptWhere, occurredAt: { gte: rawSince, lte: now } },
+      _sum: { costUsd: true },
+      _count: { _all: true },
+    }),
+    monthStart < rawCutoff
+      ? prisma.externalUsageEventDailyRollup.findMany({
+          where: {
+            ...exactReceiptWhere,
+            day: { gte: monthStart, lt: rawCutoff },
+            latestOccurredAt: { lte: now },
+          },
+          select: {
+            sourceApp: true,
+            service: true,
+            label: true,
+            keyRef: true,
+            billingMode: true,
+            metricType: true,
+            unit: true,
+            confidence: true,
+            totalCostUsd: true,
+            eventCount: true,
+          },
+        })
+      : Promise.resolve([]),
+  ]);
+
+  const totals = new Map<string, ProviderReceiptCash>();
+  const add = (row: ReceiptCashEventLikeWithCost, costUsd: number, eventCount: number) => {
+    const providerId = receiptCashProviderId(row);
+    if (!providerId) return;
+    const current = totals.get(providerId) ?? { paidUsd: 0, eventCount: 0 };
+    current.paidUsd += costUsd;
+    current.eventCount += eventCount;
+    totals.set(providerId, current);
+  };
+  for (const row of rawGroups) {
+    add(row, row._sum.costUsd ?? 0, row._count._all);
+  }
+  for (const rollup of rollups) {
+    add(rollup, rollup.totalCostUsd, rollup.eventCount);
+  }
+  return totals;
+}
+
+type ReceiptCashEventLikeWithCost = Parameters<typeof receiptCashProviderId>[0];
+
 export async function sumMonthToDateExternalCostByProvider(
   monthStart: Date,
   rawCutoff: Date
@@ -630,7 +742,17 @@ export async function sumMonthToDateExternalCostByProvider(
 
   const [rawGroups, rollups] = await Promise.all([
     prisma.externalUsageEvent.groupBy({
-      by: ["provider", "sourceApp", "service", "metricType"],
+      by: [
+        "provider",
+        "sourceApp",
+        "service",
+        "label",
+        "keyRef",
+        "billingMode",
+        "metricType",
+        "unit",
+        "confidence",
+      ],
       where: { 
         occurredAt: { gte: rawSince }, 
         metricType: { notIn: Array.from(STATUS_METRIC_TYPES) }
@@ -648,7 +770,12 @@ export async function sumMonthToDateExternalCostByProvider(
             provider: true,
             sourceApp: true,
             service: true,
+            label: true,
+            keyRef: true,
+            billingMode: true,
             metricType: true,
+            unit: true,
+            confidence: true,
             eventCount: true,
             pricedEventCount: true,
             unpricedEventCount: true,
@@ -698,6 +825,7 @@ export async function sumMonthToDateExternalCostByProvider(
   };
 
   for (const row of rawGroups) {
+    if (isReceiptCashEvent(row)) continue;
     add(
       row.provider,
       row.sourceApp,
@@ -712,6 +840,7 @@ export async function sumMonthToDateExternalCostByProvider(
     );
   }
   for (const rollup of rollups) {
+    if (isReceiptCashEvent(rollup)) continue;
     const hasCoverageCounts =
       rollup.pricedEventCount != null ||
       rollup.unpricedEventCount != null ||
@@ -751,7 +880,18 @@ export async function sumMonthToDateExternalCostAttribution(
 
   const [rawGroups, rollups] = await Promise.all([
     prisma.externalUsageEvent.groupBy({
-      by: ["provider", "sourceApp", "service", "projectId", "metricType"],
+      by: [
+        "provider",
+        "sourceApp",
+        "service",
+        "label",
+        "keyRef",
+        "billingMode",
+        "projectId",
+        "metricType",
+        "unit",
+        "confidence",
+      ],
       where: { 
         occurredAt: { gte: rawSince }, 
         metricType: { notIn: Array.from(STATUS_METRIC_TYPES) }
@@ -769,8 +909,13 @@ export async function sumMonthToDateExternalCostAttribution(
             provider: true,
             sourceApp: true,
             service: true,
+            label: true,
+            keyRef: true,
+            billingMode: true,
             projectId: true,
             metricType: true,
+            unit: true,
+            confidence: true,
             eventCount: true,
             pricedEventCount: true,
             unpricedEventCount: true,
@@ -814,7 +959,7 @@ export async function sumMonthToDateExternalCostAttribution(
   };
 
   for (const row of rawGroups) {
-    if (isClaudeCodeAnalyticsTelemetry(row)) continue;
+    if (isClaudeCodeAnalyticsTelemetry(row) || isReceiptCashEvent(row)) continue;
     add(
       row.provider,
       row.sourceApp,
@@ -829,7 +974,7 @@ export async function sumMonthToDateExternalCostAttribution(
     );
   }
   for (const rollup of rollups) {
-    if (isClaudeCodeAnalyticsTelemetry(rollup)) continue;
+    if (isClaudeCodeAnalyticsTelemetry(rollup) || isReceiptCashEvent(rollup)) continue;
     const hasCoverageCounts =
       rollup.pricedEventCount != null ||
       rollup.unpricedEventCount != null ||

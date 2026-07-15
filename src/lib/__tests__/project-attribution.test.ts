@@ -360,6 +360,71 @@ describe("project attribution (integration)", () => {
     });
   });
 
+  it("does not extrapolate receipt-backed direct or allocated project spend", async () => {
+    const provider = await prisma.provider.create({
+      data: {
+        name: "anthropic",
+        displayName: "Anthropic",
+        type: "push",
+        refreshIntervalMin: 60,
+      },
+    });
+    const directProject = await prisma.project.create({
+      data: { name: "Direct Project", monthlyBudgetUsd: 100 },
+    });
+    const allocatedProject = await prisma.project.create({
+      data: { name: "Allocated Project", monthlyBudgetUsd: 100 },
+    });
+    await prisma.providerProjectAllocation.create({
+      data: {
+        providerId: provider.id,
+        projectId: allocatedProject.id,
+        percentage: 100,
+      },
+    });
+    const digest = "f".repeat(64);
+    await persistExternalUsageEvents([
+      {
+        idempotencyKey: "receipt-covered-direct-usage",
+        sourceApp: "producer",
+        provider: "anthropic",
+        projectId: directProject.id,
+        billingMode: "actual",
+        metricType: "cost",
+        costUsd: 30,
+        occurredAt,
+      },
+      {
+        idempotencyKey: `billing-receipt:v1:${digest}`,
+        sourceApp: "billing-receipt-import",
+        provider: "anthropic",
+        service: "api-prepaid-funding",
+        label: "receipt_cash_paid",
+        keyRef: `provider:${provider.id}:billing-receipt:${digest}`,
+        billingMode: "actual",
+        metricType: "cost",
+        unit: "usd",
+        confidence: "actual",
+        costUsd: 47.25,
+        occurredAt,
+      },
+    ]);
+
+    const status = await computeProjectBudgetStatus(NOW);
+    expect(status.projects.find((row) => row.id === directProject.id)).toMatchObject({
+      directUsd: 30,
+      allocatedUsd: 0,
+      spentUsd: 30,
+      projectedEomUsd: 30,
+    });
+    expect(status.projects.find((row) => row.id === allocatedProject.id)).toMatchObject({
+      directUsd: 0,
+      allocatedUsd: 17.25,
+      spentUsd: 17.25,
+      projectedEomUsd: 17.25,
+    });
+  });
+
   it("uses identical duplicate-provider priority for spend and attribution", async () => {
     await prisma.provider.create({
       data: {

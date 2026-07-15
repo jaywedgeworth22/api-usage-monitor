@@ -4,6 +4,7 @@ import {
   classifyCostCoverage,
   sumMonthToDateExternalCostByProvider,
   sumMonthToDateExternalCostAttribution,
+  sumMonthToDateReceiptCashByProviderId,
   type CostCoverage,
   type ProviderPushedCost,
 } from "@/lib/external-usage-events";
@@ -54,6 +55,11 @@ export interface ProviderBudgetStatus {
   snapshotFixedCostIncludedUsd: number;
   snapshotCostIncludesUnknownFixed: boolean;
   pushedMonthToDateUsd: number;
+  /** Exact provider-receipt cash paid this UTC month. */
+  receiptCashPaidUsd: number;
+  receiptCashEventCount: number;
+  /** Provider snapshot/pushed variable cost before receipt max-reconciliation. */
+  observedVariableUsageUsd: number;
   /** Claude Code's analytics-only API-equivalent estimate; never cash spend. */
   estimatedApiEquivalentUsd: number;
   pushedCostCoverage: CostCoverage;
@@ -155,7 +161,13 @@ export async function computeBudgetStatus(now: Date = new Date()): Promise<Budge
   const monthStart = monthStartUtc(now);
   const rawCutoff = getExternalEventRawCutoff(now);
 
-  const [providers, pushedByProvider, latestCostTimes, materializedSubscriptionEvents] = await Promise.all([
+  const [
+    providers,
+    pushedByProvider,
+    receiptCashByProviderId,
+    latestCostTimes,
+    materializedSubscriptionEvents,
+  ] = await Promise.all([
     prisma.provider.findMany({
       orderBy: { name: "asc" },
       select: {
@@ -230,6 +242,7 @@ export async function computeBudgetStatus(now: Date = new Date()): Promise<Budge
       },
     }),
     sumMonthToDateExternalCostByProvider(monthStart, rawCutoff),
+    sumMonthToDateReceiptCashByProviderId(monthStart, rawCutoff, now),
     prisma.usageSnapshot.groupBy({
       by: ["providerId"],
       where: {
@@ -414,6 +427,10 @@ export async function computeBudgetStatus(now: Date = new Date()): Promise<Budge
       unclassifiedCostEventCount: 0,
     };
     const pushedMonthToDateUsd = pushed.usagePushed + pushed.subscriptionPushed;
+    const receiptCash = receiptCashByProviderId.get(p.id) ?? {
+      paidUsd: 0,
+      eventCount: 0,
+    };
     const pushedCostCoverage = classifyCostCoverage(pushed);
     // Usage-like pushed cost is deduped against the variable portion of the
     // poll snapshot via max(); fixed representations are reconciled below.
@@ -421,7 +438,17 @@ export async function computeBudgetStatus(now: Date = new Date()): Promise<Budge
       0,
       (snapshotCostUsd ?? 0) - snapshotFixedCostIncludedUsd
     );
-    const usageCost = Math.max(snapshotVariableCostUsd, pushed.usagePushed);
+    const observedVariableUsageUsd = Math.max(
+      snapshotVariableCostUsd,
+      pushed.usagePushed
+    );
+    // API prepaid-funding receipts and observed API usage are overlapping
+    // evidence of variable cash spend. Reconcile them with max(), while
+    // recurring subscriptions remain additive below.
+    const usageCost = Math.max(
+      observedVariableUsageUsd,
+      receiptCash.paidUsd
+    );
     const liveExternalFixed = p.externalBilling.filter((record) => {
       return (
         isExternalBillingLinkCandidate(record, {
@@ -488,7 +515,10 @@ export async function computeBudgetStatus(now: Date = new Date()): Promise<Budge
         pushed.unpricedEventCount +
         pushed.unclassifiedCostEventCount >
       0;
-    const hasKnownVariableCost = pushed.pricedEventCount > 0 || snapshotCostUsd != null;
+    const hasKnownVariableCost =
+      pushed.pricedEventCount > 0 ||
+      snapshotCostUsd != null ||
+      receiptCash.paidUsd > 0;
     const hasUnknownCost =
       pushed.unpricedEventCount > 0 || pushed.unclassifiedCostEventCount > 0;
     let spendCoverage: CostCoverage = hasUnknownCost
@@ -499,7 +529,7 @@ export async function computeBudgetStatus(now: Date = new Date()): Promise<Budge
           : "unknown"
       : hasPushedEvents || snapshotCostUsd != null
         ? "complete"
-        : fixedAccruedUsd > 0
+        : fixedAccruedUsd > 0 || receiptCash.paidUsd > 0
           ? "partial"
           : "unknown";
     // Anthropic individual accounts have no authoritative billing API. A
@@ -525,6 +555,18 @@ export async function computeBudgetStatus(now: Date = new Date()): Promise<Budge
       p.subscriptions,
       now
     );
+    // Receipt funding is a lumpy cash event, not a consumption sample. While
+    // it covers the observed variable usage, keep the receipt amount as the
+    // variable projection instead of annualizing/month-elapsed extrapolating
+    // that deposit. Once observed usage exceeds receipt cash, resume the
+    // ordinary usage-rate forecast with the receipt as a lower bound.
+    const projectedVariableUsageUsd =
+      receiptCash.paidUsd >= observedVariableUsageUsd
+        ? receiptCash.paidUsd
+        : Math.max(
+            receiptCash.paidUsd,
+            calculateEomForecast(observedVariableUsageUsd, 0, now)
+          );
     const monthlyBudgetUsd = plan?.monthlyBudgetUsd ?? null;
 
     // Reuse the shared alert logic for budget alerts by feeding the combined usage cost as the
@@ -609,6 +651,9 @@ export async function computeBudgetStatus(now: Date = new Date()): Promise<Budge
       snapshotFixedCostIncludedUsd,
       snapshotCostIncludesUnknownFixed,
       pushedMonthToDateUsd,
+      receiptCashPaidUsd: receiptCash.paidUsd,
+      receiptCashEventCount: receiptCash.eventCount,
+      observedVariableUsageUsd,
       estimatedApiEquivalentUsd: pushed.estimatedApiEquivalentUsd,
       pushedCostCoverage,
       pushedPricedEventCount: pushed.pricedEventCount,
@@ -622,7 +667,8 @@ export async function computeBudgetStatus(now: Date = new Date()): Promise<Budge
       forecastedSubscriptionRenewalsUsd,
       spentUsd,
       projectedEomUsd:
-        calculateEomForecast(spentUsd, fixedAccruedUsd, now) +
+        fixedAccruedUsd +
+        projectedVariableUsageUsd +
         forecastedSubscriptionRenewalsUsd,
       remainingUsd,
       percentUsed,
@@ -748,6 +794,12 @@ export async function computeProjectBudgetStatus(now: Date = new Date()): Promis
   >();
   const attributedByProviderId = new Map<string, number>();
   const attributedFixedByProviderId = new Map<string, number>();
+  const directVariableByProviderProjectId = new Map<
+    string,
+    Map<string, number>
+  >();
+  const totalDirectVariableByProviderId = new Map<string, number>();
+  const providerById = new Map(providerStatus.providers.map((p) => [p.id, p]));
   const projectProviderCandidates = identityProviders.map((provider) => ({
     id: provider.id,
     name: provider.name,
@@ -779,6 +831,17 @@ export async function computeProjectBudgetStatus(now: Date = new Date()): Promis
         providerOwner.id,
         (attributedByProviderId.get(providerOwner.id) ?? 0) + row.costUsd
       );
+      if (row.metricType !== "subscription") {
+        const byProject =
+          directVariableByProviderProjectId.get(providerOwner.id) ??
+          new Map<string, number>();
+        byProject.set(projectId, (byProject.get(projectId) ?? 0) + row.costUsd);
+        directVariableByProviderProjectId.set(providerOwner.id, byProject);
+        totalDirectVariableByProviderId.set(
+          providerOwner.id,
+          (totalDirectVariableByProviderId.get(providerOwner.id) ?? 0) + row.costUsd
+        );
+      }
     }
     if (row.metricType === "subscription") {
       directFixedByProjectId.set(
@@ -794,7 +857,35 @@ export async function computeProjectBudgetStatus(now: Date = new Date()): Promis
     }
   }
 
-  const providerById = new Map(providerStatus.providers.map((p) => [p.id, p]));
+  // A prepaid receipt is a lumpy cash event, not a daily consumption sample.
+  // When it covers observed variable usage, apportion that non-forecastable
+  // amount first across directly attributed usage and then across the residual
+  // that percentage allocations distribute. This keeps the project view
+  // consistent with the provider forecast without double-counting receipts.
+  const receiptBackedVariableByProviderId = new Map<string, number>();
+  const directReceiptBackedByProjectId = new Map<string, number>();
+  const directReceiptBackedByProviderId = new Map<string, number>();
+  for (const provider of providerStatus.providers) {
+    if (provider.receiptCashPaidUsd < provider.observedVariableUsageUsd) continue;
+    const receiptBackedVariableUsd = Math.min(
+      Math.max(0, provider.spentUsd - provider.fixedAccruedUsd),
+      provider.receiptCashPaidUsd
+    );
+    if (receiptBackedVariableUsd <= 0) continue;
+    receiptBackedVariableByProviderId.set(provider.id, receiptBackedVariableUsd);
+    const totalDirectVariable = totalDirectVariableByProviderId.get(provider.id) ?? 0;
+    const directCovered = Math.min(receiptBackedVariableUsd, totalDirectVariable);
+    directReceiptBackedByProviderId.set(provider.id, directCovered);
+    if (directCovered <= 0 || totalDirectVariable <= 0) continue;
+    for (const [projectId, directVariable] of
+      directVariableByProviderProjectId.get(provider.id) ?? []) {
+      directReceiptBackedByProjectId.set(
+        projectId,
+        (directReceiptBackedByProjectId.get(projectId) ?? 0) +
+          directCovered * (directVariable / totalDirectVariable)
+      );
+    }
+  }
 
   const projectStatuses: ProjectBudgetStatus[] = projects.map((proj) => {
     // 1. Direct per-event attribution (projectId, plus legacy name match).
@@ -806,6 +897,7 @@ export async function computeProjectBudgetStatus(now: Date = new Date()): Promis
     // usage, and any untagged pushed telemetry).
     let allocatedUsd = 0;
     let allocatedFixedUsd = 0;
+    let allocatedReceiptBackedUsd = 0;
     let allocatedHasKnownCost = false;
     let allocatedHasCurrentUnknownCost = false;
     let allocatedHasLegacyUnknownCost = false;
@@ -821,6 +913,13 @@ export async function computeProjectBudgetStatus(now: Date = new Date()): Promis
       if (ratio <= 0) continue;
       allocatedUsd += residual * ratio;
       allocatedFixedUsd += Math.min(residual, fixedResidual) * ratio;
+      const receiptBackedResidual = Math.max(
+        0,
+        (receiptBackedVariableByProviderId.get(provider.id) ?? 0) -
+          (directReceiptBackedByProviderId.get(provider.id) ?? 0)
+      );
+      allocatedReceiptBackedUsd +=
+        Math.min(residual, receiptBackedResidual) * ratio;
       if (provider.spendCoverage === "complete") {
         allocatedHasKnownCost = true;
       } else {
@@ -844,6 +943,8 @@ export async function computeProjectBudgetStatus(now: Date = new Date()): Promis
     }
 
     const spentUsd = directUsd + allocatedUsd;
+    const directReceiptBackedUsd =
+      directReceiptBackedByProjectId.get(proj.id) ?? 0;
     const directCoverage = directCoverageByProjectId.get(proj.id) ?? {
       pricedEventCount: 0,
       unpricedEventCount: 0,
@@ -893,7 +994,13 @@ export async function computeProjectBudgetStatus(now: Date = new Date()): Promis
       spentUsd,
       projectedEomUsd: calculateEomForecast(
         spentUsd,
-        Math.min(spentUsd, directFixedUsd + allocatedFixedUsd),
+        Math.min(
+          spentUsd,
+          directFixedUsd +
+            allocatedFixedUsd +
+            directReceiptBackedUsd +
+            allocatedReceiptBackedUsd
+        ),
         now
       ),
       spendCoverage,

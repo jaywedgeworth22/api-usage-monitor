@@ -253,6 +253,10 @@ export async function GET() {
       snapshotCostIncludesUnknownFixed:
         canonicalBudget?.snapshotCostIncludesUnknownFixed ?? false,
       pushedMonthToDateUsd: canonicalBudget?.pushedMonthToDateUsd ?? 0,
+      receiptCashPaidUsd: canonicalBudget?.receiptCashPaidUsd ?? 0,
+      receiptCashEventCount: canonicalBudget?.receiptCashEventCount ?? 0,
+      observedVariableUsageUsd:
+        canonicalBudget?.observedVariableUsageUsd ?? 0,
       estimatedApiEquivalentUsd:
         canonicalBudget?.estimatedApiEquivalentUsd ?? 0,
       pushedCostCoverage: canonicalBudget?.pushedCostCoverage ?? "unknown",
