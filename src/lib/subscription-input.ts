@@ -84,6 +84,16 @@ function requireNonNegativeNumber(value: unknown, field: string): number {
   return parsed;
 }
 
+// Strict boolean validation: reject truthy-but-not-boolean values (e.g. the
+// string "false", 1, {}, non-empty arrays) that `Boolean(value)` would
+// silently coerce to `true`.
+function parseBoolean(value: unknown, field: string): boolean {
+  if (typeof value !== "boolean") {
+    throw new Error(`${field} must be a boolean`);
+  }
+  return value;
+}
+
 function parseInterval(value: unknown): SubscriptionInterval {
   if (value === undefined || value === null || value === "") return "monthly";
   if (typeof value !== "string" || !isSubscriptionInterval(value)) {
@@ -220,7 +230,7 @@ export function parseSubscriptionCreateInput(
     startDate,
     currentPeriodStart,
     nextRenewalAt,
-    autoRenew: record.autoRenew === undefined ? true : Boolean(record.autoRenew),
+    autoRenew: record.autoRenew === undefined ? true : parseBoolean(record.autoRenew, "autoRenew"),
     status: parseStatus(record.status),
     notes: cleanNullableString(record.notes, "notes"),
     knobEnv: parseKnobEnv(record.knobEnv, "knobEnv"),
@@ -259,7 +269,7 @@ export function parseSubscriptionUpdateInput(body: unknown): SubscriptionUpdateI
   if (record.currency !== undefined) {
     update.currency = parseCurrency(record.currency);
   }
-  if (record.autoRenew !== undefined) update.autoRenew = Boolean(record.autoRenew);
+  if (record.autoRenew !== undefined) update.autoRenew = parseBoolean(record.autoRenew, "autoRenew");
   if (record.status !== undefined) update.status = parseStatus(record.status);
   if (record.notes !== undefined) update.notes = cleanNullableString(record.notes, "notes");
   if (record.interval !== undefined) update.interval = parseInterval(record.interval);
