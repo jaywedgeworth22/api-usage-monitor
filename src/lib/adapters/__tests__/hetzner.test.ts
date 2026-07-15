@@ -65,6 +65,7 @@ const completePricing = {
 
 function installHetznerMock(options?: {
   pricing?: Record<string, unknown>;
+  mockExchangeRate?: number;
   override?: (url: URL) => Response | undefined;
 }) {
   const rows: Record<string, unknown[]> = {
@@ -159,6 +160,15 @@ function installHetznerMock(options?: {
     const url = new URL(String(input));
     const override = options?.override?.(url);
     if (override) return override;
+    if (url.hostname === "open.er-api.com") {
+      return new Response(
+        JSON.stringify({
+          result: "success",
+          rates: { USD: options?.mockExchangeRate ?? 1.09 },
+        }),
+        { status: 200, headers: { "content-type": "application/json" } }
+      );
+    }
     if (url.pathname === "/v1/pricing") {
       return new Response(
         JSON.stringify({ pricing: options?.pricing ?? completePricing }),
@@ -174,7 +184,10 @@ function installHetznerMock(options?: {
 }
 
 describe("hetzner adapter", () => {
-  afterEach(() => vi.unstubAllGlobals());
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.unstubAllEnvs();
+  });
 
   it("discovers all priced resource classes without treating run-rate as USD spend", async () => {
     const fetchMock = installHetznerMock();
@@ -393,7 +406,7 @@ describe("hetzner adapter", () => {
 
   it("converts Euros to USD using a custom exchange rate when HETZNER_EUR_USD_RATE is configured", async () => {
     vi.stubEnv("HETZNER_EUR_USD_RATE", "1.15");
-    installHetznerMock();
+    installHetznerMock({ mockExchangeRate: 1.09 });
 
     const result = await fetchUsage("fake-key");
 
@@ -401,6 +414,39 @@ describe("hetzner adapter", () => {
       result.externalBilling?.records.find((r) => r.externalId === "1")
     ).toMatchObject({
       amountUsd: 4.025, // 3.50 * 1.15
+      currency: "USD",
+    });
+  });
+
+  it("converts Euros to USD using the dynamic exchange rate returned by open.er-api.com", async () => {
+    installHetznerMock({ mockExchangeRate: 1.12 });
+
+    const result = await fetchUsage("fake-key");
+
+    expect(
+      result.externalBilling?.records.find((r) => r.externalId === "1")
+    ).toMatchObject({
+      amountUsd: 3.92, // 3.50 * 1.12
+      currency: "USD",
+    });
+  });
+
+  it("falls back to the default rate when the exchange rate API fails", async () => {
+    installHetznerMock({
+      override: (url) => {
+        if (url.hostname === "open.er-api.com") {
+          return new Response("Internal Server Error", { status: 500 });
+        }
+        return undefined;
+      },
+    });
+
+    const result = await fetchUsage("fake-key");
+
+    expect(
+      result.externalBilling?.records.find((r) => r.externalId === "1")
+    ).toMatchObject({
+      amountUsd: 3.815, // 3.50 * 1.09
       currency: "USD",
     });
   });

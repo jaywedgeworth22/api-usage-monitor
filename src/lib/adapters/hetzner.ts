@@ -279,8 +279,27 @@ export async function fetchUsage(apiKey: string): Promise<UsageResult> {
     invalidResponse("Hetzner returned no pricing catalog");
   }
   const rawCurrency = pricing.currency?.trim().toUpperCase() || null;
-  const exchangeRate = parseFloat(process.env.HETZNER_EUR_USD_RATE || "1.09");
+  let exchangeRate = 1.09;
   const currencyConversionApplied = rawCurrency === "EUR";
+  if (currencyConversionApplied) {
+    try {
+      const rateRes = await fetchJson("https://open.er-api.com/v6/latest/EUR");
+      if (rateRes.ok && rateRes.data && typeof rateRes.data === "object") {
+        const rates = (rateRes.data as { rates?: Record<string, number> }).rates;
+        if (rates && typeof rates.USD === "number" && rates.USD > 0) {
+          exchangeRate = rates.USD;
+        }
+      }
+    } catch {
+      // Gracefully fall back to HETZNER_EUR_USD_RATE or default
+    }
+    if (process.env.HETZNER_EUR_USD_RATE) {
+      const parsed = parseFloat(process.env.HETZNER_EUR_USD_RATE);
+      if (!isNaN(parsed) && parsed > 0) {
+        exchangeRate = parsed;
+      }
+    }
+  }
   const currency = currencyConversionApplied ? "USD" : rawCurrency;
 
   const convertPrice = (price: number | null | undefined): number | null => {
