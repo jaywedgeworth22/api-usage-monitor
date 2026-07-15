@@ -10,6 +10,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 // the real 90s budget.
 
 const findMany = vi.fn();
+const findFirst = vi.fn();
 const create = vi.fn();
 const fetchProviderUsage = vi.fn();
 const runUsageMaintenance = vi.fn();
@@ -17,7 +18,10 @@ const runUsageMaintenance = vi.fn();
 vi.mock("@/lib/prisma", () => ({
   prisma: {
     provider: { findMany: () => findMany(), create: vi.fn() },
-    usageSnapshot: { create: (args: unknown) => create(args) },
+    usageSnapshot: {
+      create: (args: unknown) => create(args),
+      findFirst: (args: unknown) => findFirst(args),
+    },
     $transaction: (run: (tx: unknown) => unknown) =>
       run({ usageSnapshot: { create: (args: unknown) => create(args) } }),
   },
@@ -50,6 +54,8 @@ describe("fetchAllDueProviders per-provider timeout budget", () => {
   beforeEach(() => {
     vi.resetModules();
     findMany.mockReset();
+    findFirst.mockReset();
+    findFirst.mockResolvedValue(null);
     create.mockReset();
     fetchProviderUsage.mockReset();
     runUsageMaintenance.mockReset();
@@ -270,5 +276,251 @@ describe("fetchAllDueProviders per-provider timeout budget", () => {
       failures: 0,
       skipped: 0,
     });
+  });
+
+  it("persists a safe partial snapshot before surfacing postPersistError", async () => {
+    const { AdapterError } = await import("@/lib/adapters/helpers");
+    const postPersistError = new AdapterError(
+      "Billing sync failed: secret-that-must-not-persist",
+      {
+        code: "HTTP_ERROR",
+        status: 503,
+        retryable: true,
+      }
+    );
+    fetchProviderUsage.mockResolvedValue({
+      balance: null,
+      totalCost: null,
+      totalRequests: null,
+      credits: 90,
+      rawData: {
+        keyValidation: { outcome: "valid", status: 200 },
+        billing: { configured: true, status: "error" },
+      },
+      postPersistError,
+    });
+
+    const { recordProviderUsage } = await import("@/lib/usage-recorder");
+
+    await expect(
+      recordProviderUsage(providerRow("partial") as never)
+    ).rejects.toBe(postPersistError);
+    expect(create).toHaveBeenCalledTimes(1);
+    expect(create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          providerId: "id-partial",
+          totalCost: null,
+          credits: 90,
+          rawData: expect.objectContaining({
+            keyValidation: { outcome: "valid", status: 200 },
+            billing: { configured: true, status: "error" },
+            __apiUsageMonitor: {
+              version: 1,
+              partialFailure: {
+                code: "HTTP_ERROR",
+                status: 503,
+                retryable: true,
+              },
+            },
+          }),
+        }),
+      })
+    );
+    const persistedRawData = create.mock.calls[0]?.[0]?.data?.rawData;
+    expect(JSON.stringify(persistedRawData)).not.toContain(
+      "secret-that-must-not-persist"
+    );
+    expect(JSON.stringify(persistedRawData)).not.toContain("Billing sync failed");
+  });
+
+  it("retries a fresh retryable partial snapshot on the next scheduler tick", async () => {
+    const { AdapterError } = await import("@/lib/adapters/helpers");
+    fetchProviderUsage.mockResolvedValueOnce({
+      balance: null,
+      totalCost: null,
+      totalRequests: null,
+      credits: 90,
+      rawData: { billing: { configured: true, status: "error" } },
+      postPersistError: new AdapterError("Temporary billing outage", {
+        code: "HTTP_ERROR",
+        status: 503,
+        retryable: true,
+      }),
+    });
+
+    const { fetchAllDueProviders, recordProviderUsage } = await import(
+      "@/lib/usage-recorder"
+    );
+    await expect(
+      recordProviderUsage(providerRow("partial-retry") as never)
+    ).rejects.toMatchObject({ code: "HTTP_ERROR", retryable: true });
+
+    const firstWrite = create.mock.calls[0]?.[0]?.data;
+    findMany.mockResolvedValue([
+      {
+        ...providerRow("partial-retry"),
+        snapshots: [
+          {
+            fetchedAt: new Date(firstWrite.fetchedAt.getTime() + 1_000),
+            rawData: null,
+          },
+        ],
+      },
+    ]);
+    findFirst.mockResolvedValueOnce({
+      fetchedAt: firstWrite.fetchedAt,
+      rawData: firstWrite.rawData,
+    });
+    fetchProviderUsage.mockResolvedValueOnce({
+      balance: 1,
+      totalCost: 2,
+      totalRequests: 3,
+      credits: 4,
+      rawData: {},
+    });
+    create.mockClear();
+
+    const result = await fetchAllDueProviders();
+
+    expect(result).toMatchObject({
+      total: 1,
+      successes: 1,
+      failures: 0,
+      skipped: 0,
+    });
+    expect(fetchProviderUsage).toHaveBeenCalledTimes(2);
+    expect(create).toHaveBeenCalledTimes(1);
+    expect(findFirst).toHaveBeenCalledWith({
+      where: {
+        providerId: "id-partial-retry",
+        rawData: { not: expect.anything() },
+      },
+      orderBy: { fetchedAt: "desc" },
+      select: { fetchedAt: true, rawData: true },
+    });
+  });
+
+  it("does not let a fresh pushed snapshot hide a stale poll", async () => {
+    const now = new Date();
+    findMany.mockResolvedValue([
+      {
+        ...providerRow("stale-poll"),
+        snapshots: [{ fetchedAt: now, rawData: null }],
+      },
+    ]);
+    findFirst.mockResolvedValueOnce({
+      fetchedAt: new Date(now.getTime() - 61 * 60 * 1000),
+      rawData: { providerPoll: "complete" },
+    });
+    fetchProviderUsage.mockResolvedValueOnce({
+      balance: 1,
+      totalCost: 2,
+      totalRequests: 3,
+      credits: 4,
+      rawData: {},
+    });
+
+    const { fetchAllDueProviders } = await import("@/lib/usage-recorder");
+    const result = await fetchAllDueProviders();
+
+    expect(result).toMatchObject({
+      total: 1,
+      successes: 1,
+      failures: 0,
+      skipped: 0,
+    });
+    expect(fetchProviderUsage).toHaveBeenCalledOnce();
+  });
+
+  it("uses a fresh poll behind a pushed snapshot for interval skipping", async () => {
+    const now = new Date();
+    findMany.mockResolvedValue([
+      {
+        ...providerRow("fresh-poll"),
+        snapshots: [{ fetchedAt: now, rawData: null }],
+      },
+    ]);
+    findFirst.mockResolvedValueOnce({
+      fetchedAt: new Date(now.getTime() - 30 * 60 * 1000),
+      rawData: { providerPoll: "complete" },
+    });
+
+    const { fetchAllDueProviders } = await import("@/lib/usage-recorder");
+    const result = await fetchAllDueProviders();
+
+    expect(result).toMatchObject({
+      total: 1,
+      successes: 0,
+      failures: 0,
+      skipped: 1,
+    });
+    expect(fetchProviderUsage).not.toHaveBeenCalled();
+  });
+
+  it("respects the normal interval after a nonretryable partial snapshot", async () => {
+    findMany.mockResolvedValue([
+      {
+        ...providerRow("partial-terminal"),
+        snapshots: [
+          {
+            fetchedAt: new Date(),
+            rawData: {
+              __apiUsageMonitor: {
+                version: 1,
+                partialFailure: {
+                  code: "HTTP_ERROR",
+                  status: 404,
+                  retryable: false,
+                },
+              },
+            },
+          },
+        ],
+      },
+    ]);
+
+    const { fetchAllDueProviders } = await import("@/lib/usage-recorder");
+    const result = await fetchAllDueProviders();
+
+    expect(result).toMatchObject({
+      total: 1,
+      successes: 0,
+      failures: 0,
+      skipped: 1,
+    });
+    expect(fetchProviderUsage).not.toHaveBeenCalled();
+    expect(create).not.toHaveBeenCalled();
+  });
+
+  it("strips adapter-supplied retry metadata instead of trusting it", async () => {
+    fetchProviderUsage.mockResolvedValue({
+      balance: null,
+      totalCost: null,
+      totalRequests: null,
+      credits: null,
+      rawData: {
+        providerField: "preserved",
+        __apiUsageMonitor: {
+          version: 1,
+          partialFailure: {
+            code: "HTTP_ERROR",
+            status: 503,
+            retryable: true,
+          },
+        },
+      },
+    });
+
+    const { recordProviderUsage } = await import("@/lib/usage-recorder");
+    await recordProviderUsage(providerRow("spoof") as never);
+
+    expect(create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          rawData: { providerField: "preserved" },
+        }),
+      })
+    );
   });
 });

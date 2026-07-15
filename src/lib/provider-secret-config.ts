@@ -122,6 +122,21 @@ export function decryptProviderSecretConfig(
   return encrypted ? decryptJson(encrypted) : {};
 }
 
+/** Full server-only adapter configuration, including decrypted secrets. */
+export function providerConfigForServer(
+  config: unknown,
+  encryptedSecretConfig: string | null | undefined
+): Record<string, unknown> {
+  const split = splitProviderConfig(config);
+  return mergeProviderConfig(
+    split.publicConfig,
+    mergeProviderConfig(
+      split.secretConfig,
+      decryptProviderSecretConfig(encryptedSecretConfig)
+    )
+  );
+}
+
 function collectFieldPaths(
   value: Record<string, unknown>,
   prefix = ""

@@ -7,9 +7,14 @@ import { setupPrismaSqliteTestDb } from "@/lib/__tests__/setup-test-db";
 
 let testDir: string;
 let PUT: typeof import("../route").PUT;
+let GET: typeof import("../route").GET;
+let GET_COLLECTION: typeof import("../../route").GET;
 let prisma: typeof import("@/lib/prisma").prisma;
 let encryptJson: typeof import("@/lib/crypto").encryptJson;
 let decryptJson: typeof import("@/lib/crypto").decryptJson;
+let encrypt: typeof import("@/lib/crypto").encrypt;
+let geminiApiKeyFingerprint: typeof import("@/lib/gemini-key-status").geminiApiKeyFingerprint;
+let geminiBillingConfigFingerprint: typeof import("@/lib/gemini-key-status").geminiBillingConfigFingerprint;
 
 beforeAll(async () => {
   testDir = fs.mkdtempSync(path.join(os.tmpdir(), "provider-route-test-"));
@@ -18,9 +23,11 @@ beforeAll(async () => {
   process.env.ENCRYPTION_KEY = "33".repeat(32);
   setupPrismaSqliteTestDb(dbPath);
 
-  ({ PUT } = await import("../route"));
+  ({ GET, PUT } = await import("../route"));
+  ({ GET: GET_COLLECTION } = await import("../../route"));
   ({ prisma } = await import("@/lib/prisma"));
-  ({ encryptJson, decryptJson } = await import("@/lib/crypto"));
+  ({ encrypt, encryptJson, decryptJson } = await import("@/lib/crypto"));
+  ({ geminiApiKeyFingerprint, geminiBillingConfigFingerprint } = await import("@/lib/gemini-key-status"));
 }, 60_000);
 
 afterAll(async () => {
@@ -197,5 +204,135 @@ describe("PUT /api/providers/:id secret config operations", () => {
       alertConfigGeneration: 1,
       plan: { lowBalanceUsd: 5 },
     });
+  });
+});
+
+describe("GET /api/providers/:id Gemini key status", () => {
+  it("returns sanitized current-key health without exposing snapshot raw data", async () => {
+    const apiKey = "test-current-google-cloud-console-key";
+    const billingConfig = {
+      billingDataset: "billing-project.billing_export",
+      googleProjectId: "gemini-production",
+      serviceAccountJson: "test-service-account-json",
+    };
+    const provider = await prisma.provider.create({
+      data: {
+        name: "google-ai",
+        displayName: "Google AI",
+        type: "builtin",
+        apiKey: encrypt(apiKey),
+        config: {
+          billingDataset: billingConfig.billingDataset,
+          googleProjectId: billingConfig.googleProjectId,
+        },
+        secretConfig: encryptJson({
+          serviceAccountJson: billingConfig.serviceAccountJson,
+        }),
+        refreshIntervalMin: 60,
+        snapshots: {
+          create: {
+            fetchedAt: new Date("2026-07-14T23:00:00.000Z"),
+            rawData: {
+              keyValidation: {
+                ok: true,
+                status: 200,
+                availableModelCount: 50,
+                credentialFingerprint: geminiApiKeyFingerprint(apiKey),
+                upstreamBody: "must-not-be-returned",
+              },
+              billing: {
+                configured: true,
+                status: "pending",
+                configFingerprint:
+                  geminiBillingConfigFingerprint(billingConfig),
+                privateBillingPayload: "must-not-be-returned",
+              },
+            },
+          },
+        },
+        externalBilling: {
+          create: [
+            {
+              source: "google-cloud-billing-export",
+              externalId: "gemini-mtd:prior-config",
+              kind: "billing_period",
+              serviceName: "Gemini API",
+              status: "active",
+              amountUsd: 91.25,
+              currency: "USD",
+              syncedAt: new Date("2026-07-14T22:00:00.000Z"),
+            },
+            {
+              source: "google-gemini-rate-limits",
+              externalId: "gemini-api-key",
+              kind: "account",
+              planName: "Gemini API quota",
+              status: "active",
+              requestLimit: 100,
+              syncedAt: new Date("2026-07-14T22:00:00.000Z"),
+            },
+          ],
+        },
+      },
+    });
+    // Pushed quota/credit status creates a newer snapshot without adapter
+    // rawData; it must remain the latest chart row without erasing the last
+    // credential/billing check.
+    await prisma.usageSnapshot.create({
+      data: {
+        providerId: provider.id,
+        fetchedAt: new Date("2026-07-14T23:05:00.000Z"),
+        totalRequests: 123,
+      },
+    });
+
+    const response = await GET(
+      new NextRequest(
+        `https://usage.jays.services/api/providers/${provider.id}`
+      ),
+      { params: Promise.resolve({ id: provider.id }) }
+    );
+    const body = await response.json();
+    const serialized = JSON.stringify(body);
+
+    expect(response.status).toBe(200);
+    expect(body.geminiKeyStatus).toEqual({
+      state: "valid",
+      httpStatus: 200,
+      availableModelCount: 50,
+      checkedAt: "2026-07-14T23:00:00.000Z",
+    });
+    expect(body.geminiBillingStatus).toEqual({
+      state: "pending",
+      errorCode: null,
+      httpStatus: null,
+      retryable: false,
+      checkedAt: "2026-07-14T23:00:00.000Z",
+    });
+    expect(body.latestSnapshot.fetchedAt).toBe("2026-07-14T23:05:00.000Z");
+    expect(body.latestSnapshot.totalRequests).toBe(123);
+    expect(body.latestSnapshot).not.toHaveProperty("rawData");
+    expect(body.externalBilling).toEqual([
+      expect.objectContaining({
+        source: "google-gemini-rate-limits",
+        externalId: "gemini-api-key",
+      }),
+    ]);
+    expect(serialized).not.toContain(apiKey);
+    expect(serialized).not.toContain("must-not-be-returned");
+    expect(serialized).not.toContain(geminiApiKeyFingerprint(apiKey));
+
+    const collectionResponse = await GET_COLLECTION();
+    const collectionBody = await collectionResponse.json();
+    const collectionProvider = collectionBody.find(
+      (entry: { id?: unknown }) => entry.id === provider.id
+    );
+    expect(collectionResponse.status).toBe(200);
+    expect(collectionProvider.externalBilling).toEqual([
+      expect.objectContaining({
+        source: "google-gemini-rate-limits",
+        externalId: "gemini-api-key",
+      }),
+    ]);
   });
 });

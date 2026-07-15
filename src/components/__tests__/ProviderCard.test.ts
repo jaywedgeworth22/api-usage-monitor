@@ -90,4 +90,39 @@ describe("ProviderCard", () => {
     expect(html).toContain("from known costs");
     expect(html).toContain("3 unpriced events");
   });
+
+  it("separates Gemini billing freshness from the latest connection update", () => {
+    const html = renderToStaticMarkup(
+      createElement(ProviderCard, {
+        id: "gemini",
+        name: "google-ai",
+        displayName: "Gemini",
+        type: "builtin",
+        isActive: true,
+        spentUsd: 50,
+        projectedEomUsd: 50,
+        spendCoverage: "partial",
+        snapshotCostFetchedAt: "2026-07-10T20:00:00.000Z",
+        geminiBillingStatus: {
+          state: "error",
+          errorCode: "HTTP_ERROR",
+          httpStatus: 503,
+          retryable: true,
+          checkedAt: "2026-07-14T23:00:00.000Z",
+        },
+        latestSnapshot: {
+          balance: null,
+          totalCost: null,
+          totalRequests: null,
+          credits: null,
+          fetchedAt: "2026-07-14T23:00:00.000Z",
+        },
+      })
+    );
+
+    expect(html).toContain("Google billing failed");
+    expect(html).toContain("Cost snapshot fetched");
+    expect(html).toContain("Latest snapshot");
+    expect(html).not.toContain("Last updated:");
+  });
 });

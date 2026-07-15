@@ -27,6 +27,19 @@ export interface ProviderIntegrationInstanceState {
   lastSnapshotAt?: string | null;
   externalBillingRecordCount: number;
   externalBillingSources: string[];
+  geminiKeyStatus?: {
+    state: "valid" | "invalid" | "unreadable" | "unavailable" | "unchecked" | "not_configured";
+    httpStatus: number | null;
+    availableModelCount: number | null;
+    checkedAt: string | null;
+  } | null;
+  geminiBillingStatus?: {
+    state: "ready" | "pending" | "error" | "configuration_changed" | "unchecked" | "not_configured";
+    errorCode: string | null;
+    httpStatus: number | null;
+    retryable: boolean;
+    checkedAt: string | null;
+  } | null;
 }
 
 const MODE_LABELS: Record<IntegrationMode, string> = {
@@ -101,6 +114,61 @@ export default function ProviderIntegrationDrawer({
     (instanceState?.anthropicAdminApiConfigured ?? false);
   const anthropicWithoutAdmin =
     profile.name === "anthropic" && !anthropicAdminConfigured;
+  const pollingNotApplicable =
+    profile.mode === "manual" || profile.mode === "push-only";
+  const geminiKeyStatus =
+    profile.name === "google-ai" ? instanceState?.geminiKeyStatus ?? null : null;
+  const geminiBillingStatus =
+    profile.name === "google-ai"
+      ? instanceState?.geminiBillingStatus ?? null
+      : null;
+
+  const geminiKeyStatusText = geminiKeyStatus
+    ? geminiKeyStatus.state === "valid"
+      ? `Verified${
+          geminiKeyStatus.availableModelCount == null
+            ? ""
+            : ` · ${geminiKeyStatus.availableModelCount} models visible`
+        }`
+      : geminiKeyStatus.state === "invalid"
+        ? `Rejected by Gemini API${
+            geminiKeyStatus.httpStatus == null
+              ? ""
+              : ` · HTTP ${geminiKeyStatus.httpStatus}`
+          }`
+        : geminiKeyStatus.state === "unreadable"
+          ? "Stored key cannot be decrypted"
+        : geminiKeyStatus.state === "unavailable"
+          ? `Check unavailable${
+              geminiKeyStatus.httpStatus == null
+                ? ""
+                : ` · HTTP ${geminiKeyStatus.httpStatus}`
+            }`
+        : geminiKeyStatus.state === "not_configured"
+          ? "Not configured"
+          : "Not checked for the current key"
+    : null;
+  const geminiBillingStatusText = geminiBillingStatus
+    ? geminiBillingStatus.state === "ready"
+      ? "Ready · last export read succeeded"
+      : geminiBillingStatus.state === "pending"
+        ? "Pending · export has not published priced rows yet"
+        : geminiBillingStatus.state === "error"
+          ? `Failed${
+              geminiBillingStatus.httpStatus == null
+                ? ""
+                : ` · HTTP ${geminiBillingStatus.httpStatus}`
+            }${
+              geminiBillingStatus.errorCode
+                ? ` · ${geminiBillingStatus.errorCode}`
+                : ""
+            }`
+          : geminiBillingStatus.state === "configuration_changed"
+            ? "Configuration changed · verification required"
+          : geminiBillingStatus.state === "not_configured"
+            ? "Not configured"
+            : "Not checked for the current billing configuration"
+    : null;
 
   useEffect(() => {
     const previousOverflow = document.body.style.overflow;
@@ -222,6 +290,8 @@ export default function ProviderIntegrationDrawer({
                   <dd className="mt-1 font-medium text-gray-900">
                     {!instanceState.isActive
                       ? "Inactive"
+                      : pollingNotApplicable
+                        ? "Not applicable · push/manual"
                       : anthropicWithoutAdmin
                         ? "Skipped · no organization Admin API"
                         : "Active"}
@@ -243,6 +313,72 @@ export default function ProviderIntegrationDrawer({
                         : "Not configured"}
                   </dd>
                 </div>
+                {geminiKeyStatus && (
+                  <div className="rounded-lg bg-gray-50 p-3">
+                    <dt className="text-xs font-medium text-gray-500">
+                      Gemini key validation
+                    </dt>
+                    <dd className="mt-1 font-medium text-gray-900">
+                      {geminiKeyStatusText}
+                    </dd>
+                    {geminiKeyStatus.checkedAt && (
+                      <dd className="mt-1 text-xs text-gray-500">
+                        Checked {new Date(geminiKeyStatus.checkedAt).toLocaleString()}
+                      </dd>
+                    )}
+                    {geminiKeyStatus.state === "invalid" && (
+                      <dd className="mt-1 text-xs leading-5 text-red-700">
+                        Enable the Generative Language API and check the key&apos;s API and application restrictions.
+                      </dd>
+                    )}
+                    {geminiKeyStatus.state === "unreadable" && (
+                      <dd className="mt-1 text-xs leading-5 text-red-700">
+                        The encrypted key exists, but this runtime cannot decrypt it. Restore the correct encryption key or save the Gemini key again.
+                      </dd>
+                    )}
+                    {geminiKeyStatus.state === "unchecked" && (
+                      <dd className="mt-1 text-xs leading-5 text-amber-700">
+                        Run Verify &amp; fetch after saving a replacement key. Billing sync is checked independently.
+                      </dd>
+                    )}
+                    {geminiKeyStatus.state === "unavailable" && (
+                      <dd className="mt-1 text-xs leading-5 text-amber-700">
+                        The current key could not be classified because Google returned a transient, quota, or service error. Retry the check; billing sync reports its own result.
+                      </dd>
+                    )}
+                  </div>
+                )}
+                {geminiBillingStatus && (
+                  <div className="rounded-lg bg-gray-50 p-3">
+                    <dt className="text-xs font-medium text-gray-500">
+                      Google Cloud Billing sync
+                    </dt>
+                    <dd className="mt-1 font-medium text-gray-900">
+                      {geminiBillingStatusText}
+                    </dd>
+                    {geminiBillingStatus.checkedAt && (
+                      <dd className="mt-1 text-xs text-gray-500">
+                        Checked {new Date(geminiBillingStatus.checkedAt).toLocaleString()}
+                      </dd>
+                    )}
+                    {geminiBillingStatus.state === "error" && (
+                      <dd className="mt-1 text-xs leading-5 text-red-700">
+                        Any last cost from this same billing configuration remains visible but incomplete; cost from a prior configuration is excluded.
+                        {geminiBillingStatus.retryable ? " The monitor will retry on the next scheduler tick." : " Review the billing dataset, project, and service-account access."}
+                      </dd>
+                    )}
+                    {geminiBillingStatus.state === "configuration_changed" && (
+                      <dd className="mt-1 text-xs leading-5 text-amber-700">
+                        Prior cost belongs to the previous billing configuration and is excluded until a fresh export read completes.
+                      </dd>
+                    )}
+                    {geminiBillingStatus.state === "pending" && (
+                      <dd className="mt-1 text-xs leading-5 text-amber-700">
+                        Pending is not $0. Google may take days to backfill a newly enabled Standard Cloud Billing export.
+                      </dd>
+                    )}
+                  </div>
+                )}
                 <div className="rounded-lg bg-gray-50 p-3 sm:col-span-2">
                   <dt className="text-xs font-medium text-gray-500">Public configuration fields</dt>
                   <dd className="mt-1 break-words text-gray-900">

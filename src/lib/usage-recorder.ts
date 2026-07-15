@@ -12,7 +12,11 @@ import {
   markSchedulerTickStarted,
 } from "@/lib/runtime-health";
 import { reconcileProviderExternalBilling } from "@/lib/provider-external-billing";
-import type { Provider, UsageSnapshot } from "@prisma/client";
+import { Prisma, type Provider, type UsageSnapshot } from "@prisma/client";
+import {
+  isRetryablePartialSnapshot,
+  withSnapshotSyncFailure,
+} from "@/lib/snapshot-sync-status";
 
 const DEFAULT_PROVIDER_TIMEOUT_MS = 90_000;
 const providerAttemptTokens = new Map<string, symbol>();
@@ -48,7 +52,7 @@ export async function recordProviderUsage(
     const usage = await fetchProviderUsage(provider);
     assertProviderAttemptCurrent(provider.id, attemptToken, signal);
 
-    return await prisma.$transaction(async (tx) => {
+    const snapshot = await prisma.$transaction(async (tx) => {
       const billingSyncs = [
         ...(usage.externalBilling ? [usage.externalBilling] : []),
         ...(usage.externalBillingSyncs ?? []),
@@ -76,7 +80,9 @@ export async function recordProviderUsage(
           costIncludesUnknownFixed: usage.costIncludesUnknownFixed ?? false,
           totalRequests: usage.totalRequests,
           credits: usage.credits,
-          rawData: usage.rawData ?? undefined,
+          rawData:
+            withSnapshotSyncFailure(usage.rawData, usage.postPersistError) ??
+            undefined,
         },
       });
       // A newer attempt may have started while SQLite was awaiting the INSERT.
@@ -84,6 +90,8 @@ export async function recordProviderUsage(
       assertProviderAttemptCurrent(provider.id, attemptToken, signal);
       return snapshot;
     });
+    if (usage.postPersistError) throw usage.postPersistError;
+    return snapshot;
   } finally {
     if (providerAttemptTokens.get(provider.id) === attemptToken) {
       providerAttemptTokens.delete(provider.id);
@@ -140,7 +148,7 @@ export async function fetchAllDueProviders(): Promise<FetchAllProvidersResult> {
         snapshots: {
           orderBy: { fetchedAt: "desc" },
           take: 1,
-          select: { fetchedAt: true },
+          select: { fetchedAt: true, rawData: true },
         },
       },
     });
@@ -155,9 +163,28 @@ export async function fetchAllDueProviders(): Promise<FetchAllProvidersResult> {
 
     for (const { snapshots, ...provider } of providers) {
       const startedAt = Date.now();
-      const latestFetchedAt = snapshots[0]?.fetchedAt.getTime();
+      const latestSnapshot = snapshots[0];
       const intervalMs = provider.refreshIntervalMin * 60 * 1000;
-      if (latestFetchedAt && now - latestFetchedAt < intervalMs) {
+      // Pushed quota/credit events intentionally create rawData-less
+      // snapshots. They may be newer than the last poll snapshot, but must not
+      // hide its retry marker or make an old/missing poll look fresh.
+      const latestPollSnapshot =
+        latestSnapshot?.rawData == null
+          ? await prisma.usageSnapshot.findFirst({
+              where: {
+                providerId: provider.id,
+                rawData: { not: Prisma.DbNull },
+              },
+              orderBy: { fetchedAt: "desc" },
+              select: { fetchedAt: true, rawData: true },
+            })
+          : latestSnapshot;
+      const latestPollFetchedAt = latestPollSnapshot?.fetchedAt.getTime();
+      if (
+        latestPollFetchedAt &&
+        !isRetryablePartialSnapshot(latestPollSnapshot?.rawData) &&
+        now - latestPollFetchedAt < intervalMs
+      ) {
         skipped++;
         outcomes.push({
           providerId: provider.id,

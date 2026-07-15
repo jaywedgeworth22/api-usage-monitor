@@ -37,9 +37,21 @@ describe("provider integration catalog", () => {
 
   it("resolves aliases and uses provider type for arbitrary custom/manual names", () => {
     expect(getProviderIntegrationProfile("google_ai").name).toBe("google-ai");
+    for (const alias of [
+      "gemini",
+      "gemini-api",
+      "gemini.api",
+      "generative-language",
+      "google-ai-studio",
+      "Google Gemini",
+      "googlegemini",
+    ]) {
+      expect(getProviderIntegrationProfile(alias, "builtin").name, alias).toBe("google-ai");
+    }
     expect(getProviderIntegrationProfile("agent_sync_relay").name).toBe("agent-sync-relay");
     expect(getProviderIntegrationProfile("private-service", "custom").name).toBe("custom");
     expect(getProviderIntegrationProfile("manual-service", "generic").name).toBe("generic");
+    expect(getProviderIntegrationProfile("google-gemini", "push").name).toBe("generic");
     expect(getProviderIntegrationProfile("unknown").name).toBe("generic");
   });
 

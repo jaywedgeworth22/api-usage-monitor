@@ -1,17 +1,20 @@
 import { decrypt } from "@/lib/crypto";
 import {
-  decryptProviderSecretConfig,
   mergeProviderConfig,
+  providerConfigForServer,
   splitProviderConfig,
 } from "@/lib/provider-secret-config";
 import { configurationError, unsupportedError } from "./helpers";
+import type { AdapterInvocationContext } from "./helpers";
 import type { Provider } from "@prisma/client";
 import type { BuiltInProviderName } from "@/lib/provider-definitions";
+import { canonicalProviderKey } from "@/lib/provider-identity";
 import type { UsageResult } from "./openai";
 
 type AdapterFn = (
   apiKey: string,
-  config?: Record<string, unknown>
+  config?: Record<string, unknown>,
+  context?: AdapterInvocationContext
 ) => Promise<UsageResult>;
 
 const adapters: Record<string, AdapterFn> = {};
@@ -140,6 +143,7 @@ export async function fetchProviderUsage(
   const providerType = provider.type.trim().toLowerCase();
   const providerName = provider.name.trim().toLowerCase();
   let adapter: AdapterFn;
+  let isGeminiAdapter = false;
 
   if (providerType === "custom") {
     adapter = adapters["custom"];
@@ -148,8 +152,17 @@ export async function fetchProviderUsage(
       `${provider.name}: ${providerType} providers are manual/push-only and have no poll adapter`
     );
   } else if (providerType === "builtin") {
+    // Historical Gemini labels participate in accounting identity resolution,
+    // so they must reach the same poll adapter too. Keep this canonicalization
+    // narrow: custom providers still route only by type and unrelated aliases
+    // cannot silently acquire a built-in credential destination.
+    const adapterName =
+      canonicalProviderKey(providerName) === "google-ai"
+        ? "google-ai"
+        : providerName;
+    isGeminiAdapter = adapterName === "google-ai";
     const builtinAdapter =
-      providerName === "custom" ? undefined : adapters[providerName];
+      providerName === "custom" ? undefined : adapters[adapterName];
     if (!builtinAdapter) {
       configurationError(`No built-in adapter found for provider: ${provider.name}`);
     }
@@ -158,15 +171,39 @@ export async function fetchProviderUsage(
     configurationError(`Unsupported provider type: ${provider.type}`);
   }
 
-  const apiKey = provider.apiKey ? decrypt(provider.apiKey) : "";
-  const storedConfig =
-    (provider.config as Record<string, unknown> | null) ?? {};
-  const legacySplit = splitProviderConfig(storedConfig);
-  const encryptedSecrets = decryptProviderSecretConfig(provider.secretConfig);
-  const config = mergeProviderConfig(
-    legacySplit.publicConfig,
-    mergeProviderConfig(legacySplit.secretConfig, encryptedSecrets)
-  );
+  let apiKey = "";
+  let apiKeyReadable = true;
+  if (provider.apiKey) {
+    try {
+      apiKey = decrypt(provider.apiKey);
+    } catch (error) {
+      if (!isGeminiAdapter) throw error;
+      apiKeyReadable = false;
+    }
+  }
+
+  let config: Record<string, unknown>;
+  let secretConfigReadable = true;
+  try {
+    config = providerConfigForServer(provider.config, provider.secretConfig);
+  } catch (error) {
+    if (!isGeminiAdapter) throw error;
+    secretConfigReadable = false;
+    // Preserve readable public and legacy configuration so Gemini key
+    // validation can still run. The Google adapter receives the unreadable
+    // envelope state out-of-band and will not attempt billing with it.
+    const split = splitProviderConfig(provider.config);
+    config = mergeProviderConfig(split.publicConfig, split.secretConfig);
+  }
+
+  if (isGeminiAdapter) {
+    return adapter(apiKey, config, {
+      apiKeyConfigured: provider.apiKey != null,
+      apiKeyReadable,
+      secretConfigConfigured: provider.secretConfig != null,
+      secretConfigReadable,
+    });
+  }
 
   return adapter(apiKey, config);
 }

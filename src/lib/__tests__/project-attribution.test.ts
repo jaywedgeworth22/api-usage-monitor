@@ -429,7 +429,9 @@ describe("project attribution (integration)", () => {
     expect(status.providers.find((row) => row.id === provider.id)).toMatchObject({
       pushedMonthToDateUsd: 8,
       pushedCostCoverage: "complete",
-      spendCoverage: "complete",
+      // The pushed stream is internally complete, but without a ready Google
+      // billing export it cannot prove whole-account cash coverage.
+      spendCoverage: "partial",
     });
     expect(status.projects.find((row) => row.id === project.id)).toMatchObject({
       directUsd: 8,

@@ -4,11 +4,13 @@ import { encrypt } from "@/lib/crypto";
 
 const adapterMocks = vi.hoisted(() => ({
   custom: vi.fn(),
+  googleAi: vi.fn(),
   openai: vi.fn(),
   stripe: vi.fn(),
 }));
 
 vi.mock("../custom", () => ({ fetchUsage: adapterMocks.custom }));
+vi.mock("../google-ai", () => ({ fetchUsage: adapterMocks.googleAi }));
 vi.mock("../openai", () => ({ fetchUsage: adapterMocks.openai }));
 vi.mock("../stripe", () => ({ fetchUsage: adapterMocks.stripe }));
 
@@ -50,6 +52,7 @@ describe("provider adapter credential routing", () => {
   beforeEach(() => {
     process.env.ENCRYPTION_KEY = "42".repeat(32);
     adapterMocks.custom.mockResolvedValue(EMPTY_RESULT);
+    adapterMocks.googleAi.mockResolvedValue(EMPTY_RESULT);
     adapterMocks.openai.mockResolvedValue(EMPTY_RESULT);
     adapterMocks.stripe.mockResolvedValue(EMPTY_RESULT);
   });
@@ -57,6 +60,7 @@ describe("provider adapter credential routing", () => {
   afterEach(() => {
     delete process.env.ENCRYPTION_KEY;
     adapterMocks.custom.mockReset();
+    adapterMocks.googleAi.mockReset();
     adapterMocks.openai.mockReset();
     adapterMocks.stripe.mockReset();
   });
@@ -64,6 +68,7 @@ describe("provider adapter credential routing", () => {
   it.each([
     ["openai", adapterMocks.openai],
     ["stripe", adapterMocks.stripe],
+    ["gemini", adapterMocks.googleAi],
   ])(
     "routes a custom provider named %s only to its custom endpoint adapter",
     async (name, builtInMock) => {
@@ -89,6 +94,77 @@ describe("provider adapter credential routing", () => {
 
     expect(adapterMocks.openai).toHaveBeenCalledWith("collision-secret", {});
     expect(adapterMocks.custom).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    "gemini",
+    "gemini-api",
+    "gemini.api",
+    "generative-language",
+    "google-ai-studio",
+    "Google Gemini",
+    "googlegemini",
+  ])(
+    "routes the historical built-in Gemini alias %s to the Google adapter",
+    async (name) => {
+      await fetchProviderUsage(provider(name, "builtin"));
+
+      expect(adapterMocks.googleAi).toHaveBeenCalledWith(
+        "collision-secret",
+        {},
+        {
+          apiKeyConfigured: true,
+          apiKeyReadable: true,
+          secretConfigConfigured: false,
+          secretConfigReadable: true,
+        }
+      );
+      expect(adapterMocks.custom).not.toHaveBeenCalled();
+    }
+  );
+
+  it("still routes readable Gemini billing when the API key ciphertext is unreadable", async () => {
+    const row = provider("google-ai", "builtin", {
+      billingDataset: "billing-project.billing_export",
+      serviceAccountJson: "legacy-readable-service-account",
+    });
+    row.apiKey = "corrupt-api-key-ciphertext";
+
+    await fetchProviderUsage(row);
+
+    expect(adapterMocks.googleAi).toHaveBeenCalledWith(
+      "",
+      {
+        billingDataset: "billing-project.billing_export",
+        serviceAccountJson: "legacy-readable-service-account",
+      },
+      {
+        apiKeyConfigured: true,
+        apiKeyReadable: false,
+        secretConfigConfigured: false,
+        secretConfigReadable: true,
+      }
+    );
+  });
+
+  it("still routes readable Gemini key validation when secret config is unreadable", async () => {
+    const row = provider("gemini", "builtin", {
+      billingDataset: "billing-project.billing_export",
+    });
+    row.secretConfig = "corrupt-secret-config-ciphertext";
+
+    await fetchProviderUsage(row);
+
+    expect(adapterMocks.googleAi).toHaveBeenCalledWith(
+      "collision-secret",
+      { billingDataset: "billing-project.billing_export" },
+      {
+        apiKeyConfigured: true,
+        apiKeyReadable: true,
+        secretConfigConfigured: true,
+        secretConfigReadable: false,
+      }
+    );
   });
 
   it("fails generic/manual providers closed before invoking any adapter", async () => {
