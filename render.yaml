@@ -92,6 +92,11 @@ services:
       # ID/secret pairs. Render never generates or copies these values.
       - key: INFISICAL_PROVIDER_SYNC_ENABLED
         value: "true"
+      # Default-off one-time create-only bootstrap for the exact current ST
+      # Gemini provider. Enable only for the reviewed migration run, then set
+      # it back to false immediately; this is not a reverse-sync switch.
+      - key: INFISICAL_ST_GEMINI_BOOTSTRAP_ENABLED
+        value: "false"
       - key: INFISICAL_BASE_URL
         value: https://app.infisical.com
       - key: INFISICAL_ENV

@@ -14,6 +14,8 @@ const findFirst = vi.fn();
 const create = vi.fn();
 const fetchProviderUsage = vi.fn();
 const runUsageMaintenance = vi.fn();
+const bootstrapStGeminiCredentialToInfisical = vi.fn();
+const syncProviderCredentialsFromInfisical = vi.fn();
 
 vi.mock("@/lib/prisma", () => ({
   prisma: {
@@ -40,6 +42,13 @@ vi.mock("@/lib/usage-maintenance", () => ({
     result.alerts.persistenceDegraded.length === 0,
 }));
 
+vi.mock("@/lib/infisical-provider-sync", () => ({
+  bootstrapStGeminiCredentialToInfisical: () =>
+    bootstrapStGeminiCredentialToInfisical(),
+  syncProviderCredentialsFromInfisical: (options: unknown) =>
+    syncProviderCredentialsFromInfisical(options),
+}));
+
 function providerRow(name: string) {
   return {
     id: `id-${name}`,
@@ -59,9 +68,83 @@ describe("fetchAllDueProviders per-provider timeout budget", () => {
     create.mockReset();
     fetchProviderUsage.mockReset();
     runUsageMaintenance.mockReset();
+    bootstrapStGeminiCredentialToInfisical.mockReset();
+    bootstrapStGeminiCredentialToInfisical.mockResolvedValue({
+      enabled: false,
+      attempted: false,
+      providerId: "4a888d41-3988-4774-86d8-67d7aa14d7e2",
+      status: "disabled",
+    });
+    syncProviderCredentialsFromInfisical.mockReset();
+    syncProviderCredentialsFromInfisical.mockResolvedValue({
+      enabled: true,
+      configured: false,
+      sources: [],
+      created: 0,
+      updated: 0,
+      unchanged: 0,
+      missing: 0,
+      failed: 0,
+      suppressed: 0,
+    });
     process.env.ADAPTER_PROVIDER_TIMEOUT_MS = "5000";
     create.mockResolvedValue({ id: "snap" });
   });
+
+  it.each([
+    ["created", false],
+    ["already_present_same", false],
+    ["conflict", true],
+    ["ineligible", true],
+    ["error", true],
+    ["unconfigured", true],
+  ] as const)(
+    "runs a %s bootstrap before the normal pull with the expected ST Gemini safety gate",
+    async (status, suppressStGemini) => {
+      findMany.mockResolvedValue([]);
+      bootstrapStGeminiCredentialToInfisical.mockResolvedValue({
+        enabled: true,
+        attempted: status === "created",
+        providerId: "4a888d41-3988-4774-86d8-67d7aa14d7e2",
+        status,
+      });
+      const order: string[] = [];
+      bootstrapStGeminiCredentialToInfisical.mockImplementationOnce(async () => {
+        order.push("bootstrap");
+        return {
+          enabled: true,
+          attempted: status === "created",
+          providerId: "4a888d41-3988-4774-86d8-67d7aa14d7e2",
+          status,
+        };
+      });
+      syncProviderCredentialsFromInfisical.mockImplementationOnce(
+        async () => {
+          order.push("pull");
+          return {
+            enabled: true,
+            configured: true,
+            sources: [],
+            created: 0,
+            updated: 0,
+            unchanged: 0,
+            missing: 0,
+            failed: 0,
+            suppressed: suppressStGemini ? 1 : 0,
+          };
+        }
+      );
+
+      const { fetchAllDueProviders } = await import("@/lib/usage-recorder");
+      const result = await fetchAllDueProviders();
+
+      expect(order).toEqual(["bootstrap", "pull"]);
+      expect(syncProviderCredentialsFromInfisical).toHaveBeenCalledWith({
+        suppressStGemini,
+      });
+      expect(result.credentialBootstrap).toMatchObject({ status });
+    }
+  );
 
   afterEach(() => {
     vi.useRealTimers();

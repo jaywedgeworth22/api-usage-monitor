@@ -1,5 +1,7 @@
 import { Prisma } from "@prisma/client";
+import { timingSafeEqual } from "node:crypto";
 import { decrypt, encrypt, encryptJson } from "@/lib/crypto";
+import { geminiApiKeyFingerprint } from "@/lib/gemini-key-status";
 import { withInternalUsageWriteAdmission } from "@/lib/ingest-admission";
 import { prisma } from "@/lib/prisma";
 import { BUILT_IN_PROVIDERS } from "@/lib/provider-definitions";
@@ -36,6 +38,33 @@ export interface InfisicalCredentialSyncResult {
   unchanged: number;
   missing: number;
   failed: number;
+  /** Mappings intentionally left untouched by a caller-supplied safety gate. */
+  suppressed?: number;
+}
+
+export interface InfisicalCredentialSyncOptions {
+  /**
+   * Preserve the exact Socratic Trade Gemini provider after a one-time
+   * bootstrap conflict/error instead of adopting a different Infisical value.
+   */
+  suppressStGemini?: boolean;
+}
+
+export type StGeminiInfisicalBootstrapStatus =
+  | "disabled"
+  | "unconfigured"
+  | "ineligible"
+  | "already_present_same"
+  | "conflict"
+  | "created"
+  | "error";
+
+export interface StGeminiInfisicalBootstrapResult {
+  enabled: boolean;
+  attempted: boolean;
+  providerId: string;
+  status: StGeminiInfisicalBootstrapStatus;
+  errorCode?: string;
 }
 
 interface SourceDefinition {
@@ -113,6 +142,11 @@ const DEFAULT_SECRET_PATH = "/";
 const REQUEST_TIMEOUT_MS = 10_000;
 const MAX_RESPONSE_BYTES = 128 * 1024;
 const MAX_SECRET_VALUE_BYTES = 64 * 1024;
+const ST_GEMINI_BOOTSTRAP_FLAG = "INFISICAL_ST_GEMINI_BOOTSTRAP_ENABLED";
+const ST_GEMINI_PROVIDER_ID = "4a888d41-3988-4774-86d8-67d7aa14d7e2";
+const ST_GEMINI_SECRET_NAME = "GEMINI_API_KEY";
+const ST_PROJECT_NAME = "SocraticTrade.com";
+const ST_GEMINI_VALIDATION_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 
 // Project IDs identify Infisical projects; they are not credentials. Verified
 // defaults keep the Render bootstrap to the three Universal Auth ID/secret
@@ -342,7 +376,20 @@ function emptyResult(enabled: boolean): InfisicalCredentialSyncResult {
     unchanged: 0,
     missing: 0,
     failed: 0,
+    suppressed: 0,
   };
+}
+
+function isSuppressedMapping(
+  mapping: CredentialMapping,
+  options: InfisicalCredentialSyncOptions
+): boolean {
+  return (
+    options.suppressStGemini === true &&
+    mapping.scope === "st" &&
+    canonicalProviderKey(mapping.providerName) ===
+      canonicalProviderKey("google-ai")
+  );
 }
 
 function infisicalBaseUrl(): string {
@@ -465,7 +512,7 @@ async function preflightSourceScope(
   baseUrl: string,
   source: SourceConfig,
   token: string
-): Promise<void> {
+): Promise<Set<string>> {
   const params = new URLSearchParams({
     projectId: source.projectId,
     environment: source.environment,
@@ -487,14 +534,67 @@ async function preflightSourceScope(
   if (!Array.isArray(body.secrets)) {
     throw new InfisicalSyncError("scope_invalid_response");
   }
+  const names = new Set<string>();
+  for (const secret of body.secrets) {
+    if (!isRecord(secret) || typeof secret.secretKey !== "string") {
+      throw new InfisicalSyncError("scope_invalid_response");
+    }
+    names.add(secret.secretKey);
+  }
+  return names;
 }
 
-async function fetchSecret(
+interface SecretRecordRead {
+  found: boolean;
+  value?: string;
+  secret?: Record<string, unknown>;
+}
+
+function requireFixedBootstrapCreateIdentity(
+  secret: Record<string, unknown>,
+  source: SourceConfig,
+  secretName: string,
+  errorCode: string
+): void {
+  const expected: ReadonlyArray<readonly [string, string]> = [
+    ["secretKey", secretName],
+    ["type", "shared"],
+    // Infisical v4 responses identify the project with `workspace`; request
+    // bodies and query strings use `projectId`. Do not accept the request-side
+    // alias as proof that a response came from the fixed bootstrap project.
+    ["workspace", source.projectId],
+    ["environment", source.environment],
+  ];
+  for (const [field, value] of expected) {
+    if (secret[field] !== value) {
+      throw new InfisicalSyncError(errorCode);
+    }
+  }
+}
+
+function requireFixedBootstrapReadIdentity(
+  secret: Record<string, unknown>,
+  source: SourceConfig,
+  secretName: string,
+  errorCode: string
+): void {
+  requireFixedBootstrapCreateIdentity(
+    secret,
+    source,
+    secretName,
+    errorCode
+  );
+  if (secret.secretPath !== source.secretPath) {
+    throw new InfisicalSyncError(errorCode);
+  }
+}
+
+async function fetchSecretRecord(
   baseUrl: string,
   source: SourceConfig,
   token: string,
   secretName: string
-): Promise<string | undefined> {
+): Promise<SecretRecordRead> {
   const params = new URLSearchParams({
     projectId: source.projectId,
     environment: source.environment,
@@ -510,7 +610,7 @@ async function fetchSecret(
   );
   if (response.status === 404) {
     await cancelBodyQuietly(response.body);
-    return undefined;
+    return { found: false };
   }
   if (!response.ok) {
     await cancelBodyQuietly(response.body);
@@ -518,15 +618,129 @@ async function fetchSecret(
   }
   const body = await readJsonObject(response);
   const secret = body.secret;
-  if (!secret || typeof secret !== "object" || Array.isArray(secret)) {
+  if (!isRecord(secret)) {
     throw new InfisicalSyncError("secret_invalid_response");
   }
-  const value = (secret as Record<string, unknown>).secretValue;
-  if (typeof value !== "string" || !value.trim()) return undefined;
+  const value = secret.secretValue;
+  if (typeof value !== "string") {
+    throw new InfisicalSyncError("secret_invalid_response");
+  }
   if (Buffer.byteLength(value, "utf8") > MAX_SECRET_VALUE_BYTES) {
     throw new InfisicalSyncError("secret_too_large");
   }
-  return value;
+  return { found: true, value, secret };
+}
+
+async function fetchBootstrapSecretRecord(
+  baseUrl: string,
+  source: SourceConfig,
+  token: string,
+  secretName: string,
+  scopeErrorCode: string
+): Promise<SecretRecordRead> {
+  const record = await fetchSecretRecord(baseUrl, source, token, secretName);
+  if (record.found) {
+    if (!record.secret) {
+      throw new InfisicalSyncError(scopeErrorCode);
+    }
+    requireFixedBootstrapReadIdentity(
+      record.secret,
+      source,
+      secretName,
+      scopeErrorCode
+    );
+  }
+  return record;
+}
+
+async function fetchSecret(
+  baseUrl: string,
+  source: SourceConfig,
+  token: string,
+  secretName: string
+): Promise<string | undefined> {
+  const record = await fetchSecretRecord(baseUrl, source, token, secretName);
+  return record.found && record.value?.trim() ? record.value : undefined;
+}
+
+async function createSecret(
+  baseUrl: string,
+  source: SourceConfig,
+  token: string,
+  secretName: string,
+  secretValue: string
+): Promise<void> {
+  const response = await fetchBounded(
+    `${baseUrl}/api/v4/secrets/${encodeURIComponent(secretName)}`,
+    {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${token}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        projectId: source.projectId,
+        environment: source.environment,
+        secretPath: source.secretPath,
+        type: "shared",
+        secretValue,
+      }),
+    }
+  );
+  if (!response.ok) {
+    await cancelBodyQuietly(response.body);
+    throw new InfisicalSyncError(`create_http_${response.status}`);
+  }
+  const body = await readJsonObject(response);
+  const secret = body.secret;
+  if (!isRecord(secret)) {
+    throw new InfisicalSyncError("create_invalid_response");
+  }
+  // Infisical v4's POST response does not include `secretPath`. The exact
+  // post-create GET below is the authoritative path proof.
+  requireFixedBootstrapCreateIdentity(
+    secret,
+    source,
+    secretName,
+    "create_scope_mismatch"
+  );
+  if (
+    "secretValue" in secret &&
+    (typeof secret.secretValue !== "string" ||
+      !sameFingerprint(
+        geminiApiKeyFingerprint(secret.secretValue),
+        geminiApiKeyFingerprint(secretValue)
+      ))
+  ) {
+    throw new InfisicalSyncError("create_value_mismatch");
+  }
+}
+
+async function verifyCreatedSecret(
+  baseUrl: string,
+  source: SourceConfig,
+  token: string,
+  secretName: string,
+  expectedFingerprint: string
+): Promise<void> {
+  const created = await fetchBootstrapSecretRecord(
+    baseUrl,
+    source,
+    token,
+    secretName,
+    "post_create_scope_mismatch"
+  );
+  if (!created.found) {
+    throw new InfisicalSyncError("post_create_secret_missing");
+  }
+  if (
+    !sameFingerprint(
+      geminiApiKeyFingerprint(created.value ?? ""),
+      expectedFingerprint
+    )
+  ) {
+    throw new InfisicalSyncError("post_create_value_mismatch");
+  }
 }
 
 function requiredNamesBySource(): Map<InfisicalCredentialScope, string[]> {
@@ -693,21 +907,309 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
-function bindingFor(provider: ProviderRecord): StoredBinding | undefined {
+interface StoredBindingRead {
+  readable: boolean;
+  binding?: StoredBinding;
+}
+
+function readStoredBinding(provider: ProviderRecord): StoredBindingRead {
   try {
     const config = providerConfigForServer(provider.config, provider.secretConfig);
     const value = config.infisicalCredential;
+    if (value == null) return { readable: true };
     if (
       !isRecord(value) ||
       (value.scope !== "st" && value.scope !== "ct" && value.scope !== "shared") ||
       (value.source !== "st" && value.source !== "ct" && value.source !== "shared") ||
       typeof value.providerName !== "string"
     ) {
-      return undefined;
+      return { readable: false };
     }
-    return value as unknown as StoredBinding;
+    return { readable: true, binding: value as unknown as StoredBinding };
   } catch {
-    return undefined;
+    return { readable: false };
+  }
+}
+
+function bindingFor(provider: ProviderRecord): StoredBinding | undefined {
+  return readStoredBinding(provider).binding;
+}
+
+async function loadStGeminiBootstrapProvider() {
+  return prisma.provider.findUnique({
+    where: { id: ST_GEMINI_PROVIDER_ID },
+    include: {
+      allocations: {
+        include: { project: { select: { name: true } } },
+      },
+      snapshots: {
+        where: { rawData: { not: Prisma.DbNull } },
+        orderBy: { fetchedAt: "desc" },
+        take: 1,
+        select: { fetchedAt: true, rawData: true },
+      },
+    },
+  });
+}
+
+type StGeminiBootstrapProvider = NonNullable<
+  Awaited<ReturnType<typeof loadStGeminiBootstrapProvider>>
+>;
+
+interface StGeminiBootstrapMaterial {
+  apiKey: string;
+  credentialFingerprint: string;
+  alertConfigGeneration: number;
+}
+
+function sameFingerprint(left: string, right: string): boolean {
+  if (!/^[a-f0-9]{64}$/.test(left) || !/^[a-f0-9]{64}$/.test(right)) {
+    return false;
+  }
+  return timingSafeEqual(Buffer.from(left, "hex"), Buffer.from(right, "hex"));
+}
+
+function validateStGeminiBootstrapProvider(
+  provider: StGeminiBootstrapProvider | null,
+  now = Date.now()
+): { material?: StGeminiBootstrapMaterial; errorCode?: string } {
+  if (!provider) return { errorCode: "provider_not_found" };
+  if (!provider.isActive) return { errorCode: "provider_inactive" };
+  if (provider.type.trim().toLowerCase() !== "builtin") {
+    return { errorCode: "provider_not_builtin" };
+  }
+  if (canonicalProviderKey(provider.name) !== canonicalProviderKey("google-ai")) {
+    return { errorCode: "provider_name_mismatch" };
+  }
+  if (hasHistoricalLabel(provider)) {
+    return { errorCode: "historical_provider" };
+  }
+  if (
+    provider.allocations.length !== 1 ||
+    provider.allocations[0].percentage !== 100 ||
+    canonicalProjectKey(provider.allocations[0].project.name) !==
+      canonicalProjectKey(ST_PROJECT_NAME)
+  ) {
+    return { errorCode: "project_allocation_mismatch" };
+  }
+
+  const storedBinding = readStoredBinding(provider);
+  if (!storedBinding.readable) return { errorCode: "binding_unreadable" };
+  if (
+    storedBinding.binding &&
+    (storedBinding.binding.scope !== "st" ||
+      storedBinding.binding.source !== "st" ||
+      canonicalProviderKey(storedBinding.binding.providerName) !==
+        canonicalProviderKey("google-ai"))
+  ) {
+    return { errorCode: "binding_conflict" };
+  }
+
+  if (!provider.apiKey) return { errorCode: "credential_missing" };
+  let apiKey: string;
+  try {
+    apiKey = decrypt(provider.apiKey);
+  } catch {
+    return { errorCode: "credential_unreadable" };
+  }
+  if (
+    !apiKey.trim() ||
+    Buffer.byteLength(apiKey, "utf8") > MAX_SECRET_VALUE_BYTES
+  ) {
+    return { errorCode: "credential_invalid" };
+  }
+
+  const snapshot = provider.snapshots[0];
+  if (!snapshot) return { errorCode: "validation_missing" };
+  const snapshotTime = snapshot.fetchedAt.getTime();
+  if (
+    !Number.isFinite(snapshotTime) ||
+    snapshotTime > now + 5 * 60 * 1000 ||
+    now - snapshotTime > ST_GEMINI_VALIDATION_MAX_AGE_MS
+  ) {
+    return { errorCode: "validation_stale" };
+  }
+  const snapshotData = isRecord(snapshot.rawData) ? snapshot.rawData : undefined;
+  const validation = isRecord(snapshotData?.keyValidation)
+    ? snapshotData.keyValidation
+    : undefined;
+  if (
+    validation?.ok !== true ||
+    validation.outcome !== "valid" ||
+    typeof validation.status !== "number" ||
+    validation.status < 200 ||
+    validation.status >= 300
+  ) {
+    return { errorCode: "validation_unsuccessful" };
+  }
+  const credentialFingerprint = geminiApiKeyFingerprint(apiKey);
+  if (
+    typeof validation.credentialFingerprint !== "string" ||
+    !sameFingerprint(validation.credentialFingerprint, credentialFingerprint)
+  ) {
+    return { errorCode: "validation_fingerprint_mismatch" };
+  }
+
+  return {
+    material: {
+      apiKey,
+      credentialFingerprint,
+      alertConfigGeneration: provider.alertConfigGeneration,
+    },
+  };
+}
+
+function fixedStBootstrapSource(): SourceConfig {
+  const definition = SOURCE_DEFINITIONS.find(({ source }) => source === "st")!;
+  return {
+    ...definition,
+    clientId: cleanEnv(definition.clientIdEnv),
+    clientSecret: cleanEnv(definition.clientSecretEnv),
+    projectId: definition.defaultProjectId,
+    environment: DEFAULT_ENVIRONMENT,
+    secretPath: DEFAULT_SECRET_PATH,
+  };
+}
+
+function auditStGeminiBootstrap(
+  result: StGeminiInfisicalBootstrapResult
+): StGeminiInfisicalBootstrapResult {
+  console.info(
+    `[infisical-st-gemini-bootstrap] ${JSON.stringify({
+      providerId: result.providerId,
+      status: result.status,
+      attempted: result.attempted,
+      ...(result.errorCode ? { errorCode: result.errorCode } : {}),
+    })}`
+  );
+  return result;
+}
+
+/**
+ * One-time, create-only bootstrap for the exact current SocraticTrade.com
+ * Gemini credential. This is deliberately not a general reverse sync: the
+ * destination coordinates and source Provider UUID are fixed, existing
+ * values are never changed, and the feature is default-off.
+ */
+export async function bootstrapStGeminiCredentialToInfisical(): Promise<StGeminiInfisicalBootstrapResult> {
+  const disabled: StGeminiInfisicalBootstrapResult = {
+    enabled: false,
+    attempted: false,
+    providerId: ST_GEMINI_PROVIDER_ID,
+    status: "disabled",
+  };
+  if (cleanEnv(ST_GEMINI_BOOTSTRAP_FLAG) !== "true") return disabled;
+
+  const source = fixedStBootstrapSource();
+  if (!source.clientId || !source.clientSecret) {
+    return auditStGeminiBootstrap({
+      ...disabled,
+      enabled: true,
+      status: "unconfigured",
+      errorCode: "st_identity_unconfigured",
+    });
+  }
+
+  let createAttempted = false;
+  try {
+    const initialProvider = await loadStGeminiBootstrapProvider();
+    const initial = validateStGeminiBootstrapProvider(initialProvider);
+    if (!initial.material) {
+      return auditStGeminiBootstrap({
+        ...disabled,
+        enabled: true,
+        status: "ineligible",
+        errorCode: initial.errorCode ?? "provider_ineligible",
+      });
+    }
+
+    const baseUrl = infisicalBaseUrl();
+    const token = await login(baseUrl, source);
+    const names = await preflightSourceScope(baseUrl, source, token);
+    const existing = await fetchBootstrapSecretRecord(
+      baseUrl,
+      source,
+      token,
+      ST_GEMINI_SECRET_NAME,
+      "bootstrap_scope_mismatch"
+    );
+    if (names.has(ST_GEMINI_SECRET_NAME) && !existing.found) {
+      throw new InfisicalSyncError("scope_inconsistent_missing_secret");
+    }
+    if (existing.found) {
+      const existingFingerprint = geminiApiKeyFingerprint(existing.value ?? "");
+      if (
+        sameFingerprint(
+          existingFingerprint,
+          initial.material.credentialFingerprint
+        )
+      ) {
+        return auditStGeminiBootstrap({
+          ...disabled,
+          enabled: true,
+          status: "already_present_same",
+        });
+      }
+      return auditStGeminiBootstrap({
+        ...disabled,
+        enabled: true,
+        status: "conflict",
+        errorCode: "existing_value_conflict",
+      });
+    }
+
+    const currentProvider = await loadStGeminiBootstrapProvider();
+    const current = validateStGeminiBootstrapProvider(currentProvider);
+    if (
+      !current.material ||
+      current.material.alertConfigGeneration !==
+        initial.material.alertConfigGeneration ||
+      !sameFingerprint(
+        current.material.credentialFingerprint,
+        initial.material.credentialFingerprint
+      )
+    ) {
+      return auditStGeminiBootstrap({
+        ...disabled,
+        enabled: true,
+        status: "conflict",
+        errorCode: "concurrent_provider_edit",
+      });
+    }
+
+    createAttempted = true;
+    await createSecret(
+      baseUrl,
+      source,
+      token,
+      ST_GEMINI_SECRET_NAME,
+      current.material.apiKey
+    );
+    // A 2xx create response is not sufficient proof that the fixed remote
+    // scope now contains the intended credential. Re-read the exact secret
+    // before allowing the ordinary pull to adopt/bind it in this same pass.
+    await verifyCreatedSecret(
+      baseUrl,
+      source,
+      token,
+      ST_GEMINI_SECRET_NAME,
+      current.material.credentialFingerprint
+    );
+    return auditStGeminiBootstrap({
+      ...disabled,
+      enabled: true,
+      attempted: true,
+      status: "created",
+    });
+  } catch (error) {
+    return auditStGeminiBootstrap({
+      ...disabled,
+      enabled: true,
+      attempted: createAttempted,
+      status: "error",
+      errorCode:
+        error instanceof InfisicalSyncError ? error.code : "bootstrap_failed",
+    });
   }
 }
 
@@ -891,6 +1393,59 @@ function mergedStoredConfig(provider: ProviderRecord): {
   };
 }
 
+function isStGeminiCandidate(candidate: CredentialCandidate): boolean {
+  return (
+    candidate.scope === "st" &&
+    canonicalProviderKey(candidate.providerName) ===
+      canonicalProviderKey("google-ai")
+  );
+}
+
+async function guardInitialStGeminiBinding(
+  candidate: CredentialCandidate,
+  target: ProviderRecord
+): Promise<void> {
+  if (!isStGeminiCandidate(candidate) || target.id !== ST_GEMINI_PROVIDER_ID) {
+    return;
+  }
+
+  const targetBinding = readStoredBinding(target);
+  if (!targetBinding.readable) {
+    throw new InfisicalSyncError("binding_unreadable");
+  }
+  if (targetBinding.binding) {
+    if (
+      targetBinding.binding.scope === "st" &&
+      targetBinding.binding.source === candidate.source &&
+      canonicalProviderKey(targetBinding.binding.providerName) ===
+        canonicalProviderKey("google-ai")
+    ) {
+      // Once the exact binding exists, Infisical is the steady-state source of
+      // truth and ordinary remote rotations remain supported.
+      return;
+    }
+    throw new InfisicalSyncError("binding_conflict");
+  }
+
+  const currentProvider = await loadStGeminiBootstrapProvider();
+  const current = validateStGeminiBootstrapProvider(currentProvider);
+  if (!current.material) {
+    throw new InfisicalSyncError(
+      current.errorCode ?? "initial_binding_validation_failed"
+    );
+  }
+  const candidateKey = candidate.material.apiKey;
+  if (
+    !candidateKey ||
+    !sameFingerprint(
+      geminiApiKeyFingerprint(candidateKey),
+      current.material.credentialFingerprint
+    )
+  ) {
+    throw new InfisicalSyncError("initial_binding_value_conflict");
+  }
+}
+
 async function applyCandidates(candidates: readonly CredentialCandidate[]): Promise<{
   created: number;
   updated: number;
@@ -980,6 +1535,10 @@ async function applyCandidates(candidates: readonly CredentialCandidate[]): Prom
         continue;
       }
 
+      // This guard is deliberately independent of the one-time bootstrap
+      // flag. Until the fixed ST Gemini provider is bound, a normal pull may
+      // attach only a remote value proven equal to its freshly validated key.
+      await guardInitialStGeminiBinding(candidate, target);
       claimed.add(target.id);
       const stored = mergedStoredConfig(target);
       const existingBinding = bindingFor(target);
@@ -1055,7 +1614,9 @@ async function applyCandidates(candidates: readonly CredentialCandidate[]): Prom
   return { created, updated, unchanged, failed };
 }
 
-async function syncOnce(): Promise<InfisicalCredentialSyncResult> {
+async function syncOnce(
+  options: InfisicalCredentialSyncOptions
+): Promise<InfisicalCredentialSyncResult> {
   const enabled = cleanEnv("INFISICAL_PROVIDER_SYNC_ENABLED") !== "false";
   const result = emptyResult(enabled);
   if (!enabled) return result;
@@ -1098,6 +1659,10 @@ async function syncOnce(): Promise<InfisicalCredentialSyncResult> {
 
   const candidates: CredentialCandidate[] = [];
   for (const mapping of CREDENTIAL_MAPPINGS) {
+    if (isSuppressedMapping(mapping, options)) {
+      result.suppressed = (result.suppressed ?? 0) + 1;
+      continue;
+    }
     try {
       const resolved = resolveMapping(mapping, reads);
       if (resolved.candidate) candidates.push(resolved.candidate);
@@ -1125,9 +1690,11 @@ async function syncOnce(): Promise<InfisicalCredentialSyncResult> {
  * rotate encrypted last-known-good Provider credentials. Concurrent callers
  * share one run; source/read/apply failures never blank an existing value.
  */
-export async function syncProviderCredentialsFromInfisical(): Promise<InfisicalCredentialSyncResult> {
+export async function syncProviderCredentialsFromInfisical(
+  options: InfisicalCredentialSyncOptions = {}
+): Promise<InfisicalCredentialSyncResult> {
   if (syncInFlight) return syncInFlight;
-  const run = syncOnce();
+  const run = syncOnce(options);
   syncInFlight = run;
   try {
     return await run;
