@@ -121,28 +121,43 @@ export default function DashboardPage() {
   const lastSuccessAtRef = useRef(0);
 
   const fetchProviders = useCallback(async (opts?: { background?: boolean }) => {
-    if (isFetchingRef.current) return; // guard against overlapping in-flight refreshes
-    isFetchingRef.current = true;
-
     const background = opts?.background === true;
     // Background refreshes (interval poll, focus/visibility refetch) must never blank
     // the UI or disable the manual refresh button - only data and the timestamp update.
+    // Foreground calls (initial load, manual refresh/retry) show refreshing/loading and
+    // clear the error/warnings immediately, matching prior behavior - clearing them up
+    // front for background calls would instead flash the (still-empty) main content or
+    // blank the visible warnings banner mid-flight. setWarnings(nextWarnings) below always
+    // runs after Promise.allSettled (which never rejects), so background outcomes still
+    // update the banner atomically once the fetch settles.
+    const startForegroundUiState = () => {
+      if (loadedOnce.current && hasProviderData.current) {
+        setRefreshing(true);
+      } else {
+        setLoading(true);
+      }
+      setError("");
+      setWarnings([]);
+    };
+
+    if (isFetchingRef.current) {
+      // Guard against overlapping in-flight refreshes: don't start a second fetch.
+      // Background calls just no-op here - the in-flight fetch already covers them. But a
+      // foreground call (manual refresh/retry) must not silently drop the click with no
+      // feedback: "upgrade" the in-flight fetch by applying the same UI state a fresh
+      // foreground call would, then return without starting one. The in-flight fetch's own
+      // finally block clears refreshing/loading unconditionally once it settles, so the
+      // button reflects the outcome either way.
+      if (!background) startForegroundUiState();
+      return;
+    }
+    isFetchingRef.current = true;
+
     if (background) {
       // no loading/refreshing UI state
-    } else if (loadedOnce.current && hasProviderData.current) {
-      setRefreshing(true);
     } else {
-      setLoading(true);
+      startForegroundUiState();
     }
-    // Background calls must not clear a visible full-page error up front - that would
-    // flash the (still-empty) main content before the outcome is known. Foreground calls
-    // (initial load, manual refresh/retry) clear it immediately, matching prior behavior.
-    if (!background) setError("");
-    // Same rationale as the error clear above: clearing warnings up front would blank
-    // the visible warnings banner mid-flight for background refreshes. setWarnings(nextWarnings)
-    // below always runs after Promise.allSettled (which never rejects), so background
-    // outcomes still update the banner atomically once the fetch settles.
-    if (!background) setWarnings([]);
 
     try {
       const [providersResult, usageResult, projectsResult, subscriptionsResult] = await Promise.allSettled([
@@ -189,6 +204,9 @@ export default function DashboardPage() {
       }
     } finally {
       loadedOnce.current = true;
+      // Cleared unconditionally: background calls never set these to true, and this also
+      // covers the case where a foreground call "upgraded" this in-flight fetch via the
+      // guard above and set them itself.
       setLoading(false);
       setRefreshing(false);
       isFetchingRef.current = false;
@@ -196,7 +214,6 @@ export default function DashboardPage() {
   }, []);
 
   useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- data fetching on mount
     fetchProviders();
   }, [fetchProviders]);
 
