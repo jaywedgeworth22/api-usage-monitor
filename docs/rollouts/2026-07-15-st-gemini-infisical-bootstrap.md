@@ -28,8 +28,10 @@ post-create read prove the fixed scope contains the validated fingerprint.
   equal the freshly validated monitor key before the same-cycle pull proceeds.
   Infisical v4 response identity is checked using its documented fields:
   `workspace` (the fixed ST project ID), `secretKey`, `type`, `environment`,
-  and `secretPath`. All five are mandatory for bootstrap create/post-create
-  verification; request-side `projectId` is never accepted as response proof.
+  and `secretPath`. The POST response must contain the first four exact fields;
+  Infisical omits `secretPath` there. The authoritative post-create GET must
+  contain all five, including `secretPath=/`, plus the expected value
+  fingerprint. Request-side `projectId` is never accepted as response proof.
   Ordinary steady-state secret reads remain value-compatible when upstream
   omits response identity metadata.
 

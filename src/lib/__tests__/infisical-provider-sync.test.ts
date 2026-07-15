@@ -129,7 +129,7 @@ interface SecretCreate {
   valueFingerprint: string;
 }
 
-const FIXED_RESPONSE_IDENTITY_CASES = [
+const CREATE_RESPONSE_IDENTITY_CASES = [
   ["missing secretKey", "secretKey", undefined],
   ["mismatched secretKey", "secretKey", "WRONG_SECRET"],
   ["missing shared type", "type", undefined],
@@ -138,6 +138,10 @@ const FIXED_RESPONSE_IDENTITY_CASES = [
   ["mismatched workspace", "workspace", "wrong-project"],
   ["missing environment", "environment", undefined],
   ["mismatched environment", "environment", "dev"],
+] as const;
+
+const READ_RESPONSE_IDENTITY_CASES = [
+  ...CREATE_RESPONSE_IDENTITY_CASES,
   ["missing secretPath", "secretPath", undefined],
   ["mismatched secretPath", "secretPath", "/wrong"],
 ] as const;
@@ -345,7 +349,6 @@ function installInfisicalMock(
             type: "shared",
             workspace: body.projectId,
             environment: body.environment,
-            secretPath: body.secretPath,
             ...options.createResponseOverrides,
           },
         });
@@ -1092,7 +1095,7 @@ describe("one-time ST Gemini Infisical bootstrap", () => {
     expect(console.info).not.toHaveBeenCalled();
   });
 
-  it("creates only the fixed missing secret, then the normal pull binds it", async () => {
+  it("accepts the real path-less create response, verifies the fixed secret, then the normal pull binds it", async () => {
     enableStGeminiBootstrap();
     const { provider, key } = await seedStGeminiProvider();
     const secrets: Partial<Record<Scope, Record<string, string>>> = { st: {} };
@@ -1494,7 +1497,7 @@ describe("one-time ST Gemini Infisical bootstrap", () => {
     expectRedacted(result, [key!]);
   });
 
-  it.each(FIXED_RESPONSE_IDENTITY_CASES)(
+  it.each(CREATE_RESPONSE_IDENTITY_CASES)(
     "rejects a 2xx create response with %s",
     async (_caseName, field, value) => {
       enableStGeminiBootstrap();
@@ -1533,7 +1536,7 @@ describe("one-time ST Gemini Infisical bootstrap", () => {
     }
   );
 
-  it.each(FIXED_RESPONSE_IDENTITY_CASES)(
+  it.each(READ_RESPONSE_IDENTITY_CASES)(
     "rejects an exact post-create read with %s and suppresses the same-cycle pull",
     async (_caseName, field, value) => {
       enableStGeminiBootstrap();

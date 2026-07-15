@@ -550,7 +550,7 @@ interface SecretRecordRead {
   secret?: Record<string, unknown>;
 }
 
-function requireFixedBootstrapSecretIdentity(
+function requireFixedBootstrapCreateIdentity(
   secret: Record<string, unknown>,
   source: SourceConfig,
   secretName: string,
@@ -564,12 +564,28 @@ function requireFixedBootstrapSecretIdentity(
     // alias as proof that a response came from the fixed bootstrap project.
     ["workspace", source.projectId],
     ["environment", source.environment],
-    ["secretPath", source.secretPath],
   ];
   for (const [field, value] of expected) {
     if (secret[field] !== value) {
       throw new InfisicalSyncError(errorCode);
     }
+  }
+}
+
+function requireFixedBootstrapReadIdentity(
+  secret: Record<string, unknown>,
+  source: SourceConfig,
+  secretName: string,
+  errorCode: string
+): void {
+  requireFixedBootstrapCreateIdentity(
+    secret,
+    source,
+    secretName,
+    errorCode
+  );
+  if (secret.secretPath !== source.secretPath) {
+    throw new InfisicalSyncError(errorCode);
   }
 }
 
@@ -627,7 +643,7 @@ async function fetchBootstrapSecretRecord(
     if (!record.secret) {
       throw new InfisicalSyncError(scopeErrorCode);
     }
-    requireFixedBootstrapSecretIdentity(
+    requireFixedBootstrapReadIdentity(
       record.secret,
       source,
       secretName,
@@ -680,7 +696,9 @@ async function createSecret(
   if (!isRecord(secret)) {
     throw new InfisicalSyncError("create_invalid_response");
   }
-  requireFixedBootstrapSecretIdentity(
+  // Infisical v4's POST response does not include `secretPath`. The exact
+  // post-create GET below is the authoritative path proof.
+  requireFixedBootstrapCreateIdentity(
     secret,
     source,
     secretName,
