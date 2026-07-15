@@ -9,6 +9,7 @@ import {
 } from "@/lib/provider-alerts";
 import { computeBudgetStatus } from "@/lib/budget-status";
 import { providerPollSnapshotExpected } from "@/lib/anthropic-credentials";
+import { withInternalUsageWriteAdmission } from "@/lib/ingest-admission";
 
 export type AlertDeliveryChannel =
   | { kind: "slack"; url: string }
@@ -77,6 +78,62 @@ type PrismaLike = Pick<
   PrismaClient,
   "provider" | "providerAlertNotification" | "providerAlertChannelDelivery"
 >;
+
+type DelegateWriteMethod = (...args: never[]) => Promise<unknown>;
+
+function wrapDelegateWrite<T extends DelegateWriteMethod>(method: T): T {
+  return ((...args: Parameters<T>) =>
+    withInternalUsageWriteAdmission(() => method(...args))) as T;
+}
+
+function withAlertPersistenceAdmission(db: PrismaLike): PrismaLike {
+  const providerAlertNotification = {
+    findMany: db.providerAlertNotification.findMany.bind(
+      db.providerAlertNotification
+    ),
+    findUnique: db.providerAlertNotification.findUnique.bind(
+      db.providerAlertNotification
+    ),
+    findUniqueOrThrow: db.providerAlertNotification.findUniqueOrThrow.bind(
+      db.providerAlertNotification
+    ),
+    create: wrapDelegateWrite(
+      db.providerAlertNotification.create.bind(db.providerAlertNotification)
+    ),
+    updateMany: wrapDelegateWrite(
+      db.providerAlertNotification.updateMany.bind(db.providerAlertNotification)
+    ),
+  };
+  const providerAlertChannelDelivery = {
+    findFirst: db.providerAlertChannelDelivery.findFirst.bind(
+      db.providerAlertChannelDelivery
+    ),
+    findMany: db.providerAlertChannelDelivery.findMany.bind(
+      db.providerAlertChannelDelivery
+    ),
+    findUnique: db.providerAlertChannelDelivery.findUnique.bind(
+      db.providerAlertChannelDelivery
+    ),
+    upsert: wrapDelegateWrite(
+      db.providerAlertChannelDelivery.upsert.bind(
+        db.providerAlertChannelDelivery
+      )
+    ),
+    updateMany: wrapDelegateWrite(
+      db.providerAlertChannelDelivery.updateMany.bind(
+        db.providerAlertChannelDelivery
+      )
+    ),
+  };
+
+  return {
+    provider: db.provider,
+    providerAlertNotification:
+      providerAlertNotification as unknown as PrismaLike["providerAlertNotification"],
+    providerAlertChannelDelivery:
+      providerAlertChannelDelivery as unknown as PrismaLike["providerAlertChannelDelivery"],
+  };
+}
 
 const DEFAULT_REMINDER_HOURS = 24;
 const DEFAULT_TIMEOUT_MS = 10_000;
@@ -1918,7 +1975,7 @@ export async function deliverProviderAlerts(options: {
 } = {}): Promise<AlertDeliveryResult> {
   const now = options.now ?? new Date();
   const config = options.config ?? readAlertDeliveryConfig();
-  const db = options.db ?? prisma;
+  const db = withAlertPersistenceAdmission(options.db ?? prisma);
   const fetchImpl = options.fetchImpl ?? fetch;
   const sleepImpl = options.sleepImpl ?? sleep;
   const clock =
