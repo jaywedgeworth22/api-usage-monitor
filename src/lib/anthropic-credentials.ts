@@ -30,6 +30,7 @@ const NO_POLL_SNAPSHOT_PROVIDER_KEYS = new Set([
   "tiingo",
   "massive",
   "fred",
+  "quiver-quant",
   "robinhood",
 ]);
 
