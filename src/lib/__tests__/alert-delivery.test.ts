@@ -3,6 +3,7 @@ import fs from "fs";
 import os from "os";
 import path from "path";
 import { setupPrismaSqliteTestDb } from "./setup-test-db";
+import { tryAcquireIngestAdmission } from "../ingest-admission";
 
 let dbPath: string;
 let prisma: typeof import("@/lib/prisma").prisma;
@@ -120,6 +121,63 @@ describe("alert delivery", () => {
       where: { stateKey: `${provider.id}:balance_low` },
     });
     expect(resolved.resolvedAt).not.toBeNull();
+  });
+
+  it("releases write admission during alert network waits and queues the outcome write", async () => {
+    const provider = await prisma.provider.create({
+      data: {
+        name: "network-admission",
+        displayName: "Network Admission",
+        type: "builtin",
+        refreshIntervalMin: 60,
+        plan: { create: { billingMode: "actual", lowBalanceUsd: 10 } },
+        snapshots: {
+          create: {
+            fetchedAt: new Date("2026-07-20T08:00:00.000Z"),
+            balance: 5,
+          },
+        },
+      },
+    });
+
+    let resolveFetch: ((value: Response) => void) | undefined;
+    const fetchMock = vi.fn(
+      () => new Promise<Response>((resolve) => { resolveFetch = resolve; })
+    );
+    const delivery = deliverProviderAlerts({
+      now: new Date("2026-07-20T12:00:00.000Z"),
+      config: {
+        channels: [{ kind: "webhook", url: "https://alerts.example/deferred" }],
+        minSeverity: "warning",
+        reminderHours: 24,
+        maxAttempts: 1,
+      },
+      fetchImpl: fetchMock as unknown as typeof fetch,
+    });
+
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledOnce());
+
+    // While the HTTP send is in flight, no internal write admission should be
+    // held: the claim write that ran before the fetch call must have already
+    // released it, so an external writer can be admitted here.
+    const releaseHttpWriter = tryAcquireIngestAdmission();
+    expect(releaseHttpWriter).not.toBeNull();
+
+    try {
+      resolveFetch?.(new Response("ok", { status: 200 }));
+      // Persisting the delivery outcome needs internal write admission, which
+      // is queued FIFO behind the external lease held above, so the delivery
+      // promise cannot settle until that lease is released.
+      const stateWhileQueued = await Promise.race([
+        delivery.then(() => "settled" as const),
+        new Promise<"queued">((resolve) => setTimeout(() => resolve("queued"), 20)),
+      ]);
+      expect(stateWhileQueued).toBe("queued");
+    } finally {
+      releaseHttpWriter?.();
+    }
+
+    await expect(delivery).resolves.toMatchObject({ sent: 1, errors: [] });
   });
 
   it("persists channel success before a notification-summary timeout so the next cycle does not resend", async () => {
