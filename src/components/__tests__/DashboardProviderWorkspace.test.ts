@@ -278,15 +278,33 @@ describe("DashboardProviderWorkspace", () => {
     expect(html).toContain("Next renewal 2/1/2099");
   });
 
-  it("connects expansion controls to mobile-safe grouped detail rows", () => {
+  it("collapses repeated accounts by default while preserving an accessible drill-down", () => {
     const html = renderWorkspace([
       provider("provider-one"),
       provider("provider-two"),
+      provider("provider-three"),
+      provider("provider-four"),
     ]);
 
     expect(html).toContain('aria-pressed="true"');
+    expect(html).toContain("4 accounts / keys");
+    expect(html).toContain('aria-expanded="false"');
     expect(html).toContain('aria-controls="provider-family-details-provider-one"');
-    expect(html).toContain('id="provider-family-details-provider-one"');
+    expect(html).toContain(
+      'aria-label="Show Anthropic account and service details"'
+    );
+    expect(html).toContain(
+      'id="provider-family-details-provider-one" hidden="" style="display:none"'
+    );
     expect(html).toContain("table-group-cell");
+    expect(html.match(/data-label="Provider family"/g)).toHaveLength(1);
+    for (const id of [
+      "provider-one",
+      "provider-two",
+      "provider-three",
+      "provider-four",
+    ]) {
+      expect(html).toContain(`href="/providers/${id}"`);
+    }
   });
 });

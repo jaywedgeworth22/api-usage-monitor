@@ -531,7 +531,7 @@ export default function DashboardProviderWorkspace({
             Provider workspace
           </h2>
           <p className="mt-1 max-w-3xl text-xs text-gray-500 dark:text-gray-400">
-            {families.length} provider families, {providers.length} configured accounts, {subscriptions.length} tracked services.
+            {families.length} provider families, {providers.length} configured accounts, {subscriptions.length} tracked services. Select a family to show account and service details.
           </p>
         </div>
         <Link href="/settings" className="inline-flex items-center gap-1.5 rounded-lg border border-gray-300 px-3 py-2 text-xs font-semibold text-gray-700 hover:bg-gray-50 dark:border-gray-600 dark:text-gray-200 dark:hover:bg-gray-700">
@@ -590,7 +590,7 @@ export default function DashboardProviderWorkspace({
           </thead>
           <tbody>
             {visibleFamilies.map((family) => {
-              const isCollapsed = collapsed[family.key] ?? family.providers.length === 1;
+              const isCollapsed = collapsed[family.key] ?? true;
               const familySpendLabel = family.spentUsd == null
                 ? "Cost not reported"
                 : `${formatCurrency(family.spentUsd)}${
@@ -604,6 +604,7 @@ export default function DashboardProviderWorkspace({
                         type="button"
                         aria-expanded={!isCollapsed}
                         aria-controls={family.detailsId}
+                        aria-label={`${isCollapsed ? "Show" : "Hide"} ${family.displayName} account and service details`}
                         onClick={() => setCollapsed((current) => ({ ...current, [family.key]: !isCollapsed }))}
                         className="flex min-w-0 items-start gap-2 text-left"
                       >
@@ -698,11 +699,12 @@ export default function DashboardProviderWorkspace({
                       <p className="text-xs text-gray-500 dark:text-gray-400">{family.providerName}</p>
                     </td>
                   </tr>
-                  {!isCollapsed && (
-                    <tr
-                      id={family.detailsId}
-                      className="border-b border-gray-100 bg-gray-50/70 dark:border-gray-700 dark:bg-gray-900/30"
-                    >
+                  <tr
+                    id={family.detailsId}
+                    hidden={isCollapsed}
+                    style={isCollapsed ? { display: "none" } : undefined}
+                    className="border-b border-gray-100 bg-gray-50/70 dark:border-gray-700 dark:bg-gray-900/30"
+                  >
                       <td colSpan={6} className="table-group-cell px-4 py-3 sm:px-6">
                         <div className="grid gap-2 lg:grid-cols-2">
                           {family.providers.map((provider) => (
@@ -827,8 +829,7 @@ export default function DashboardProviderWorkspace({
                           ))}
                         </div>
                       </td>
-                    </tr>
-                  )}
+                  </tr>
                 </Fragment>
               );
             })}
