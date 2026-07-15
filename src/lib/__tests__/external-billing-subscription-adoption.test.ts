@@ -1,4 +1,13 @@
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import {
+  afterAll,
+  afterEach,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from "vitest";
 import fs from "fs";
 import os from "os";
 import path from "path";
@@ -56,6 +65,8 @@ afterAll(async () => {
 
 describe("adoptExternalBillingSubscriptions", () => {
   beforeEach(async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(NOW);
     delete process.env.CLOUDFLARE_LEGACY_HANDOFF_SUBSCRIPTION_ID;
     await prisma.externalUsageEvent.deleteMany();
     await prisma.subscription.deleteMany();
@@ -64,6 +75,10 @@ describe("adoptExternalBillingSubscriptions", () => {
     await prisma.providerPlan.deleteMany();
     await prisma.provider.deleteMany();
     await prisma.project.deleteMany();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
   });
 
   async function createProvider(name = "cloudflare") {
