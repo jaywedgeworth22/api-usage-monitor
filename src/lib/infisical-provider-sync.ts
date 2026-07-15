@@ -549,6 +549,26 @@ interface SecretRecordRead {
   value?: string;
 }
 
+function requireReturnedSecretScope(
+  secret: Record<string, unknown>,
+  source: SourceConfig,
+  secretName: string,
+  errorCode: string
+): void {
+  const expected: ReadonlyArray<readonly [string, string]> = [
+    ["secretKey", secretName],
+    ["type", "shared"],
+    ["projectId", source.projectId],
+    ["environment", source.environment],
+    ["secretPath", source.secretPath],
+  ];
+  for (const [field, value] of expected) {
+    if (field in secret && secret[field] !== value) {
+      throw new InfisicalSyncError(errorCode);
+    }
+  }
+}
+
 async function fetchSecretRecord(
   baseUrl: string,
   source: SourceConfig,
@@ -578,10 +598,16 @@ async function fetchSecretRecord(
   }
   const body = await readJsonObject(response);
   const secret = body.secret;
-  if (!secret || typeof secret !== "object" || Array.isArray(secret)) {
+  if (!isRecord(secret)) {
     throw new InfisicalSyncError("secret_invalid_response");
   }
-  const value = (secret as Record<string, unknown>).secretValue;
+  requireReturnedSecretScope(
+    secret,
+    source,
+    secretName,
+    "secret_scope_mismatch"
+  );
+  const value = secret.secretValue;
   if (typeof value !== "string") {
     throw new InfisicalSyncError("secret_invalid_response");
   }
@@ -637,6 +663,43 @@ async function createSecret(
     secret.type !== "shared"
   ) {
     throw new InfisicalSyncError("create_invalid_response");
+  }
+  requireReturnedSecretScope(
+    secret,
+    source,
+    secretName,
+    "create_scope_mismatch"
+  );
+  if (
+    "secretValue" in secret &&
+    (typeof secret.secretValue !== "string" ||
+      !sameFingerprint(
+        geminiApiKeyFingerprint(secret.secretValue),
+        geminiApiKeyFingerprint(secretValue)
+      ))
+  ) {
+    throw new InfisicalSyncError("create_value_mismatch");
+  }
+}
+
+async function verifyCreatedSecret(
+  baseUrl: string,
+  source: SourceConfig,
+  token: string,
+  secretName: string,
+  expectedFingerprint: string
+): Promise<void> {
+  const created = await fetchSecretRecord(baseUrl, source, token, secretName);
+  if (!created.found) {
+    throw new InfisicalSyncError("post_create_secret_missing");
+  }
+  if (
+    !sameFingerprint(
+      geminiApiKeyFingerprint(created.value ?? ""),
+      expectedFingerprint
+    )
+  ) {
+    throw new InfisicalSyncError("post_create_value_mismatch");
   }
 }
 
@@ -1081,6 +1144,16 @@ export async function bootstrapStGeminiCredentialToInfisical(): Promise<StGemini
       ST_GEMINI_SECRET_NAME,
       current.material.apiKey
     );
+    // A 2xx create response is not sufficient proof that the fixed remote
+    // scope now contains the intended credential. Re-read the exact secret
+    // before allowing the ordinary pull to adopt/bind it in this same pass.
+    await verifyCreatedSecret(
+      baseUrl,
+      source,
+      token,
+      ST_GEMINI_SECRET_NAME,
+      current.material.credentialFingerprint
+    );
     return auditStGeminiBootstrap({
       ...disabled,
       enabled: true,
@@ -1279,6 +1352,59 @@ function mergedStoredConfig(provider: ProviderRecord): {
   };
 }
 
+function isStGeminiCandidate(candidate: CredentialCandidate): boolean {
+  return (
+    candidate.scope === "st" &&
+    canonicalProviderKey(candidate.providerName) ===
+      canonicalProviderKey("google-ai")
+  );
+}
+
+async function guardInitialStGeminiBinding(
+  candidate: CredentialCandidate,
+  target: ProviderRecord
+): Promise<void> {
+  if (!isStGeminiCandidate(candidate) || target.id !== ST_GEMINI_PROVIDER_ID) {
+    return;
+  }
+
+  const targetBinding = readStoredBinding(target);
+  if (!targetBinding.readable) {
+    throw new InfisicalSyncError("binding_unreadable");
+  }
+  if (targetBinding.binding) {
+    if (
+      targetBinding.binding.scope === "st" &&
+      targetBinding.binding.source === candidate.source &&
+      canonicalProviderKey(targetBinding.binding.providerName) ===
+        canonicalProviderKey("google-ai")
+    ) {
+      // Once the exact binding exists, Infisical is the steady-state source of
+      // truth and ordinary remote rotations remain supported.
+      return;
+    }
+    throw new InfisicalSyncError("binding_conflict");
+  }
+
+  const currentProvider = await loadStGeminiBootstrapProvider();
+  const current = validateStGeminiBootstrapProvider(currentProvider);
+  if (!current.material) {
+    throw new InfisicalSyncError(
+      current.errorCode ?? "initial_binding_validation_failed"
+    );
+  }
+  const candidateKey = candidate.material.apiKey;
+  if (
+    !candidateKey ||
+    !sameFingerprint(
+      geminiApiKeyFingerprint(candidateKey),
+      current.material.credentialFingerprint
+    )
+  ) {
+    throw new InfisicalSyncError("initial_binding_value_conflict");
+  }
+}
+
 async function applyCandidates(candidates: readonly CredentialCandidate[]): Promise<{
   created: number;
   updated: number;
@@ -1368,6 +1494,10 @@ async function applyCandidates(candidates: readonly CredentialCandidate[]): Prom
         continue;
       }
 
+      // This guard is deliberately independent of the one-time bootstrap
+      // flag. Until the fixed ST Gemini provider is bound, a normal pull may
+      // attach only a remote value proven equal to its freshly validated key.
+      await guardInitialStGeminiBinding(candidate, target);
       claimed.add(target.id);
       const stored = mergedStoredConfig(target);
       const existingBinding = bindingFor(target);

@@ -190,6 +190,7 @@ function installInfisicalMock(
     secretStatus?: Partial<Record<Scope, Partial<Record<string, number>>>>;
     createStatus?: number;
     oversizedCreate?: boolean;
+    postCreateReadValue?: string;
     afterFirstMissingStGeminiRead?: () => void | Promise<void>;
   } = {}
 ): {
@@ -308,7 +309,7 @@ function installInfisicalMock(
         if (sourceSecrets[name] !== undefined) {
           return jsonResponse({ error: "already exists" }, 409);
         }
-        sourceSecrets[name] = secretValue;
+        sourceSecrets[name] = options.postCreateReadValue ?? secretValue;
         if (options.oversizedCreate) {
           return new Response(
             new ReadableStream<Uint8Array>({
@@ -323,7 +324,14 @@ function installInfisicalMock(
           );
         }
         return jsonResponse({
-          secret: { secretKey: name, secretValue, type: "shared" },
+          secret: {
+            secretKey: name,
+            secretValue,
+            type: "shared",
+            projectId: body.projectId,
+            environment: body.environment,
+            secretPath: body.secretPath,
+          },
         });
       }
       secretReads.push({
@@ -354,7 +362,16 @@ function installInfisicalMock(
       }
       return value === undefined
         ? jsonResponse({ error: "not found" }, 404)
-        : jsonResponse({ secret: { secretValue: value } });
+        : jsonResponse({
+            secret: {
+              secretKey: name,
+              secretValue: value,
+              type: "shared",
+              projectId: url.searchParams.get("projectId"),
+              environment: url.searchParams.get("environment"),
+              secretPath: url.searchParams.get("secretPath"),
+            },
+          });
     })
   );
   return {
@@ -1076,11 +1093,15 @@ describe("one-time ST Gemini Infisical bootstrap", () => {
     const createIndex = capture.events.indexOf(
       "POST /api/v4/secrets/GEMINI_API_KEY"
     );
+    expect(capture.events[createIndex + 1]).toBe(
+      "GET /api/v4/secrets/GEMINI_API_KEY"
+    );
+    const pullStart = capture.events.length;
     const sync = await syncProviderCredentialsFromInfisical();
     expect(createIndex).toBeGreaterThan(-1);
     expect(
       capture.events
-        .slice(createIndex + 1)
+        .slice(pullStart)
         .includes("GET /api/v4/secrets/GEMINI_API_KEY")
     ).toBe(true);
     expect(sync.updated).toBe(1);
@@ -1265,6 +1286,56 @@ describe("one-time ST Gemini Infisical bootstrap", () => {
     expect(preserved.alertConfigGeneration).toBe(7);
   });
 
+  it("keeps the initial ST Gemini binding guard after the bootstrap flag is disabled, then permits equal binding and bound rotation", async () => {
+    enableStGeminiBootstrap();
+    const { provider, key } = await seedStGeminiProvider();
+    const secrets = {
+      st: { GEMINI_API_KEY: "different-infisical-value" },
+    };
+    installInfisicalMock(secrets);
+
+    const conflict = await bootstrapStGeminiCredentialToInfisical();
+    expect(conflict).toMatchObject({
+      status: "conflict",
+      errorCode: "existing_value_conflict",
+    });
+
+    delete process.env.INFISICAL_ST_GEMINI_BOOTSTRAP_ENABLED;
+    const conflictingPull = await syncProviderCredentialsFromInfisical();
+    expect(conflictingPull.updated).toBe(0);
+    expect(conflictingPull.failed).toBeGreaterThan(0);
+    let stored = await prisma.provider.findUniqueOrThrow({
+      where: { id: provider.id },
+    });
+    expect(decrypt(stored.apiKey!)).toBe(key);
+    expect(stored.secretConfig).toBeNull();
+    expect(stored.alertConfigGeneration).toBe(7);
+
+    secrets.st.GEMINI_API_KEY = key!;
+    const equalPull = await syncProviderCredentialsFromInfisical();
+    expect(equalPull.updated).toBe(1);
+    stored = await prisma.provider.findUniqueOrThrow({
+      where: { id: provider.id },
+    });
+    expect(decrypt(stored.apiKey!)).toBe(key);
+    expect(decryptJson(stored.secretConfig!)).toMatchObject({
+      infisicalCredential: {
+        scope: "st",
+        source: "st",
+        providerName: "google-ai",
+      },
+    });
+
+    secrets.st.GEMINI_API_KEY = "rotated-after-binding";
+    const rotationPull = await syncProviderCredentialsFromInfisical();
+    expect(rotationPull.updated).toBe(1);
+    stored = await prisma.provider.findUniqueOrThrow({
+      where: { id: provider.id },
+    });
+    expect(decrypt(stored.apiKey!)).toBe("rotated-after-binding");
+    expect(stored.alertConfigGeneration).toBe(9);
+  });
+
   it.each([
     ["scope preflight", { scopeStatus: { st: 403 } }, "scope_http_403"],
     [
@@ -1379,6 +1450,40 @@ describe("one-time ST Gemini Infisical bootstrap", () => {
     expect(capture.events.some((event) => event.startsWith("PATCH "))).toBe(false);
     expect(capture.events.some((event) => event.startsWith("DELETE "))).toBe(false);
     expectRedacted(result, [key!]);
+  });
+
+  it("rejects a 2xx create whose exact post-create read has a different value", async () => {
+    enableStGeminiBootstrap();
+    const { provider, key } = await seedStGeminiProvider();
+    const capture = installInfisicalMock(
+      { st: {} },
+      { postCreateReadValue: "different-post-create-value" }
+    );
+
+    const result = await bootstrapStGeminiCredentialToInfisical();
+
+    expect(result).toMatchObject({
+      attempted: true,
+      status: "error",
+      errorCode: "post_create_value_mismatch",
+    });
+    expect(capture.secretCreates).toHaveLength(1);
+    expect(
+      capture.events.filter(
+        (event) => event === "GET /api/v4/secrets/GEMINI_API_KEY"
+      )
+    ).toHaveLength(2);
+
+    const sameCyclePull = await syncProviderCredentialsFromInfisical({
+      suppressStGemini: true,
+    });
+    expect(sameCyclePull.suppressed).toBe(1);
+    const preserved = await prisma.provider.findUniqueOrThrow({
+      where: { id: provider.id },
+    });
+    expect(decrypt(preserved.apiKey!)).toBe(key);
+    expect(preserved.secretConfig).toBeNull();
+    expectRedacted(result, [key!, "different-post-create-value"]);
   });
 
   it("bounds and cancels an oversized create response without exposing the key", async () => {
