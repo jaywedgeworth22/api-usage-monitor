@@ -122,6 +122,14 @@ interface Provider {
   plan?: ProviderPlan | null;
   allocations?: { projectId: string; percentage: number }[];
   secretConfigMeta?: { configured: boolean; fields: string[]; readable: boolean };
+  credentialManagement?: {
+    source: "infisical";
+    scope: "st-primary";
+    label: string;
+    status: "active" | "revoked";
+    alias: boolean;
+    readOnlyFields: readonly string[];
+  } | null;
 }
 
 interface AddProviderModalProps {
@@ -192,6 +200,7 @@ export default function AddProviderModal({
     stringFieldsFromConfig(editProvider?.config)
   );
   const [disconnectGoogleBilling, setDisconnectGoogleBilling] = useState(false);
+  const credentialManaged = editProvider?.credentialManagement ?? null;
 
   const selectedDef: ProviderDefinition | undefined = BUILT_IN_PROVIDERS.find(
     (provider) => provider.name === selectedBuiltin
@@ -423,13 +432,18 @@ export default function AddProviderModal({
           name: selectedDef.name,
           displayName: builtinDisplayName.trim(),
           type: "builtin",
-          apiKey: selectedDef.usesApiKey === false ? undefined : apiKey || undefined,
+          apiKey:
+            selectedDef.usesApiKey === false || credentialManaged
+              ? undefined
+              : apiKey || undefined,
           config:
             Object.keys(config).length > 0 || disconnectGoogleBilling
               ? config
               : undefined,
           secretConfigOperations,
-          label: label.trim() || null,
+          label: credentialManaged
+            ? editProvider?.label ?? null
+            : label.trim() || null,
           refreshIntervalMin,
           plan,
           allocations: allocationPayload,
@@ -1157,8 +1171,9 @@ export default function AddProviderModal({
                   type="password"
                   value={apiKey}
                   onChange={(e) => setApiKey(e.target.value)}
-                  placeholder={editProvider ? "Leave blank to keep current" : "Your API key"}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                  disabled={Boolean(credentialManaged)}
+                  placeholder={credentialManaged ? "Managed by Infisical" : editProvider ? "Leave blank to keep current" : "Your API key"}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 disabled:cursor-not-allowed disabled:bg-gray-100"
                 />
                 {editProvider && !apiKey && editProvider.keyPreview && (
                   <p className="text-xs text-gray-500 mt-1">
@@ -1166,6 +1181,11 @@ export default function AddProviderModal({
                     <code className="bg-gray-100 px-1.5 py-0.5 rounded text-[11px]">
                       {editProvider.keyPreview}
                     </code>
+                  </p>
+                )}
+                {credentialManaged && (
+                  <p className="mt-1 text-xs text-blue-600">
+                    Credential and activation are read-only here and sync from the isolated Socratic primary-account source.
                   </p>
                 )}
               </div>
@@ -1180,8 +1200,9 @@ export default function AddProviderModal({
                   type="text"
                   value={label}
                   onChange={(e) => setLabel(e.target.value)}
+                  disabled={Boolean(credentialManaged)}
                   placeholder="e.g. Agentic Trading, Congress.Trade"
-                  className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 disabled:cursor-not-allowed disabled:bg-gray-100"
                 />
                 <p className="text-xs text-gray-400 mt-0.5">Tag this key to distinguish it from others with the same provider name</p>
               </div>

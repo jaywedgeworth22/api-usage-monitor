@@ -74,6 +74,26 @@ describe("provider secret config", () => {
     expect(JSON.stringify(result)).not.toContain("encrypted");
   });
 
+  it("never exposes Infisical ownership field names or values", () => {
+    const result = providerConfigForClient(
+      { projectId: "safe-project" },
+      encryptJson({
+        infisicalCredential: {
+          scope: "st-primary",
+          sequence: 99,
+          fingerprint: "a".repeat(64),
+          secretName: "GEMINI_API_KEY",
+        },
+        serviceAccountJson: "still-redacted",
+      })
+    );
+
+    expect(result.config).toEqual({ projectId: "safe-project" });
+    expect(result.secretConfigMeta.fields).toEqual(["serviceAccountJson"]);
+    expect(JSON.stringify(result)).not.toContain("GEMINI_API_KEY");
+    expect(JSON.stringify(result)).not.toContain("fingerprint");
+  });
+
   it("never returns a Google service-account document to the browser", () => {
     const credential = JSON.stringify({
       type: "service_account",

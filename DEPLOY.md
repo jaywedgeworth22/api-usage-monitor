@@ -106,6 +106,12 @@ not copied from the obsolete gray-cloud setup.
   provider into the fixed ST `prod` `/` `GEMINI_API_KEY`). It never updates or
   deletes an Infisical secret. Enable only for the reviewed migration run and
   disable immediately after its sanitized result is observed.
+- `INFISICAL_ST_PRIMARY_SYNC_ENABLED` (optional, defaults to `false`) plus the
+  dedicated `INFISICAL_ST_PRIMARY_CLIENT_ID` / `_CLIENT_SECRET`. This read-only
+  identity is fixed to the SocraticTrade.com Infisical project, `prod`, and
+  `/usage-monitor/st-primary/v1`; it cannot be redirected with project/path env
+  variables. Enable only after the writer has published a reviewed strict
+  `BRIDGE_MANIFEST_V1` complete set.
 - `USAGE_SCHEDULER_ENABLED` (optional, defaults to `true`; emergency isolation
   switch for the in-process provider polling scheduler). Setting it to `false`
   stops automatic provider snapshots but does not disable pushed usage/OTLP

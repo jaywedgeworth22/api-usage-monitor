@@ -23,6 +23,12 @@ import {
   deriveGeminiMonitoringStatus,
 } from "@/lib/gemini-key-status";
 import { projectGeminiExternalBillingForClient } from "@/lib/gemini-external-billing";
+import {
+  containsProviderManagementClaim,
+  hasStPrimaryCredentialOwnership,
+  isReservedStPrimaryManagedLabel,
+  providerCredentialManagementForClient,
+} from "@/lib/managed-provider-credential";
 
 function decryptKey(encryptedKey: string | null): string | null {
   if (!encryptedKey) return null;
@@ -167,6 +173,15 @@ export async function GET() {
   const result = providers.map((p) => {
     const { snapshots, apiKey, config, secretConfig, ...rest } = p;
     const clientConfig = providerConfigForClient(config, secretConfig);
+    const credentialManagement = providerCredentialManagementForClient(
+      config,
+      secretConfig
+    );
+    const credentialManaged = hasStPrimaryCredentialOwnership(
+      config,
+      secretConfig,
+      p.label
+    );
     const latestSnapshotWithRawData = snapshots[0] ?? null;
     const latestSnapshot = latestSnapshotWithRawData
       ? {
@@ -240,7 +255,8 @@ export async function GET() {
       ...rest,
       externalBilling,
       ...clientConfig,
-      keyPreview: buildKeyPreview(decryptedKey),
+      credentialManagement,
+      keyPreview: credentialManaged ? null : buildKeyPreview(decryptedKey),
       geminiKeyStatus,
       geminiBillingStatus,
       geminiMonitoringStatus,
@@ -302,6 +318,16 @@ export async function POST(request: NextRequest) {
   } catch (error) {
     return NextResponse.json(
       { error: error instanceof Error ? error.message : "Invalid request" },
+      { status: 400 }
+    );
+  }
+
+  if (
+    containsProviderManagementClaim(input.config) ||
+    isReservedStPrimaryManagedLabel(input.label)
+  ) {
+    return NextResponse.json(
+      { error: "Provider credential-management metadata is server-only" },
       { status: 400 }
     );
   }

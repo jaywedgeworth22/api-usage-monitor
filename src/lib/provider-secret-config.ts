@@ -143,6 +143,10 @@ function collectFieldPaths(
 ): string[] {
   const fields: string[] = [];
   for (const [key, nested] of Object.entries(value)) {
+    // Infisical ownership metadata is server-only. Even its nested field names
+    // (sequence/fingerprint/secret name) provide no editing affordance and
+    // must not be exposed through secretConfigMeta.
+    if (normalizedKey(key) === "infisicalcredential") continue;
     const path = prefix ? `${prefix}.${key}` : key;
     if (isRecord(nested) && !isOpaqueSecretContainerKey(key)) {
       fields.push(...collectFieldPaths(nested, path));

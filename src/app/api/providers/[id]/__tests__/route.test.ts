@@ -2,13 +2,17 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import fs from "fs";
 import os from "os";
 import path from "path";
+import { createHash } from "node:crypto";
 import { NextRequest } from "next/server";
 import { setupPrismaSqliteTestDb } from "@/lib/__tests__/setup-test-db";
 
 let testDir: string;
 let PUT: typeof import("../route").PUT;
 let GET: typeof import("../route").GET;
+let DELETE: typeof import("../route").DELETE;
 let GET_COLLECTION: typeof import("../../route").GET;
+let POST_COLLECTION: typeof import("../../route").POST;
+let POST_FETCH: typeof import("../fetch/route").POST;
 let prisma: typeof import("@/lib/prisma").prisma;
 let encryptJson: typeof import("@/lib/crypto").encryptJson;
 let decryptJson: typeof import("@/lib/crypto").decryptJson;
@@ -24,8 +28,9 @@ beforeAll(async () => {
   process.env.ENCRYPTION_KEY = "33".repeat(32);
   setupPrismaSqliteTestDb(dbPath);
 
-  ({ GET, PUT } = await import("../route"));
-  ({ GET: GET_COLLECTION } = await import("../../route"));
+  ({ GET, PUT, DELETE } = await import("../route"));
+  ({ GET: GET_COLLECTION, POST: POST_COLLECTION } = await import("../../route"));
+  ({ POST: POST_FETCH } = await import("../fetch/route"));
   ({ prisma } = await import("@/lib/prisma"));
   ({ encrypt, encryptJson, decryptJson } = await import("@/lib/crypto"));
   ({
@@ -52,6 +57,216 @@ function updateRequest(id: string, body: unknown): NextRequest {
     body: JSON.stringify(body),
   });
 }
+
+function managedBinding() {
+  return {
+    scope: "st-primary",
+    source: "st-primary",
+    providerName: "google-ai",
+    sequence: 17,
+    status: "active",
+    fingerprint: createHash("sha256").update("managed-key").digest("hex"),
+  };
+}
+
+describe("Infisical-managed provider API boundaries", () => {
+  it("returns only safe ownership metadata and redacts key/binding details", async () => {
+    const provider = await prisma.provider.create({
+      data: {
+        name: "google-ai",
+        displayName: "Google AI",
+        type: "builtin",
+        label: "SocraticTrade.com · Primary account",
+        apiKey: encrypt("managed-key"),
+        secretConfig: encryptJson({ infisicalCredential: managedBinding() }),
+      },
+    });
+
+    const response = await GET(new NextRequest("https://usage.jays.services"), {
+      params: Promise.resolve({ id: provider.id }),
+    });
+    const body = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(body.keyPreview).toBeNull();
+    expect(body.credentialManagement).toEqual({
+      source: "infisical",
+      scope: "st-primary",
+      label: "SocraticTrade.com · Primary account",
+      status: "active",
+      alias: false,
+      readOnlyFields: ["apiKey", "isActive", "label"],
+    });
+    expect(body.secretConfigMeta.fields).not.toContain("infisicalCredential.sequence");
+    expect(JSON.stringify(body)).not.toContain("managed-key");
+    expect(JSON.stringify(body)).not.toContain(managedBinding().fingerprint);
+    expect(JSON.stringify(body)).not.toContain("sequence");
+  });
+
+  it("blocks managed-field edits and deletion while allowing unrelated config", async () => {
+    const provider = await prisma.provider.create({
+      data: {
+        name: "google-ai",
+        displayName: "Google AI",
+        type: "builtin",
+        label: "SocraticTrade.com · Primary account",
+        apiKey: encrypt("managed-key"),
+        secretConfig: encryptJson({ infisicalCredential: managedBinding() }),
+      },
+    });
+
+    for (const body of [
+      { apiKey: "replacement" },
+      { isActive: false },
+      { label: "manual" },
+      { config: null },
+    ]) {
+      const response = await PUT(updateRequest(provider.id, body), {
+        params: Promise.resolve({ id: provider.id }),
+      });
+      expect(response.status).toBe(409);
+    }
+    const unrelated = await PUT(
+      updateRequest(provider.id, { config: { googleProjectId: "billing-project" } }),
+      { params: Promise.resolve({ id: provider.id }) }
+    );
+    expect(unrelated.status).toBe(200);
+    expect(decryptJson((await prisma.provider.findUniqueOrThrow({
+      where: { id: provider.id },
+    })).secretConfig!)).toMatchObject({ infisicalCredential: managedBinding() });
+
+    const deleted = await DELETE(
+      new NextRequest(`https://usage.jays.services/api/providers/${provider.id}`, {
+        method: "DELETE",
+      }),
+      { params: Promise.resolve({ id: provider.id }) }
+    );
+    expect(deleted.status).toBe(409);
+    expect(await prisma.provider.count({ where: { id: provider.id } })).toBe(1);
+  });
+
+  it("rejects browser claims to management metadata on create and update", async () => {
+    const create = await POST_COLLECTION(
+      new NextRequest("https://usage.jays.services/api/providers", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          name: "google-ai",
+          displayName: "Injected",
+          type: "builtin",
+          config: { Infisical_Credential: managedBinding() },
+        }),
+      })
+    );
+    expect(create.status).toBe(400);
+
+    const ordinary = await prisma.provider.create({
+      data: { name: "deepseek", displayName: "DeepSeek", type: "builtin" },
+    });
+    const update = await PUT(
+      updateRequest(ordinary.id, {
+        config: { nested: { infisicalCredential: managedBinding() } },
+      }),
+      { params: Promise.resolve({ id: ordinary.id }) }
+    );
+    expect(update.status).toBe(400);
+    expect((await prisma.provider.findUniqueOrThrow({ where: { id: ordinary.id } })).secretConfig)
+      .toBeNull();
+  });
+
+  it("blocks a manual fetch for an inactive identical-credential alias", async () => {
+    const provider = await prisma.provider.create({
+      data: {
+        name: "google-ai",
+        displayName: "Google AI",
+        type: "builtin",
+        label: "SocraticTrade.com · Primary account",
+        isActive: false,
+        apiKey: encrypt("managed-key"),
+        secretConfig: encryptJson({
+          infisicalCredential: {
+            ...managedBinding(),
+            aliasOfProviderId: "existing-identical-provider",
+          },
+        }),
+      },
+    });
+
+    const response = await POST_FETCH(
+      new NextRequest(`https://usage.jays.services/api/providers/${provider.id}/fetch`, {
+        method: "POST",
+      }),
+      { params: Promise.resolve({ id: provider.id }) }
+    );
+    expect(response.status).toBe(409);
+    expect(await prisma.usageSnapshot.count({ where: { providerId: provider.id } }))
+      .toBe(0);
+  });
+
+  it("fails closed for malformed bindings and unreadable managed-label envelopes", async () => {
+    const malformed = await prisma.provider.create({
+      data: {
+        name: "google-ai",
+        displayName: "Malformed managed",
+        type: "builtin",
+        label: "unexpected-label",
+        apiKey: encrypt("must-stay-redacted"),
+        secretConfig: encryptJson({
+          infisicalCredential: {
+            ...managedBinding(),
+            sequence: "not-an-integer",
+          },
+        }),
+      },
+    });
+    const malformedGet = await GET(
+      new NextRequest("https://usage.jays.services"),
+      { params: Promise.resolve({ id: malformed.id }) }
+    );
+    const malformedBody = await malformedGet.json();
+    expect(malformedBody.credentialManagement).toBeNull();
+    expect(malformedBody.keyPreview).toBeNull();
+    expect(JSON.stringify(malformedBody)).not.toContain("must-stay-redacted");
+    expect((await PUT(updateRequest(malformed.id, { apiKey: "replacement" }), {
+      params: Promise.resolve({ id: malformed.id }),
+    })).status).toBe(409);
+    expect((await DELETE(
+      new NextRequest(`https://usage.jays.services/api/providers/${malformed.id}`, {
+        method: "DELETE",
+      }),
+      { params: Promise.resolve({ id: malformed.id }) }
+    )).status).toBe(409);
+
+    const unreadable = await prisma.provider.create({
+      data: {
+        name: "deepseek",
+        displayName: "Unreadable managed",
+        type: "builtin",
+        label: "SocraticTrade.com · Primary account",
+        apiKey: encrypt("also-must-stay-redacted"),
+        secretConfig: "not-an-encrypted-envelope",
+      },
+    });
+    const unreadableGet = await GET(
+      new NextRequest("https://usage.jays.services"),
+      { params: Promise.resolve({ id: unreadable.id }) }
+    );
+    const unreadableBody = await unreadableGet.json();
+    expect(unreadableBody.credentialManagement).toBeNull();
+    expect(unreadableBody.keyPreview).toBeNull();
+    expect(unreadableBody.secretConfigMeta.readable).toBe(false);
+    expect(JSON.stringify(unreadableBody)).not.toContain("also-must-stay-redacted");
+    expect((await PUT(updateRequest(unreadable.id, { isActive: false }), {
+      params: Promise.resolve({ id: unreadable.id }),
+    })).status).toBe(409);
+    expect((await DELETE(
+      new NextRequest(`https://usage.jays.services/api/providers/${unreadable.id}`, {
+        method: "DELETE",
+      }),
+      { params: Promise.resolve({ id: unreadable.id }) }
+    )).status).toBe(409);
+  });
+});
 
 describe("PUT /api/providers/:id secret config operations", () => {
   it("disconnects Google billing while preserving unrelated public and secret config", async () => {
