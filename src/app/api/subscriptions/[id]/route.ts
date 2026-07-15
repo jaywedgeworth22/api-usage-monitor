@@ -285,21 +285,6 @@ export async function PUT(request: Request, { params }: { params: Promise<{ id: 
       { status: 400 }
     );
   }
-  // A guard represents the row's exact provider/cadence/amount charge shape,
-  // not the subscription identity. Owner edits can unlink or reshape a guarded
-  // row, so always derive it again from the final submitted values and current
-  // authoritative external billing state. Retaining the old guard merely
-  // because the provider stayed the same can strand the real external charge
-  // behind a stale unique key and make maintenance degrade with P2002.
-  data.externalAdoptionGuardKey = await findExternalAdoptionGuardKeyForCharge({
-    providerId: effectiveProviderId,
-    refreshIntervalMin: guardProvider.refreshIntervalMin,
-    costUsd: update.costUsd ?? existing.costUsd,
-    currency: update.currency ?? existing.currency,
-    interval: update.interval ?? existing.interval,
-    intervalCount: update.intervalCount ?? existing.intervalCount,
-    now: validationNow,
-  });
   if (update.providerId !== undefined) {
     data.provider = { connect: { id: update.providerId } };
     if (!externalBillingLinkSupplied && update.providerId !== existing.providerId) {
@@ -453,7 +438,35 @@ export async function PUT(request: Request, { params }: { params: Promise<{ id: 
   }
 
   try {
-    const subscription = await prisma.subscription.update({ where: { id }, data });
+    const subscription = await prisma.$transaction(async (tx) => {
+      // Lock before the final identity reread and row update. A concurrent
+      // adapter refresh can only land before or after this transaction, never
+      // between guard authorization and persistence.
+      await tx.$executeRaw`
+        UPDATE "Subscription"
+        SET "costUsd" = "costUsd"
+        WHERE "id" = ${id}
+      `;
+      // A guard is valid only for the final exact linked external identity and
+      // provider/cadence/amount shape. Unlinking clears it; price equivalence
+      // alone never restores it.
+      data.externalAdoptionGuardKey =
+        await findExternalAdoptionGuardKeyForCharge(
+          {
+            providerId: effectiveProviderId,
+            refreshIntervalMin: guardProvider.refreshIntervalMin,
+            externalBillingSource: effectiveExternalSource,
+            externalBillingId: effectiveExternalId,
+            costUsd: update.costUsd ?? existing.costUsd,
+            currency: update.currency ?? existing.currency,
+            interval: update.interval ?? existing.interval,
+            intervalCount: update.intervalCount ?? existing.intervalCount,
+            now: validationNow,
+          },
+          tx
+        );
+      return tx.subscription.update({ where: { id }, data });
+    });
     return NextResponse.json(subscription);
   } catch (error) {
     if (

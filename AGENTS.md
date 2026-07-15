@@ -152,8 +152,8 @@ usage — no special-casing. Idempotent by `(subscriptionId, periodStart)` hash 
   pauses/cancels managed rows when authority becomes stale, canceled, or deleted; a fresh exact
   next period reactivates and charges once. Owner-created/linked rows are never managed, and any
   owner edit relinquishes management. A nullable unique `externalAdoptionGuardKey` is populated
-  only for eligible external charge shapes, preventing manual/adoption races without blocking
-  legitimate same-price manual accounts where no external charge authority exists.
+  for auto-managed rows and owner rows explicitly linked to the exact eligible external source +
+  ID. Unlinked same-price/cadence rows remain unguarded and additive because shape is not identity.
 - Adoption is one SQLite writer-locked transaction with a full state re-read. Its failure rolls
   back all new/reconciled rows and is reported as degraded, while materialization of existing
   subscriptions, renewals, retention, and alerts still run. Adoption and materialization share one
@@ -161,9 +161,10 @@ usage — no special-casing. Idempotent by `(subscriptionId, periodStart)` hash 
 - A fresh authoritative correction to an already-materialized managed term writes an
   `ExternalBillingChargeCorrection` only after verifying the exact deterministic charge event,
   provider, period, amount, and subscription metadata. This immutable-period proof survives source
-  rollover/staleness and managed-row edits/deletion, so a crash before collision settlement cannot
-  later release a duplicate charge and a corrected fixed snapshot stays deduped. Stale/inexact
-  evidence cannot create proof, and unrelated subscription events remain additive.
+  rollover/staleness and managed-row edits/deletion. Collision settlement additionally requires an
+  owner-managed row explicitly linked to the proof's exact source + external ID; absent, ambiguous,
+  auto-managed, or unrelated identity fails open and stays additive. Corrected fixed snapshots stay
+  deduped independently. Stale/inexact evidence cannot create proof.
 - A recurring fee should be modeled EITHER as `ProviderPlan.fixedMonthlyCostUsd` (a flat read-time
   add) OR as a `Subscription` (materialized events) — not both, or it double-counts.
 - **Status is `active | paused | canceled | considering`** (subscription -> knob linkage phase 1,

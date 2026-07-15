@@ -425,10 +425,9 @@ model Subscription {
   // maintenance. These are single-term schedules reconciled from fresh rows;
   // owner-created/linked rows remain false and are never overwritten.
   externalBillingManaged Boolean   @default(false)
-  // Durable race guard used only when an owner-created row or an auto-managed
-  // row corresponds to the same eligible authoritative external charge shape.
-  // Null for ordinary manual subscriptions, preserving legitimate same-price
-  // multi-account subscriptions when no external authority exists.
+  // Durable charge-shape guard used by auto-managed rows and by owner rows
+  // explicitly linked to one exact eligible external source + ID. Never
+  // inferred for an unlinked same-price row: price/cadence are not identity.
   externalAdoptionGuardKey String? @unique
   name                   String
   description            String?
@@ -473,9 +472,9 @@ model Subscription {
 // Immutable-period proof that a fresh authoritative provider observation
 // corrected one exact already-materialized local subscription charge. Each
 // corrected charge shape remains available for budget reconciliation and can
-// settle a matching owner collision even after provider rollover, source
-// staleness, or deletion of the managed Subscription row. Stale observations
-// never create or update these rows.
+// settle a matching explicitly linked owner collision even after provider
+// rollover, source staleness, or deletion of the managed Subscription row.
+// Stale observations never create or update these rows.
 model ExternalBillingChargeCorrection {
   id                    String       @id @default(uuid())
   providerId            String

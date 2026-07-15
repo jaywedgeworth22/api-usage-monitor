@@ -223,15 +223,19 @@ function asRecord(value: Prisma.JsonValue | null): Record<string, unknown> | nul
 export async function findExternalAdoptionGuardKeyForCharge(input: {
   providerId: string;
   refreshIntervalMin: number;
+  externalBillingSource: string | null;
+  externalBillingId: string | null;
   costUsd: number;
   currency: string;
   interval: string;
   intervalCount: number;
   now?: Date;
-}): Promise<string | null> {
+}, db: Pick<Prisma.TransactionClient, "providerExternalBilling"> = prisma): Promise<string | null> {
   const cadence = normalizeExternalBillingCadence(input.interval);
   const cents = conservativeUsdCents(input.costUsd);
   if (
+    !input.externalBillingSource ||
+    !input.externalBillingId ||
     input.currency.trim().toUpperCase() !== "USD" ||
     input.intervalCount !== 1 ||
     !cadence ||
@@ -240,25 +244,30 @@ export async function findExternalAdoptionGuardKeyForCharge(input: {
     return null;
   }
 
-  const records = await prisma.providerExternalBilling.findMany({
-    where: { providerId: input.providerId },
+  // Re-read the exact declared identity in the caller's final write
+  // transaction. If an adapter refresh deleted or weakened it, return null
+  // (additive) rather than borrowing another same-shaped provider record.
+  const record = await db.providerExternalBilling.findUnique({
+    where: {
+      providerId_source_externalId: {
+        providerId: input.providerId,
+        source: input.externalBillingSource,
+        externalId: input.externalBillingId,
+      },
+    },
     select: providerStateSelect.externalBilling.select,
   });
+  if (!record) return null;
   const now = input.now ?? new Date();
-  const matching = records
-    .map((record) =>
-      paidRecurringAdoptionCandidate(
-        input.providerId,
-        input.refreshIntervalMin,
-        record,
-        now
-      )
-    )
-    .find(
-      (candidate) =>
-        candidate?.cadence === cadence && candidate.amountCents === cents
-    );
-  return matching?.guardKey ?? null;
+  const matching = paidRecurringAdoptionCandidate(
+    input.providerId,
+    input.refreshIntervalMin,
+    record,
+    now
+  );
+  return matching?.cadence === cadence && matching.amountCents === cents
+    ? matching.guardKey
+    : null;
 }
 
 function hasExistingRecurringCharge(

@@ -390,7 +390,7 @@ describe("POST /api/subscriptions — stays session-cookie-only", () => {
     expect(stored?.knobEnv).toEqual({ SOME_KNOB: "value" });
   });
 
-  it("claims an eligible external charge shape for an unlinked manual create", async () => {
+  it("leaves an unlinked same-price manual charge unguarded and additive", async () => {
     const provider = await prisma.provider.create({
       data: {
         name: "cloudflare",
@@ -433,16 +433,67 @@ describe("POST /api/subscriptions — stays session-cookie-only", () => {
       externalBillingId: null,
       externalBillingManaged: false,
     });
-    expect(stored?.externalAdoptionGuardKey).toContain(
-      `external-paid-recurring:${provider.id}:monthly:500`
-    );
+    expect(stored?.externalAdoptionGuardKey).toBeNull();
 
     const duplicate = await POST(postRequest(body, sessionCookieHeader()));
-    expect(duplicate.status).toBe(409);
-    await expect(duplicate.json()).resolves.toMatchObject({
-      error: expect.stringContaining("equivalent authoritative external charge"),
+    expect(duplicate.status).toBe(201);
+    expect(await prisma.subscription.count()).toBe(2);
+    expect(
+      await prisma.subscription.count({
+        where: { externalAdoptionGuardKey: { not: null } },
+      })
+    ).toBe(0);
+  });
+
+  it("claims a guard only for the exact owner-linked authoritative identity", async () => {
+    const provider = await prisma.provider.create({
+      data: {
+        name: "cloudflare-exact-guard",
+        displayName: "Cloudflare exact guard",
+        type: "builtin",
+        refreshIntervalMin: 60,
+      },
     });
-    expect(await prisma.subscription.count()).toBe(1);
+    await prisma.providerExternalBilling.create({
+      data: {
+        providerId: provider.id,
+        source: "cloudflare-subscriptions",
+        externalId: "workers-paid-exact-guard",
+        paidRecurringAuthoritative: true,
+        kind: "subscription",
+        serviceName: "Workers Paid",
+        status: "paid",
+        amountUsd: 5,
+        currency: "USD",
+        billingInterval: "monthly",
+        ...liveMonthlyPeriod(),
+        rollupRole: "canonical",
+        dateKind: "renewal",
+        syncedAt: new Date(),
+      },
+    });
+
+    const response = await POST(
+      postRequest(
+        {
+          providerId: provider.id,
+          name: "Owner-linked Workers Paid",
+          costUsd: 5,
+          interval: "monthly",
+          intervalCount: 1,
+          externalBillingSource: "cloudflare-subscriptions",
+          externalBillingId: "workers-paid-exact-guard",
+        },
+        sessionCookieHeader()
+      )
+    );
+
+    expect(response.status).toBe(201);
+    expect(await prisma.subscription.findFirst()).toMatchObject({
+      externalBillingSource: "cloudflare-subscriptions",
+      externalBillingId: "workers-paid-exact-guard",
+      externalAdoptionGuardKey: `external-paid-recurring:${provider.id}:monthly:500`,
+    });
   });
 
   it("still allows same-price manual accounts when no external charge is authoritative", async () => {
@@ -683,7 +734,7 @@ describe("POST /api/subscriptions — stays session-cookie-only", () => {
 });
 
 describe("PUT /api/subscriptions/:id — provider editing", () => {
-  it("recomputes the adoption guard after an owner unlinks and reshapes a charge", async () => {
+  it("requires an exact relink before restoring an adoption guard", async () => {
     const provider = await prisma.provider.create({
       data: {
         name: "cloudflare",
@@ -758,8 +809,7 @@ describe("PUT /api/subscriptions/:id — provider editing", () => {
       interval: "annual",
     });
 
-    // Matching the still-authoritative external charge again must reclaim its
-    // durable guard even though the owner keeps the row explicitly unlinked.
+    // Price/cadence equivalence alone is not identity and must remain additive.
     const rematchResponse = await PUT(
       new Request(`https://usage.jays.services/api/subscriptions/${subscription.id}`, {
         method: "PUT",
@@ -776,9 +826,31 @@ describe("PUT /api/subscriptions/:id — provider editing", () => {
       externalBillingSource: null,
       externalBillingId: null,
       externalBillingManaged: false,
-      externalAdoptionGuardKey: originalGuard,
+      externalAdoptionGuardKey: null,
       costUsd: 5,
       interval: "monthly",
+    });
+
+    const relinkResponse = await PUT(
+      new Request(`https://usage.jays.services/api/subscriptions/${subscription.id}`, {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          externalBillingSource: "cloudflare-subscriptions",
+          externalBillingId: "workers-paid-edit-guard",
+        }),
+      }),
+      { params: Promise.resolve({ id: subscription.id }) }
+    );
+
+    expect(relinkResponse.status).toBe(200);
+    expect(
+      await prisma.subscription.findUnique({ where: { id: subscription.id } })
+    ).toMatchObject({
+      externalBillingSource: "cloudflare-subscriptions",
+      externalBillingId: "workers-paid-edit-guard",
+      externalBillingManaged: false,
+      externalAdoptionGuardKey: originalGuard,
     });
   });
 

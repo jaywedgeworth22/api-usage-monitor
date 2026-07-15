@@ -215,40 +215,56 @@ export async function POST(request: NextRequest) {
     }
   }
 
-  externalAdoptionGuardKey = await findExternalAdoptionGuardKeyForCharge({
-    providerId: input.providerId,
-    refreshIntervalMin: provider.refreshIntervalMin,
-    costUsd: input.costUsd,
-    currency: input.currency,
-    interval: input.interval,
-    intervalCount: input.intervalCount,
-    now: validationNow,
-  });
-
   try {
-    const subscription = await prisma.subscription.create({
-      data: {
-        providerId: input.providerId,
-        projectId: input.projectId,
-        externalBillingSource: input.externalBillingSource,
-        externalBillingId: input.externalBillingId,
-        externalAdoptionGuardKey,
-        name: input.name,
-        description: input.description,
-        costUsd: input.costUsd,
-        currency: input.currency,
-        interval: input.interval,
-        intervalCount: input.intervalCount,
-        anchorDay: linkedCycle ? linkedCycle.anchorDay : input.anchorDay,
-        startDate: linkedCycle?.startDate ?? input.startDate,
-        currentPeriodStart:
-          linkedCycle?.currentPeriodStart ?? input.currentPeriodStart,
-        nextRenewalAt: linkedCycle?.nextRenewalAt ?? input.nextRenewalAt,
-        autoRenew: input.autoRenew,
-        status: input.status,
-        notes: input.notes,
-        knobEnv: input.knobEnv === null ? Prisma.JsonNull : (input.knobEnv as Prisma.InputJsonObject),
-      },
+    const subscription = await prisma.$transaction(async (tx) => {
+      // Take SQLite's writer lock before the final exact-identity reread so an
+      // adapter refresh cannot invalidate guard authority between read/create.
+      await tx.$executeRaw`
+        UPDATE "Provider"
+        SET "name" = "name"
+        WHERE "id" = ${input.providerId}
+      `;
+      externalAdoptionGuardKey = await findExternalAdoptionGuardKeyForCharge(
+        {
+          providerId: input.providerId,
+          refreshIntervalMin: provider.refreshIntervalMin,
+          externalBillingSource: input.externalBillingSource,
+          externalBillingId: input.externalBillingId,
+          costUsd: input.costUsd,
+          currency: input.currency,
+          interval: input.interval,
+          intervalCount: input.intervalCount,
+          now: validationNow,
+        },
+        tx
+      );
+      return tx.subscription.create({
+        data: {
+          providerId: input.providerId,
+          projectId: input.projectId,
+          externalBillingSource: input.externalBillingSource,
+          externalBillingId: input.externalBillingId,
+          externalAdoptionGuardKey,
+          name: input.name,
+          description: input.description,
+          costUsd: input.costUsd,
+          currency: input.currency,
+          interval: input.interval,
+          intervalCount: input.intervalCount,
+          anchorDay: linkedCycle ? linkedCycle.anchorDay : input.anchorDay,
+          startDate: linkedCycle?.startDate ?? input.startDate,
+          currentPeriodStart:
+            linkedCycle?.currentPeriodStart ?? input.currentPeriodStart,
+          nextRenewalAt: linkedCycle?.nextRenewalAt ?? input.nextRenewalAt,
+          autoRenew: input.autoRenew,
+          status: input.status,
+          notes: input.notes,
+          knobEnv:
+            input.knobEnv === null
+              ? Prisma.JsonNull
+              : (input.knobEnv as Prisma.InputJsonObject),
+        },
+      });
     });
     return NextResponse.json(subscription, { status: 201 });
   } catch (error) {

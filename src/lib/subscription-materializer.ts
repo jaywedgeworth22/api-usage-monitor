@@ -36,10 +36,8 @@ export interface MaterializeSubscriptionsResult {
   eventsWritten: number;
 }
 
-interface DueSubscription {
+interface SubscriptionChargePlanInput {
   id: string;
-  providerId?: string;
-  externalAdoptionGuardKey?: string | null;
   name: string;
   costUsd: number;
   currency: string;
@@ -53,8 +51,18 @@ interface DueSubscription {
   provider: { name: string; refreshIntervalMin?: number };
 }
 
+interface DueSubscription extends SubscriptionChargePlanInput {
+  providerId: string;
+  externalAdoptionGuardKey: string | null;
+  externalBillingSource: string | null;
+  externalBillingId: string | null;
+  externalBillingManaged: boolean;
+}
+
 interface ChargeCorrectionProof {
   managedSubscriptionId: string;
+  source: string;
+  externalId: string;
   correctedPeriodStart: Date;
   correctedPeriodEnd: Date;
   correctedGuardKey: string;
@@ -71,7 +79,7 @@ interface ChargePlan {
 // returns the charges to emit and the advanced cycle fields. Charges every
 // period whose start is at or before `now` and past the watermark.
 export function planSubscriptionCharges(
-  subscription: DueSubscription,
+  subscription: SubscriptionChargePlanInput,
   now: Date
 ): ChargePlan | null {
   const interval: SubscriptionInterval = isSubscriptionInterval(subscription.interval)
@@ -157,12 +165,23 @@ function conflictingManagedPeriodStarts(
 ): Set<number> {
   const periodStarts = new Set<number>();
   const guardKey = subscription.externalAdoptionGuardKey;
-  if (!guardKey) return periodStarts;
+  const externalBillingSource = subscription.externalBillingSource;
+  const externalBillingId = subscription.externalBillingId;
+  if (
+    !guardKey ||
+    subscription.externalBillingManaged !== false ||
+    !externalBillingSource ||
+    !externalBillingId
+  ) {
+    return periodStarts;
+  }
 
   for (const proof of correctionProofs) {
     if (
       proof.managedSubscriptionId === subscription.id ||
-      proof.correctedGuardKey !== guardKey
+      proof.correctedGuardKey !== guardKey ||
+      proof.source !== externalBillingSource ||
+      proof.externalId !== externalBillingId
     ) {
       continue;
     }
@@ -208,6 +227,9 @@ async function resolveGuardedChargePlan(
           id: true,
           providerId: true,
           externalAdoptionGuardKey: true,
+          externalBillingSource: true,
+          externalBillingId: true,
+          externalBillingManaged: true,
           name: true,
           costUsd: true,
           currency: true,
@@ -231,13 +253,28 @@ async function resolveGuardedChargePlan(
         return { subscription, plan };
       }
 
+      // A provider/price/cadence guard is not a billing identity. Only an
+      // owner-declared exact source + external ID can spend correction proof;
+      // absent identity fails open so unrelated paid services stay additive.
+      if (
+        subscription.externalBillingManaged !== false ||
+        !subscription.externalBillingSource ||
+        !subscription.externalBillingId
+      ) {
+        return { subscription, plan };
+      }
+
       const correctionProofs = await tx.externalBillingChargeCorrection.findMany({
         where: {
           providerId: subscription.providerId,
           correctedGuardKey: subscription.externalAdoptionGuardKey,
+          source: subscription.externalBillingSource,
+          externalId: subscription.externalBillingId,
         },
         select: {
           managedSubscriptionId: true,
+          source: true,
+          externalId: true,
           correctedPeriodStart: true,
           correctedPeriodEnd: true,
           correctedGuardKey: true,
@@ -295,6 +332,9 @@ export async function materializeDueSubscriptions(
       id: true,
       providerId: true,
       externalAdoptionGuardKey: true,
+      externalBillingSource: true,
+      externalBillingId: true,
+      externalBillingManaged: true,
       name: true,
       costUsd: true,
       currency: true,
@@ -317,13 +357,12 @@ export async function materializeDueSubscriptions(
     let plan = planSubscriptionCharges(subscription, now);
     if (!plan) continue;
 
-    // An owner-controlled guarded row can coexist with an older managed row
-    // after the provider corrects a charge shape (for example $5 -> $6). Do
-    // preserve that manual row's owner-controlled terms/status/guard, but also
-    // do not emit a second same-period event while the linked managed identity
-    // proves the period was already charged. The guarded transactional recheck
-    // records only a settlement watermark; an owner reanchor to a later period
-    // remains independently billable.
+    // An explicitly linked owner-controlled row can take over an identity after
+    // a provider corrects a charged term (for example $5 -> $6). Preserve its
+    // terms/status/guard, but avoid a duplicate only when immutable proof
+    // matches that exact source + external ID and window. The writer-locked
+    // recheck records only a settlement watermark; unlinked/unrelated rows and
+    // an owner reanchor remain independently billable.
     if (subscription.externalAdoptionGuardKey) {
       const guarded = await resolveGuardedChargePlan(subscription.id, now);
       if (!guarded) continue;

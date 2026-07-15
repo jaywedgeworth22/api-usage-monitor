@@ -2,6 +2,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import fs from "fs";
 import os from "os";
 import path from "path";
+import { NextRequest } from "next/server";
 import { setupPrismaSqliteTestDb } from "./setup-test-db";
 
 let dbPath: string;
@@ -12,6 +13,9 @@ let externalAdoptionGuardKey: typeof import("../external-billing-subscription-ad
 let materializeDueSubscriptions: typeof import("../subscription-materializer").materializeDueSubscriptions;
 let computeBudgetStatus: typeof import("../budget-status").computeBudgetStatus;
 let updateSubscription: typeof import("@/app/api/subscriptions/[id]/route").PUT;
+let createSubscription: typeof import("@/app/api/subscriptions/route").POST;
+let createSessionToken: typeof import("@/lib/auth").createSessionToken;
+let SESSION_COOKIE_NAME: typeof import("@/lib/auth").SESSION_COOKIE_NAME;
 
 const NOW = new Date("2026-07-15T12:00:00.000Z");
 const PERIOD_START = new Date("2026-07-01T00:00:00.000Z");
@@ -23,6 +27,7 @@ beforeAll(async () => {
   );
   dbPath = path.join(dir, "test.db");
   process.env.DATABASE_URL = `file:${dbPath}`;
+  process.env.DASHBOARD_PASSWORD = "external-adoption-test-password";
   setupPrismaSqliteTestDb(dbPath);
 
   ({ prisma } = await import("@/lib/prisma"));
@@ -37,6 +42,10 @@ beforeAll(async () => {
   ({ PUT: updateSubscription } = await import(
     "@/app/api/subscriptions/[id]/route"
   ));
+  ({ POST: createSubscription } = await import(
+    "@/app/api/subscriptions/route"
+  ));
+  ({ createSessionToken, SESSION_COOKIE_NAME } = await import("@/lib/auth"));
 }, 60_000);
 
 afterAll(async () => {
@@ -92,6 +101,33 @@ describe("adoptExternalBillingSubscriptions", () => {
         syncedAt: NOW,
         ...extra,
       },
+    });
+  }
+
+  async function releaseManagedExternalIdentity(providerId: string) {
+    const managed = await prisma.subscription.findFirstOrThrow({
+      where: { providerId, externalBillingManaged: true },
+      select: { id: true },
+    });
+    await prisma.subscription.update({
+      where: { id: managed.id },
+      data: {
+        externalBillingSource: null,
+        externalBillingId: null,
+        externalBillingManaged: false,
+      },
+    });
+    return managed;
+  }
+
+  function ownerCreateRequest(body: unknown): NextRequest {
+    return new NextRequest("https://usage.jays.services/api/subscriptions", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        cookie: `${SESSION_COOKIE_NAME}=${createSessionToken()}`,
+      },
+      body: JSON.stringify(body),
     });
   }
 
@@ -228,7 +264,7 @@ describe("adoptExternalBillingSubscriptions", () => {
     });
   });
 
-  it("fails a repricing guard collision closed without degrading or charging twice", async () => {
+  it("settles an exact owner-linked repricing without charging twice", async () => {
     const provider = await createProvider("charged-reprice-collision-provider");
     await createExternalBilling(provider.id, "charged-reprice-collision-plan");
     await adoptExternalBillingSubscriptions(NOW);
@@ -254,24 +290,25 @@ describe("adoptExternalBillingSubscriptions", () => {
       },
       data: { amountUsd: 6, syncedAt: NOW },
     });
-    const manual = await prisma.subscription.create({
-      data: {
+    const reconciled = await adoptExternalBillingSubscriptions(NOW);
+    await releaseManagedExternalIdentity(provider.id);
+    const createResponse = await createSubscription(
+      ownerCreateRequest({
         providerId: provider.id,
-        externalAdoptionGuardKey: correctedGuard,
+        externalBillingSource: "cloudflare-subscriptions",
+        externalBillingId: "charged-reprice-collision-plan",
         name: "Owner-entered corrected price",
         costUsd: 6,
         currency: "USD",
         interval: "monthly",
         intervalCount: 1,
-        startDate: PERIOD_START,
-        currentPeriodStart: PERIOD_START,
-        nextRenewalAt: PERIOD_END,
         autoRenew: false,
         status: "active",
-      },
-    });
+      })
+    );
+    expect(createResponse.status).toBe(201);
+    const manual = (await createResponse.json()) as { id: string };
 
-    const reconciled = await adoptExternalBillingSubscriptions(NOW);
     const rematerialized = await materializeDueSubscriptions(NOW);
     const subscriptions = await prisma.subscription.findMany({
       where: { providerId: provider.id },
@@ -295,6 +332,8 @@ describe("adoptExternalBillingSubscriptions", () => {
       name: "Owner-entered corrected price",
       costUsd: 6,
       externalAdoptionGuardKey: correctedGuard,
+      externalBillingSource: "cloudflare-subscriptions",
+      externalBillingId: "charged-reprice-collision-plan",
       externalBillingManaged: false,
       status: "active",
       autoRenew: false,
@@ -302,6 +341,273 @@ describe("adoptExternalBillingSubscriptions", () => {
     });
     expect(rematerialized).toMatchObject({ charged: 0, eventsWritten: 0 });
     expect(await prisma.externalUsageEvent.count()).toBe(1);
+  });
+
+  it("revokes correction settlement when the owner unlinks before materialization", async () => {
+    const provider = await createProvider("unlink-revokes-settlement-provider");
+    const externalId = "unlink-revokes-settlement-plan";
+    await createExternalBilling(provider.id, externalId);
+    await adoptExternalBillingSubscriptions(NOW);
+    await materializeDueSubscriptions(NOW);
+    await prisma.providerExternalBilling.update({
+      where: {
+        providerId_source_externalId: {
+          providerId: provider.id,
+          source: "cloudflare-subscriptions",
+          externalId,
+        },
+      },
+      data: { amountUsd: 6, syncedAt: NOW },
+    });
+    await adoptExternalBillingSubscriptions(NOW);
+    await releaseManagedExternalIdentity(provider.id);
+    const createResponse = await createSubscription(
+      ownerCreateRequest({
+        providerId: provider.id,
+        externalBillingSource: "cloudflare-subscriptions",
+        externalBillingId: externalId,
+        name: "Owner term to unlink",
+        costUsd: 6,
+        interval: "monthly",
+        intervalCount: 1,
+        autoRenew: false,
+      })
+    );
+    expect(createResponse.status).toBe(201);
+    const owner = (await createResponse.json()) as { id: string };
+
+    const unlinkResponse = await updateSubscription(
+      new Request(`https://usage.jays.services/api/subscriptions/${owner.id}`, {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          externalBillingSource: null,
+          externalBillingId: null,
+        }),
+      }),
+      { params: Promise.resolve({ id: owner.id }) }
+    );
+    expect(unlinkResponse.status).toBe(200);
+    expect(
+      await prisma.subscription.findUnique({ where: { id: owner.id } })
+    ).toMatchObject({
+      externalBillingSource: null,
+      externalBillingId: null,
+      externalAdoptionGuardKey: null,
+      externalBillingManaged: false,
+    });
+
+    expect(await materializeDueSubscriptions(NOW)).toMatchObject({
+      charged: 1,
+      eventsWritten: 1,
+    });
+    expect(
+      await prisma.externalUsageEvent.findMany({ select: { metadata: true } })
+    ).toContainEqual({
+      metadata: expect.objectContaining({ subscriptionId: owner.id }),
+    });
+  });
+
+  it("keeps an unrelated same-price cadence and window service additive", async () => {
+    const provider = await createProvider("same-shape-unrelated-provider");
+    const correctedExternalId = "workers-corrected-plan";
+    await createExternalBilling(provider.id, correctedExternalId);
+    await adoptExternalBillingSubscriptions(NOW);
+    await materializeDueSubscriptions(NOW);
+
+    await prisma.providerExternalBilling.update({
+      where: {
+        providerId_source_externalId: {
+          providerId: provider.id,
+          source: "cloudflare-subscriptions",
+          externalId: correctedExternalId,
+        },
+      },
+      data: { amountUsd: 6, syncedAt: NOW },
+    });
+    await adoptExternalBillingSubscriptions(NOW);
+    await prisma.usageSnapshot.create({
+      data: {
+        providerId: provider.id,
+        fetchedAt: NOW,
+        totalCost: 6,
+        fixedCostIncludedUsd: 6,
+      },
+    });
+    await createExternalBilling(provider.id, "queues-independent-plan", {
+      serviceName: "Queues Paid",
+      planName: "Queues Paid",
+      amountUsd: 6,
+    });
+    const createResponse = await createSubscription(
+      ownerCreateRequest({
+        providerId: provider.id,
+        externalBillingSource: "cloudflare-subscriptions",
+        externalBillingId: "queues-independent-plan",
+        name: "Owner-linked Queues Paid",
+        costUsd: 6,
+        currency: "USD",
+        interval: "monthly",
+        intervalCount: 1,
+        autoRenew: false,
+        status: "active",
+      })
+    );
+    expect(createResponse.status).toBe(201);
+    const unrelated = (await createResponse.json()) as { id: string };
+    expect(
+      await prisma.subscription.findUnique({ where: { id: unrelated.id } })
+    ).toMatchObject({
+      externalBillingSource: "cloudflare-subscriptions",
+      externalBillingId: "queues-independent-plan",
+      externalAdoptionGuardKey: externalAdoptionGuardKey(
+        provider.id,
+        600,
+        "monthly"
+      ),
+      externalBillingManaged: false,
+    });
+
+    const materialized = await materializeDueSubscriptions(NOW);
+    expect(materialized).toMatchObject({ charged: 1, eventsWritten: 1 });
+    expect(
+      await prisma.externalUsageEvent.findMany({
+        orderBy: { costUsd: "asc" },
+        select: { costUsd: true, metadata: true },
+      })
+    ).toEqual([
+      {
+        costUsd: 5,
+        metadata: expect.not.objectContaining({ subscriptionId: unrelated.id }),
+      },
+      {
+        costUsd: 6,
+        metadata: expect.objectContaining({ subscriptionId: unrelated.id }),
+      },
+    ]);
+    expect(
+      await prisma.subscription.findUnique({ where: { id: unrelated.id } })
+    ).toMatchObject({ lastChargedPeriodStart: PERIOD_START });
+    expect(
+      (await computeBudgetStatus(NOW)).providers.find(
+        (row) => row.id === provider.id
+      )
+    ).toMatchObject({
+      subscriptionMonthToDateUsd: 11,
+      snapshotFixedCostIncludedUsd: 6,
+      // The provider snapshot does not identify which of two exact $6 services
+      // it includes. Preserve both events and surface ambiguity instead of
+      // spending one service's proof against the other.
+      linkedFixedDedupeUsd: 0,
+      fixedCostConflict: true,
+      spentUsd: 17,
+    });
+  });
+
+  it("fails open for a legacy same-shape guard with no declared identity", async () => {
+    const provider = await createProvider("legacy-unlinked-guard-provider");
+    const externalId = "legacy-unlinked-guard-plan";
+    await createExternalBilling(provider.id, externalId);
+    await adoptExternalBillingSubscriptions(NOW);
+    await materializeDueSubscriptions(NOW);
+    await prisma.providerExternalBilling.update({
+      where: {
+        providerId_source_externalId: {
+          providerId: provider.id,
+          source: "cloudflare-subscriptions",
+          externalId,
+        },
+      },
+      data: { amountUsd: 6, syncedAt: NOW },
+    });
+    await adoptExternalBillingSubscriptions(NOW);
+    const legacy = await prisma.subscription.create({
+      data: {
+        providerId: provider.id,
+        externalAdoptionGuardKey: externalAdoptionGuardKey(
+          provider.id,
+          600,
+          "monthly"
+        ),
+        name: "Legacy unlinked same-shape charge",
+        costUsd: 6,
+        currency: "USD",
+        interval: "monthly",
+        intervalCount: 1,
+        startDate: PERIOD_START,
+        currentPeriodStart: PERIOD_START,
+        nextRenewalAt: PERIOD_END,
+        autoRenew: false,
+        status: "active",
+      },
+    });
+
+    expect(await materializeDueSubscriptions(NOW)).toMatchObject({
+      charged: 1,
+      eventsWritten: 1,
+    });
+    expect(
+      await prisma.externalUsageEvent.findMany({ select: { metadata: true } })
+    ).toContainEqual({
+      metadata: expect.objectContaining({ subscriptionId: legacy.id }),
+    });
+  });
+
+  it("does not spend owner-settlement proof on an auto-managed replacement", async () => {
+    const provider = await createProvider("managed-replacement-provider");
+    const externalId = "managed-replacement-plan";
+    await createExternalBilling(provider.id, externalId);
+    await adoptExternalBillingSubscriptions(NOW);
+    await materializeDueSubscriptions(NOW);
+    await prisma.providerExternalBilling.update({
+      where: {
+        providerId_source_externalId: {
+          providerId: provider.id,
+          source: "cloudflare-subscriptions",
+          externalId,
+        },
+      },
+      data: { amountUsd: 6, syncedAt: NOW },
+    });
+    await adoptExternalBillingSubscriptions(NOW);
+    const oldManaged = await prisma.subscription.findFirstOrThrow({
+      where: { providerId: provider.id, externalBillingManaged: true },
+      select: { id: true },
+    });
+    await prisma.subscription.delete({ where: { id: oldManaged.id } });
+    const replacement = await prisma.subscription.create({
+      data: {
+        providerId: provider.id,
+        externalBillingSource: "cloudflare-subscriptions",
+        externalBillingId: externalId,
+        externalBillingManaged: true,
+        externalAdoptionGuardKey: externalAdoptionGuardKey(
+          provider.id,
+          600,
+          "monthly"
+        ),
+        name: "Replacement managed term",
+        costUsd: 6,
+        currency: "USD",
+        interval: "monthly",
+        intervalCount: 1,
+        startDate: PERIOD_START,
+        currentPeriodStart: PERIOD_START,
+        nextRenewalAt: PERIOD_END,
+        autoRenew: false,
+        status: "active",
+      },
+    });
+
+    expect(await materializeDueSubscriptions(NOW)).toMatchObject({
+      charged: 1,
+      eventsWritten: 1,
+    });
+    expect(
+      await prisma.externalUsageEvent.findMany({ select: { metadata: true } })
+    ).toContainEqual({
+      metadata: expect.objectContaining({ subscriptionId: replacement.id }),
+    });
   });
 
   it("materializes earlier due inputs before settling only the overlapping period", async () => {
@@ -320,10 +626,14 @@ describe("adoptExternalBillingSubscriptions", () => {
       },
       data: { amountUsd: 6, syncedAt: NOW },
     });
+    await adoptExternalBillingSubscriptions(NOW);
+    await releaseManagedExternalIdentity(provider.id);
     const juneStart = new Date("2026-06-01T00:00:00.000Z");
     const manual = await prisma.subscription.create({
       data: {
         providerId: provider.id,
+        externalBillingSource: "cloudflare-subscriptions",
+        externalBillingId: "multi-period-settlement-plan",
         externalAdoptionGuardKey: externalAdoptionGuardKey(
           provider.id,
           600,
@@ -341,7 +651,6 @@ describe("adoptExternalBillingSubscriptions", () => {
         status: "active",
       },
     });
-    await adoptExternalBillingSubscriptions(NOW);
 
     const first = await materializeDueSubscriptions(NOW);
     const second = await materializeDueSubscriptions(NOW);
@@ -404,9 +713,13 @@ describe("adoptExternalBillingSubscriptions", () => {
       },
       data: { amountUsd: 6, syncedAt: NOW },
     });
+    await adoptExternalBillingSubscriptions(NOW);
+    await releaseManagedExternalIdentity(provider.id);
     const manual = await prisma.subscription.create({
       data: {
         providerId: provider.id,
+        externalBillingSource: "cloudflare-subscriptions",
+        externalBillingId: "charged-rollover-collision-plan",
         externalAdoptionGuardKey: correctedGuard,
         name: "Owner-entered corrected price",
         costUsd: 6,
@@ -420,7 +733,6 @@ describe("adoptExternalBillingSubscriptions", () => {
         status: "active",
       },
     });
-    await adoptExternalBillingSubscriptions(NOW);
     const settledJuly = await materializeDueSubscriptions(NOW);
     expect(settledJuly).toMatchObject({ charged: 0, eventsWritten: 0 });
     expect(
@@ -454,8 +766,8 @@ describe("adoptExternalBillingSubscriptions", () => {
     const rollover = await adoptExternalBillingSubscriptions(augustNow);
     const delayedJuly = await materializeDueSubscriptions(augustNow);
 
-    expect(rollover).toMatchObject({ reconciled: 1, adopted: 0 });
-    expect(delayedJuly).toMatchObject({ charged: 1, eventsWritten: 1 });
+    expect(rollover).toMatchObject({ existing: 1, adopted: 0 });
+    expect(delayedJuly).toMatchObject({ charged: 0, eventsWritten: 0 });
     expect(
       await prisma.externalUsageEvent.findMany({
         orderBy: { occurredAt: "asc" },
@@ -463,7 +775,6 @@ describe("adoptExternalBillingSubscriptions", () => {
       })
     ).toEqual([
       { costUsd: 5, occurredAt: PERIOD_START },
-      { costUsd: 7, occurredAt: PERIOD_END },
     ]);
     expect(
       await prisma.subscription.findUnique({ where: { id: manual.id } })
@@ -480,7 +791,11 @@ describe("adoptExternalBillingSubscriptions", () => {
         {
           method: "PUT",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({ startDate: "2026-08-01" }),
+          body: JSON.stringify({
+            externalBillingSource: null,
+            externalBillingId: null,
+            startDate: "2026-08-01",
+          }),
         }
       ),
       { params: Promise.resolve({ id: manual.id }) }
@@ -489,7 +804,7 @@ describe("adoptExternalBillingSubscriptions", () => {
     const trueAugust = await materializeDueSubscriptions(augustNow);
 
     expect(trueAugust).toMatchObject({ charged: 1, eventsWritten: 1 });
-    expect(await prisma.externalUsageEvent.count()).toBe(3);
+    expect(await prisma.externalUsageEvent.count()).toBe(2);
     expect(
       await prisma.subscription.findUnique({ where: { id: manual.id } })
     ).toMatchObject({
@@ -517,9 +832,13 @@ describe("adoptExternalBillingSubscriptions", () => {
       },
       data: { amountUsd: 6, syncedAt: NOW },
     });
+    await adoptExternalBillingSubscriptions(NOW);
+    await releaseManagedExternalIdentity(provider.id);
     const manual = await prisma.subscription.create({
       data: {
         providerId: provider.id,
+        externalBillingSource: "cloudflare-subscriptions",
+        externalBillingId: externalId,
         externalAdoptionGuardKey: externalAdoptionGuardKey(
           provider.id,
           600,
@@ -538,9 +857,9 @@ describe("adoptExternalBillingSubscriptions", () => {
       },
     });
 
-    // Reconciliation establishes the exact correction proof, but simulate a
-    // process stop before materialization can settle the manual watermark.
-    await adoptExternalBillingSubscriptions(NOW);
+    // The exact correction proof and owner identity transfer are committed,
+    // but simulate a process stop before materialization settles the manual
+    // watermark.
     expect(
       await prisma.externalBillingChargeCorrection.count({
         where: { providerId: provider.id },
@@ -571,7 +890,7 @@ describe("adoptExternalBillingSubscriptions", () => {
     await adoptExternalBillingSubscriptions(augustNow);
 
     const materialized = await materializeDueSubscriptions(augustNow);
-    expect(materialized).toMatchObject({ charged: 1, eventsWritten: 1 });
+    expect(materialized).toMatchObject({ charged: 0, eventsWritten: 0 });
     expect(
       await prisma.externalUsageEvent.findMany({
         orderBy: { occurredAt: "asc" },
@@ -579,7 +898,6 @@ describe("adoptExternalBillingSubscriptions", () => {
       })
     ).toEqual([
       { costUsd: 5, occurredAt: PERIOD_START },
-      { costUsd: 7, occurredAt: PERIOD_END },
     ]);
     expect(
       await prisma.subscription.findUnique({ where: { id: manual.id } })

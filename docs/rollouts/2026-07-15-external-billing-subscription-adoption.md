@@ -42,10 +42,11 @@ auto-managed row relinquishes management so later maintenance cannot overwrite t
 Adoption executes as one SQLite transaction. It obtains the writer lock, re-reads providers,
 external records, plans, and subscriptions, then reconciles/adopts. This closes preflight races with
 manual creation and external cancellation/deletion. A nullable unique `externalAdoptionGuardKey`
-claims only eligible authoritative provider/cadence/amount shapes for both auto-adoption and
-matching owner creates; a manual insert that starts after adoption holds the writer lock cannot
-later commit an equivalent NULL-link duplicate. Ordinary manual subscriptions leave the key null,
-so legitimate same-price multi-account rows remain allowed.
+claims eligible authoritative provider/cadence/amount shapes for auto-managed rows and for owner
+rows explicitly linked to that exact external source + ID. Unlinked same-shape rows keep a null
+guard and remain additive because amount/cadence/window cannot establish service identity. The
+unique external-identity link plus the writer-locked recheck closes exact-link races without
+silently suppressing legitimate same-price services.
 
 Any unexpected candidate/stage error rolls back the whole adoption transaction. Maintenance
 reports the adoption stage degraded and unhealthy, but still materializes existing subscriptions,
@@ -62,9 +63,12 @@ the deterministic local charge's provider, identity, exact window, amount, and s
 metadata before storing an `ExternalBillingChargeCorrection`. The proof is keyed to the immutable
 original charged period plus the corrected charge shape, not the provider's mutable current term.
 It therefore survives a process stop before collision settlement, later provider rollover/source
-staleness, and managed-subscription edits or deletion. Budget reconciliation replaces only the
-exact proven event represented by the fixed snapshot; unrelated subscription events remain
-additive. Stale, weak, or inexact evidence cannot establish a new proof.
+staleness, and managed-subscription edits or deletion. Collision settlement requires an
+owner-managed row whose declared source + external ID exactly matches the proof; missing,
+different, ambiguous, or auto-managed identity fails open and materializes. Budget reconciliation
+still replaces only the exact proven event represented by the fixed snapshot, independently of an
+owner link; unrelated subscription events remain additive. Stale, weak, or inexact evidence cannot
+establish a new proof.
 
 ## Verification coverage
 
@@ -74,10 +78,11 @@ additive. Stale, weak, or inexact evidence cannot establish a new proof.
 - every-positive-ProviderPlan suppression, including unequal values
 - exact weekly/monthly/quarterly/annual periods, short-period rejection, and month-end clamping
 - overlapping same-cadence prevention and same-guard/different-period ambiguity
-- owner PUT guard recomputation after unlink/amount/cadence edits, including exact-shape rematching
+- owner POST/PUT guard assignment only for exact external identity, with unlink clearing and exact relink restoring it
 - charged same-period amount/name/cadence/end corrections preserve historical terms/guard and pause
 - corrected fixed-cost snapshot dedupe (`$5` historical event + `$6` correction = `$6`, not `$11`)
-- guard-collision adoption stays healthy and suppresses a duplicate event without mutating owner rows
+- exact owner-linked collision settlement suppresses a duplicate without mutating owner terms
+- missing identity, a different same-price/cadence/window service, and auto-managed replacement all remain additive
 - rollover-safe suppression transactionally watermarks the manual planned period proven settled by durable exact-event correction proof
 - crash before settlement followed by provider rollover still suppresses only the proven prior collision
 - later provider amount/cadence changes cannot release that settled period as a delayed event
@@ -94,7 +99,7 @@ additive. Stale, weak, or inexact evidence cannot establish a new proof.
 - adoption-degraded continuation through existing materialization/renewal/retention/alerts
 - same-price manual subscriptions remain allowed without external charge authority
 
-The remediated local commit passed `npm run verify`: ESLint, TypeScript, 88 test files / 696 tests,
+The remediated local commit passed `npm run verify`: ESLint, TypeScript, 89 test files / 784 tests,
 additive migration safety including Litestream preservation and destructive-change refusal, SQLite
 backup/startup checks, and the production build. The hostile-review HOLD remains in force until
 independent re-review. No production mutation, push, PR, merge, or deployment is allowed before
