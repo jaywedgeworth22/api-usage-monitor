@@ -1,7 +1,15 @@
-import crypto, { timingSafeEqual } from "crypto";
+import crypto, { hkdfSync, timingSafeEqual } from "crypto";
 
 export const SESSION_COOKIE_NAME = "dashboard_session";
 export const SESSION_MAX_AGE = 60 * 60 * 24 * 30; // seconds, 30 days
+
+// Fixed, non-secret domain-separation strings for HKDF - they don't need to
+// be random (that's what the DASHBOARD_PASSWORD/DASHBOARD_SESSION_SECRET
+// input key material provides); they just need to be unique to this app and
+// this derived key's purpose so the same input material never accidentally
+// produces the same key elsewhere.
+const SESSION_HKDF_SALT = "api-usage-monitor.session-token.v1";
+const SESSION_HKDF_INFO = "dashboard-session-hmac";
 
 function safeEqual(left: string, right: string): boolean {
   const leftBuffer = Buffer.from(left);
@@ -15,13 +23,28 @@ export function verifyPassword(candidate: string): boolean {
   return safeEqual(candidate, expected);
 }
 
+// Derives the session-signing key via HKDF-SHA256 instead of keying the HMAC
+// directly on the plaintext password. That way a leaked session cookie's
+// signature can't be used as an offline oracle to verify password guesses,
+// and setting/rotating the optional DASHBOARD_SESSION_SECRET can invalidate
+// sessions without changing the login password. Falls back to
+// DASHBOARD_PASSWORD when unset so no new environment variable is required.
+function deriveSessionSigningKey(): Buffer | null {
+  const inputKeyMaterial =
+    process.env.DASHBOARD_SESSION_SECRET?.trim() || process.env.DASHBOARD_PASSWORD?.trim();
+  if (!inputKeyMaterial) return null;
+  return Buffer.from(
+    hkdfSync("sha256", inputKeyMaterial, SESSION_HKDF_SALT, SESSION_HKDF_INFO, 32)
+  );
+}
+
 export function createSessionToken(): string {
-  const password = process.env.DASHBOARD_PASSWORD?.trim();
-  if (!password) {
+  const signingKey = deriveSessionSigningKey();
+  if (!signingKey) {
     throw new Error("DASHBOARD_PASSWORD environment variable is not set");
   }
   const expiresAt = Date.now() + SESSION_MAX_AGE * 1000;
-  const sig = crypto.createHmac("sha256", password).update(String(expiresAt)).digest("hex");
+  const sig = crypto.createHmac("sha256", signingKey).update(String(expiresAt)).digest("hex");
   return `${expiresAt}.${sig}`;
 }
 
@@ -34,9 +57,9 @@ export function verifySessionToken(token: string | undefined | null): boolean {
   const expiresAt = Number(expiresAtRaw);
   if (!Number.isFinite(expiresAt) || Date.now() > expiresAt) return false;
 
-  const password = process.env.DASHBOARD_PASSWORD?.trim();
-  if (!password) return false;
+  const signingKey = deriveSessionSigningKey();
+  if (!signingKey) return false;
 
-  const expectedSig = crypto.createHmac("sha256", password).update(String(expiresAt)).digest("hex");
+  const expectedSig = crypto.createHmac("sha256", signingKey).update(String(expiresAt)).digest("hex");
   return safeEqual(sig, expectedSig);
 }

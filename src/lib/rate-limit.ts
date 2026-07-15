@@ -75,11 +75,23 @@ export function createRateLimiter(
 
 /**
  * Extracts the client IP from a Next.js request, checking common proxy headers.
+ *
+ * Only the rightmost X-Forwarded-For hop is trusted. That entry is the peer
+ * address our own reverse proxy (Render) observed and appended when it
+ * forwarded the request; every entry to its left is copied verbatim from
+ * whatever the client sent and can be freely spoofed - e.g. to rotate
+ * through fake IPs and evade per-IP rate limiting. Trusting the leftmost
+ * entry (the historical behavior here) makes limiting trivially bypassable.
  */
 export function getClientIp(request: Request): string {
-  return (
-    request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ||
-    request.headers.get("x-real-ip")?.trim() ||
-    "127.0.0.1"
-  );
+  const forwardedFor = request.headers.get("x-forwarded-for");
+  if (forwardedFor) {
+    const hops = forwardedFor
+      .split(",")
+      .map((hop) => hop.trim())
+      .filter(Boolean);
+    const trustedHop = hops[hops.length - 1];
+    if (trustedHop) return trustedHop;
+  }
+  return request.headers.get("x-real-ip")?.trim() || "127.0.0.1";
 }

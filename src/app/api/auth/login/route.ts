@@ -11,7 +11,15 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 // 5 attempts per IP per minute
-const loginRateLimiter = createRateLimiter(60_000, 5);
+const loginRateLimiterByIp = createRateLimiter(60_000, 5);
+
+// IP-independent backstop: caps total login attempts across every client, so
+// no X-Forwarded-For/IP value - spoofed, rotated, or genuinely distinct -
+// lets an attacker escape limiting altogether by fanning out across "IPs".
+// Deliberately looser than the per-IP cap so it only bites during sustained
+// multi-source brute-forcing, not normal single-user traffic.
+const GLOBAL_LOGIN_KEY = "__global__";
+const globalLoginRateLimiter = createRateLimiter(60_000, 20);
 
 export async function POST(request: NextRequest) {
   if (!process.env.DASHBOARD_PASSWORD?.trim()) {
@@ -22,7 +30,11 @@ export async function POST(request: NextRequest) {
   }
 
   const ip = getClientIp(request);
-  if (!loginRateLimiter.check(ip)) {
+  // Check both unconditionally (not `||`) so this request always consumes
+  // from both budgets, even when one is already exhausted.
+  const withinIpLimit = loginRateLimiterByIp.check(ip);
+  const withinGlobalLimit = globalLoginRateLimiter.check(GLOBAL_LOGIN_KEY);
+  if (!withinIpLimit || !withinGlobalLimit) {
     return NextResponse.json(
       { error: "Too many login attempts. Try again later." },
       { status: 429 }
