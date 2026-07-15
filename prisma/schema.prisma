@@ -8,31 +8,35 @@ datasource db {
 }
 
 model Provider {
-  id                 String                      @id @default(uuid())
-  name               String
-  displayName        String
-  type               String                      @default("builtin")
-  category           String?
-  apiKey             String?
-  config             Json?
+  id                    String                      @id @default(uuid())
+  name                  String
+  displayName           String
+  type                  String                      @default("builtin")
+  category              String?
+  apiKey                String?
+  config                Json?
   // Credential-bearing provider configuration (secondary secrets such as
   // Alpaca's API secret, Langfuse's secret key, xAI management keys, and
   // custom auth headers). Stored as a versioned AES-256-GCM JSON envelope and
   // never selected into client-facing DTOs.
-  secretConfig       String?
-  isActive           Boolean                     @default(true)
-  credits            Float                       @default(0)
-  refreshIntervalMin Int                         @default(60)
-  groupId            String?
-  label              String?
-  createdAt          DateTime                    @default(now())
-  plan               ProviderPlan?
-  snapshots          UsageSnapshot[]
-  snapshotRollups    UsageSnapshotDailyRollup[]
-  alertNotifications ProviderAlertNotification[]
-  allocations        ProviderProjectAllocation[]
-  subscriptions      Subscription[]
-  externalBilling    ProviderExternalBilling[]
+  secretConfig          String?
+  isActive              Boolean                     @default(true)
+  // Monotonic revision for configuration that can change the evaluated alert
+  // set without producing a newer UsageSnapshot (for example disable/re-enable
+  // or threshold edits). Alert evidence is ordered by this value first.
+  alertConfigGeneration Int                         @default(0)
+  credits               Float                       @default(0)
+  refreshIntervalMin    Int                         @default(60)
+  groupId               String?
+  label                 String?
+  createdAt             DateTime                    @default(now())
+  plan                  ProviderPlan?
+  snapshots             UsageSnapshot[]
+  snapshotRollups       UsageSnapshotDailyRollup[]
+  alertNotifications    ProviderAlertNotification[]
+  allocations           ProviderProjectAllocation[]
+  subscriptions         Subscription[]
+  externalBilling       ProviderExternalBilling[]
 }
 
 model ProviderPlan {
@@ -273,23 +277,53 @@ model OtlpMetricState {
 }
 
 model ProviderAlertNotification {
-  id                  String                         @id @default(uuid())
-  providerId          String
-  provider            Provider                       @relation(fields: [providerId], references: [id], onDelete: Cascade)
-  stateKey            String                         @unique
-  alertCode           String
-  severity            String
-  providerName        String
-  providerDisplayName String
-  message             String
-  firstDetectedAt     DateTime
-  lastDetectedAt      DateTime
-  lastSentAt          DateTime?
-  sendCount           Int                            @default(0)
-  resolvedAt          DateTime?
-  createdAt           DateTime                       @default(now())
-  updatedAt           DateTime                       @updatedAt
-  channelDeliveries   ProviderAlertChannelDelivery[]
+  id                               String                         @id @default(uuid())
+  providerId                       String
+  provider                         Provider                       @relation(fields: [providerId], references: [id], onDelete: Cascade)
+  stateKey                         String                         @unique
+  alertCode                        String
+  severity                         String
+  providerName                     String
+  providerDisplayName              String
+  message                          String
+  firstDetectedAt                  DateTime
+  lastDetectedAt                   DateTime
+  // Monotonic incident identity. Existing rows migrate as generation 1 and
+  // new reopen events advance through an atomic compare-and-swap.
+  incidentGeneration               Int                            @default(1)
+  // Monotonic evidence guard. "clear" wins ties so a stale alert evaluator
+  // cannot reopen an incident already resolved from equal/newer evidence.
+  evidenceWatermarkAt              DateTime?
+  // Source observation identity is ordered before the transition watermark.
+  // For stale_snapshot this lets a newer snapshot outrank an older snapshot's
+  // later stale deadline, while the unchanged snapshot can still transition
+  // from fresh at fetchedAt to stale at its deterministic deadline.
+  evidenceSourceAt                 DateTime?
+  evidenceWatermarkState           String                         @default("legacy")
+  // Provider alert-config revision that produced the durable evidence above.
+  // Compared before source/transition time so a deliberate config transition
+  // can supersede an unchanged snapshot or no-snapshot epoch sentinel.
+  evidenceConfigGeneration         Int                            @default(0)
+  // Existing rows predate generation-scoped PagerDuty dedup keys and must be
+  // conservatively audited/resolved with the legacy key before local closure.
+  pagerDutyAuditState              String                         @default("legacy_unknown")
+  // Serializes activation/delivery against resolution for this incident. The
+  // external channel calls remain outside SQLite transactions, so this durable
+  // lease is the ordering boundary shared by competing workers.
+  operationClaimToken              String?
+  operationClaimGeneration         Int                            @default(0)
+  operationClaimExpiresAt          DateTime?
+  operationClaimIncidentGeneration Int?
+  operationClaimConfigGeneration   Int?
+  operationClaimEvidenceSourceAt   DateTime?
+  operationClaimEvidenceAt         DateTime?
+  operationClaimEvidenceState      String?
+  lastSentAt                       DateTime?
+  sendCount                        Int                            @default(0)
+  resolvedAt                       DateTime?
+  createdAt                        DateTime                       @default(now())
+  updatedAt                        DateTime                       @updatedAt
+  channelDeliveries                ProviderAlertChannelDelivery[]
 
   @@index([providerId, resolvedAt])
   @@index([lastSentAt])
@@ -301,21 +335,37 @@ model ProviderAlertNotification {
 // channelKey is a one-way fingerprint of kind + destination, never a URL,
 // routing key, or API key.
 model ProviderAlertChannelDelivery {
-  id                   String                    @id @default(uuid())
-  notificationId       String
-  notification         ProviderAlertNotification @relation(fields: [notificationId], references: [id], onDelete: Cascade)
-  channelKey           String
-  channelKind          String
-  lastAttemptAt        DateTime?
-  lastSucceededAt      DateTime?
-  attemptCount         Int                       @default(0)
-  successCount         Int                       @default(0)
-  lastResolveAttemptAt DateTime?
-  lastResolvedAt       DateTime?
-  resolveAttemptCount  Int                       @default(0)
-  lastError            String?
-  createdAt            DateTime                  @default(now())
-  updatedAt            DateTime                  @updatedAt
+  id                              String                    @id @default(uuid())
+  notificationId                  String
+  notification                    ProviderAlertNotification @relation(fields: [notificationId], references: [id], onDelete: Cascade)
+  channelKey                      String
+  channelKind                     String
+  lastAttemptAt                   DateTime?
+  lastSucceededAt                 DateTime?
+  // Durable per-send lease/generation. The claim is acquired with an atomic
+  // conditional update before crossing the external trigger boundary.
+  triggerClaimToken               String?
+  triggerClaimGeneration          Int                       @default(0)
+  triggerClaimExpiresAt           DateTime?
+  triggerIncidentGeneration       Int?
+  triggerOperationClaimGeneration Int?
+  lastSucceededIncidentGeneration Int?
+  pagerDutyDedupKey               String?
+  attemptCount                    Int                       @default(0)
+  successCount                    Int                       @default(0)
+  resolveClaimToken               String?
+  resolveClaimGeneration          Int                       @default(0)
+  resolveClaimExpiresAt           DateTime?
+  resolveIncidentGeneration       Int?
+  resolveOperationClaimGeneration Int?
+  lastResolveAttemptAt            DateTime?
+  lastResolvedAt                  DateTime?
+  lastResolvedIncidentGeneration  Int?
+  resolveAttemptCount             Int                       @default(0)
+  lastResolveError                String?
+  lastError                       String?
+  createdAt                       DateTime                  @default(now())
+  updatedAt                       DateTime                  @updatedAt
 
   @@unique([notificationId, channelKey])
   @@index([notificationId, channelKind])

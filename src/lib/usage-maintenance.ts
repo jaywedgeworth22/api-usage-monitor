@@ -1,4 +1,9 @@
-import { deliverProviderAlerts, type AlertDeliveryResult } from "@/lib/alert-delivery";
+import {
+  AlertNotificationSummaryPersistenceTimeout,
+  deliverProviderAlerts,
+  type AlertDeliveryResult,
+  type AlertNotificationSummaryOperation,
+} from "@/lib/alert-delivery";
 import {
   runScheduledDataRetentionMaintenance,
   type DataRetentionResult,
@@ -22,6 +27,7 @@ export interface UsageMaintenanceResult {
 
 export interface DeferredAlertMaintenanceError {
   stage: "alerts";
+  operation: AlertNotificationSummaryOperation;
   code: "P1008";
   model: "ProviderAlertNotification";
   message: string;
@@ -38,34 +44,24 @@ export interface UsageMaintenanceDependencies {
   deliverAlerts?: typeof deliverProviderAlerts;
 }
 
-let maintenanceInFlight: Promise<UsageMaintenanceResult> | null = null;
-
-function isDeferrableAlertNotificationTimeout(error: unknown): error is Error & {
-  code: "P1008";
-  meta: { modelName: "ProviderAlertNotification" };
-} {
-  if (typeof error !== "object" || error === null) return false;
-  const candidate = error as { code?: unknown; meta?: unknown };
-  if (candidate.code !== "P1008" || typeof candidate.meta !== "object" || !candidate.meta) {
-    return false;
-  }
+export function isUsageMaintenanceHealthy(result: UsageMaintenanceResult): boolean {
   return (
-    "modelName" in candidate.meta &&
-    candidate.meta.modelName === "ProviderAlertNotification"
+    result.alerts.deferredError === null &&
+    result.alerts.persistenceDegraded.length === 0
   );
 }
 
+let maintenanceInFlight: Promise<UsageMaintenanceResult> | null = null;
+
 function deferredAlertMaintenanceError(
-  error: Error & {
-    code: "P1008";
-    meta: { modelName: "ProviderAlertNotification" };
-  }
+  error: AlertNotificationSummaryPersistenceTimeout
 ): DeferredAlertMaintenanceError {
   return {
     stage: "alerts",
+    operation: error.operation,
     code: error.code,
-    model: error.meta.modelName,
-    message: error.message,
+    model: error.model,
+    message: error.originalError.message,
   };
 }
 
@@ -95,7 +91,7 @@ export async function runUsageMaintenance(
         deferredError: null,
       };
     } catch (error) {
-      if (!isDeferrableAlertNotificationTimeout(error)) throw error;
+      if (!(error instanceof AlertNotificationSummaryPersistenceTimeout)) throw error;
 
       // Provider polling and money-path maintenance have already committed.
       // The notification summary write is safe to defer: any channel send is
@@ -106,12 +102,7 @@ export async function runUsageMaintenance(
         error
       );
       alerts = {
-        evaluatedProviders: 0,
-        activeAlerts: 0,
-        sent: 0,
-        resolved: 0,
-        skipped: 0,
-        errors: [],
+        ...error.partialResult,
         deferredError: deferredAlertMaintenanceError(error),
       };
     }

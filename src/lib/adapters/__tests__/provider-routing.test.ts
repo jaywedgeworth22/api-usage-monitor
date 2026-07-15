@@ -37,6 +37,7 @@ function provider(
     config,
     secretConfig: null,
     isActive: true,
+    alertConfigGeneration: 0,
     credits: 0,
     refreshIntervalMin: 60,
     groupId: null,

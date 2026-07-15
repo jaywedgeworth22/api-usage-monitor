@@ -274,6 +274,18 @@ export async function PUT(
       })),
     };
   }
+  if (
+    input.isActive !== undefined ||
+    input.refreshIntervalMin !== undefined ||
+    input.plan !== undefined ||
+    input.apiKey !== undefined ||
+    input.config !== undefined ||
+    hasSecretConfigOperations
+  ) {
+    // Keep the alert revision in the same provider update as every config
+    // field that can change the evaluated alert set without a new snapshot.
+    updateData.alertConfigGeneration = { increment: 1 };
+  }
 
   const provider = await prisma.provider.update({
     where: { id },

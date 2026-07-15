@@ -9,7 +9,10 @@ export async function ensureAgentSyncProviderSeeded(): Promise<void> {
     if (relay.isActive) {
       await prisma.provider.update({
         where: { id: relay.id },
-        data: { isActive: false },
+        data: {
+          isActive: false,
+          alertConfigGeneration: { increment: 1 },
+        },
       });
     }
   } else {

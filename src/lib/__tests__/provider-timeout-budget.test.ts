@@ -29,6 +29,11 @@ vi.mock("@/lib/adapters", () => ({
 
 vi.mock("@/lib/usage-maintenance", () => ({
   runUsageMaintenance: () => runUsageMaintenance(),
+  isUsageMaintenanceHealthy: (result: {
+    alerts: { deferredError: unknown; persistenceDegraded: unknown[] };
+  }) =>
+    result.alerts.deferredError === null &&
+    result.alerts.persistenceDegraded.length === 0,
 }));
 
 function providerRow(name: string) {
@@ -161,5 +166,109 @@ describe("fetchAllDueProviders per-provider timeout budget", () => {
         data: expect.objectContaining({ totalCost: 10 }),
       })
     );
+  });
+
+  it("marks a completed scheduler tick unhealthy when alert bookkeeping is deferred", async () => {
+    const markTickStarted = vi.fn();
+    const markTickCompleted = vi.fn();
+    const fetchProviders = vi.fn(async () => ({
+      total: 2,
+      successes: 1,
+      failures: 1,
+      skipped: 0,
+      errors: [],
+      outcomes: [],
+    }));
+    const runMaintenance = vi.fn(async () => ({
+      subscriptions: { examined: 0, charged: 0, eventsWritten: 0 },
+      providerRenewals: { examined: 0, advanced: 0 },
+      retention: { skipped: true as const, reason: "interval" as const },
+      alerts: {
+        evaluatedProviders: 2,
+        activeAlerts: 1,
+        sent: 1,
+        resolved: 0,
+        skipped: 0,
+        errors: [],
+        persistenceDegraded: [],
+        deferredError: {
+          stage: "alerts" as const,
+          operation: "post_send_notification_summary" as const,
+          code: "P1008" as const,
+          model: "ProviderAlertNotification" as const,
+          message: "busy",
+        },
+      },
+    }));
+    const { runUsagePollingSchedulerTick } = await import("@/lib/usage-recorder");
+
+    await runUsagePollingSchedulerTick({
+      fetchProviders,
+      runMaintenance,
+      markTickStarted,
+      markTickCompleted,
+    });
+
+    expect(markTickStarted).toHaveBeenCalledOnce();
+    expect(markTickCompleted).toHaveBeenCalledWith(false, {
+      total: 2,
+      successes: 1,
+      failures: 1,
+      skipped: 0,
+    });
+  });
+
+  it("marks a completed scheduler tick unhealthy on channel-state persistence degradation", async () => {
+    const markTickStarted = vi.fn();
+    const markTickCompleted = vi.fn();
+    const fetchProviders = vi.fn(async () => ({
+      total: 1,
+      successes: 1,
+      failures: 0,
+      skipped: 0,
+      errors: [],
+      outcomes: [],
+    }));
+    const runMaintenance = vi.fn(async () => ({
+      subscriptions: { examined: 0, charged: 0, eventsWritten: 0 },
+      providerRenewals: { examined: 0, advanced: 0 },
+      retention: { skipped: true as const, reason: "interval" as const },
+      alerts: {
+        evaluatedProviders: 1,
+        activeAlerts: 1,
+        sent: 0,
+        resolved: 0,
+        skipped: 0,
+        errors: [],
+        persistenceDegraded: [
+          {
+            stage: "channel_state" as const,
+            operation: "trigger_success_outcome" as const,
+            code: "P1008" as const,
+            model: "ProviderAlertChannelDelivery" as const,
+            providerId: "id-one",
+            alertCode: "balance_low",
+            channel: "webhook" as const,
+            message: "busy",
+          },
+        ],
+        deferredError: null,
+      },
+    }));
+    const { runUsagePollingSchedulerTick } = await import("@/lib/usage-recorder");
+
+    await runUsagePollingSchedulerTick({
+      fetchProviders,
+      runMaintenance,
+      markTickStarted,
+      markTickCompleted,
+    });
+
+    expect(markTickCompleted).toHaveBeenCalledWith(false, {
+      total: 1,
+      successes: 1,
+      failures: 0,
+      skipped: 0,
+    });
   });
 });

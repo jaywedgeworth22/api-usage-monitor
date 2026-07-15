@@ -76,13 +76,18 @@ describe("PUT /api/providers/:id secret config operations", () => {
     expect(response.status).toBe(200);
     const stored = await prisma.provider.findUniqueOrThrow({
       where: { id: provider.id },
-      select: { config: true, secretConfig: true },
+      select: {
+        config: true,
+        secretConfig: true,
+        alertConfigGeneration: true,
+      },
     });
     expect(stored.config).toEqual({ statusKeyRef: "gemini-primary" });
     expect(decryptJson(stored.secretConfig!)).toEqual({
       adminApiKey: "unrelated-admin-secret",
       nested: { password: "unrelated-nested-secret" },
     });
+    expect(stored.alertConfigGeneration).toBe(1);
   });
 
   it("can clear the service account without replacing public config", async () => {
@@ -112,11 +117,85 @@ describe("PUT /api/providers/:id secret config operations", () => {
     expect(response.status).toBe(200);
     const stored = await prisma.provider.findUniqueOrThrow({
       where: { id: provider.id },
-      select: { config: true, secretConfig: true },
+      select: {
+        config: true,
+        secretConfig: true,
+        alertConfigGeneration: true,
+      },
     });
     expect(stored.config).toEqual({
       billingDataset: "billing-project.billing_export",
     });
     expect(decryptJson(stored.secretConfig!)).toEqual({ apiToken: "keep-token" });
+    expect(stored.alertConfigGeneration).toBe(1);
+  });
+
+  it("increments the alert revision for API-key and config capability edits", async () => {
+    const provider = await prisma.provider.create({
+      data: {
+        name: "anthropic",
+        displayName: "Anthropic",
+        type: "builtin",
+        refreshIntervalMin: 60,
+      },
+    });
+
+    const apiKeyResponse = await PUT(
+      updateRequest(provider.id, { apiKey: "sk-ant-admin01-primary-test" }),
+      { params: Promise.resolve({ id: provider.id }) }
+    );
+    expect(apiKeyResponse.status).toBe(200);
+    expect(
+      await prisma.provider.findUniqueOrThrow({ where: { id: provider.id } })
+    ).toMatchObject({ alertConfigGeneration: 1 });
+
+    const configResponse = await PUT(
+      updateRequest(provider.id, {
+        config: { adminApiKey: "sk-ant-admin01-secondary-test" },
+      }),
+      { params: Promise.resolve({ id: provider.id }) }
+    );
+    expect(configResponse.status).toBe(200);
+    const stored = await prisma.provider.findUniqueOrThrow({
+      where: { id: provider.id },
+      select: { alertConfigGeneration: true, secretConfig: true },
+    });
+    expect(stored.alertConfigGeneration).toBe(2);
+    expect(decryptJson(stored.secretConfig!)).toEqual({
+      adminApiKey: "sk-ant-admin01-secondary-test",
+    });
+  });
+
+  it("increments the alert revision atomically with alert-affecting provider edits", async () => {
+    const provider = await prisma.provider.create({
+      data: {
+        name: "alert-revision",
+        displayName: "Alert Revision",
+        type: "builtin",
+        refreshIntervalMin: 60,
+        plan: { create: { lowBalanceUsd: 10 } },
+      },
+    });
+
+    const response = await PUT(
+      updateRequest(provider.id, {
+        isActive: false,
+        refreshIntervalMin: 120,
+        plan: { lowBalanceUsd: 5 },
+      }),
+      { params: Promise.resolve({ id: provider.id }) }
+    );
+
+    expect(response.status).toBe(200);
+    const stored = await prisma.provider.findUniqueOrThrow({
+      where: { id: provider.id },
+      include: { plan: true },
+    });
+    expect(stored).toMatchObject({
+      isActive: false,
+      refreshIntervalMin: 120,
+      alertConfigGeneration: 1,
+      plan: { lowBalanceUsd: 5 },
+    });
   });
 });
