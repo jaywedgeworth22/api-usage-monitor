@@ -140,6 +140,12 @@ model UsageSnapshot {
   credits                  Float?
   rawData                  Json?
   createdAt                DateTime  @default(now())
+
+  // Every latest-snapshot lookup filters on providerId then orders/bounds by
+  // fetchedAt (see data-retention.ts's latestSnapshotIdsByProvider and the
+  // findFirst/groupBy calls in budget-status.ts, usage-recorder.ts, and the
+  // providers/snapshots API routes) — column order matches that shape.
+  @@index([providerId, fetchedAt])
 }
 
 model UsageSnapshotDailyRollup {
