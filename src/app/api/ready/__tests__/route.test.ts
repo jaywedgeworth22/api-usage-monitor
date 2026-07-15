@@ -329,6 +329,52 @@ describe("GET /api/ready", () => {
     });
   });
 
+  it("exposes only the bounded handoff reason and maintenance health in the scheduler summary", async () => {
+    const unsafeSummary = {
+      total: 2,
+      successes: 2,
+      failures: 0,
+      skipped: 0,
+      maintenanceHealthy: false,
+      cloudflareLegacyHandoff: "charge_proof_missing" as const,
+      targetId: "must-not-leak-target-id",
+      rawEnv: "must-not-leak-env-value",
+      billingPayload: "must-not-leak-billing-payload",
+      providerError: "must-not-leak-provider-error",
+    };
+    markSchedulerTickCompleted(false, unsafeSummary);
+
+    const response = await GET();
+    const body = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(body.checks.scheduler).toMatchObject({
+      ok: true,
+      readinessReason: null,
+      lastTickSucceeded: false,
+      consecutiveFailures: 1,
+      lastRun: {
+        total: 2,
+        successes: 2,
+        failures: 0,
+        skipped: 0,
+        maintenanceHealthy: false,
+        cloudflareLegacyHandoff: "charge_proof_missing",
+      },
+    });
+    expect(Object.keys(body.checks.scheduler.lastRun).sort()).toEqual(
+      [
+        "cloudflareLegacyHandoff",
+        "failures",
+        "maintenanceHealthy",
+        "skipped",
+        "successes",
+        "total",
+      ].sort()
+    );
+    expect(JSON.stringify(body)).not.toContain("must-not-leak");
+  });
+
   it("reports backup not-ready without failing HTTP liveness", async () => {
     vi.stubEnv("LITESTREAM_REQUIRED", "true");
     vi.stubEnv("LITESTREAM_ACTIVE", "false");

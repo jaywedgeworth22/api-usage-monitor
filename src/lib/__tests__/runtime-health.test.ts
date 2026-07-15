@@ -30,19 +30,50 @@ describe("runtime health state", () => {
       lastTickStartedAt: tickAt.toISOString(),
     });
 
+    const unsafeSummary = {
+      total: 4,
+      successes: 2,
+      failures: 1,
+      skipped: 1,
+      maintenanceHealthy: true,
+      cloudflareLegacyHandoff: "disabled" as const,
+      targetId: "must-not-leak-target-id",
+      rawEnv: "must-not-leak-env-value",
+      billingPayload: "must-not-leak-billing-payload",
+      providerError: "must-not-leak-provider-error",
+    };
     markSchedulerTickCompleted(
       true,
-      { total: 4, successes: 2, failures: 1, skipped: 1 },
+      unsafeSummary,
       completedAt
     );
-    expect(getSchedulerRuntimeStatus()).toMatchObject({
+    const runtime = getSchedulerRuntimeStatus();
+    expect(runtime).toMatchObject({
       tickInProgress: false,
       lastTickCompletedAt: completedAt.toISOString(),
       lastTickSucceeded: true,
       consecutiveFailures: 0,
       firstFailureAt: null,
-      lastRun: { total: 4, successes: 2, failures: 1, skipped: 1 },
+      lastRun: {
+        total: 4,
+        successes: 2,
+        failures: 1,
+        skipped: 1,
+        maintenanceHealthy: true,
+        cloudflareLegacyHandoff: "disabled",
+      },
     });
+    expect(Object.keys(runtime.lastRun ?? {}).sort()).toEqual(
+      [
+        "cloudflareLegacyHandoff",
+        "failures",
+        "maintenanceHealthy",
+        "skipped",
+        "successes",
+        "total",
+      ].sort()
+    );
+    expect(JSON.stringify(runtime)).not.toContain("must-not-leak");
   });
 
   it("reports release identity and backup enforcement from non-secret env", () => {

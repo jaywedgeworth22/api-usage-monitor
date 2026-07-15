@@ -151,6 +151,10 @@ usage — no special-casing. Idempotent by `(subscriptionId, periodStart)` hash 
   Disabled, handed-off, and already-managed are the only healthy audit states;
   any other configured status makes scheduler maintenance unhealthy without
   creating or changing a provider/PagerDuty alert.
+  Every completed scheduler tick copies only that bounded enum and the computed
+  `maintenanceHealthy` boolean into `SchedulerRuntimeStatus.lastRun`; `/api/ready`
+  exposes the existing scheduler summary without attaching target/provider IDs,
+  env values, billing payloads, provider errors, or other maintenance fields.
 - Maintenance first runs `adoptExternalBillingSubscriptions`, which can create a linked
   `Subscription` only when the adapter set that exact record's default-false
   `paidRecurringAuthoritative` marker. `AdapterExternalBillingSync.authoritative` means only that

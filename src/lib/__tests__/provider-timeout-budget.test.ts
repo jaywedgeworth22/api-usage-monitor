@@ -36,8 +36,16 @@ vi.mock("@/lib/adapters", () => ({
 vi.mock("@/lib/usage-maintenance", () => ({
   runUsageMaintenance: () => runUsageMaintenance(),
   isUsageMaintenanceHealthy: (result: {
+    subscriptionAdoption: {
+      degradedError: unknown;
+      cloudflareLegacyHandoff: string;
+    };
     alerts: { deferredError: unknown; persistenceDegraded: unknown[] };
   }) =>
+    result.subscriptionAdoption.degradedError === null &&
+    ["disabled", "handed_off", "already_managed"].includes(
+      result.subscriptionAdoption.cloudflareLegacyHandoff
+    ) &&
     result.alerts.deferredError === null &&
     result.alerts.persistenceDegraded.length === 0,
 }));
@@ -257,7 +265,7 @@ describe("fetchAllDueProviders per-provider timeout budget", () => {
     );
   });
 
-  it("marks a completed scheduler tick unhealthy when alert bookkeeping is deferred", async () => {
+  it("marks the first handoff-only maintenance failure unhealthy and exposes only its bounded reason", async () => {
     const markTickStarted = vi.fn();
     const markTickCompleted = vi.fn();
     const fetchProviders = vi.fn(async () => ({
@@ -278,7 +286,13 @@ describe("fetchAllDueProviders per-provider timeout budget", () => {
         reconciled: 0,
         deactivated: 0,
         raced: 0,
-        cloudflareLegacyHandoff: "disabled" as const,
+        cloudflareLegacyHandoff: "charge_proof_missing" as const,
+        unsafeDiagnosticThatMustNotEscape: {
+          targetId: "must-not-leak-target-id",
+          rawEnv: "must-not-leak-env-value",
+          billingPayload: "must-not-leak-billing-payload",
+          providerError: "must-not-leak-provider-error",
+        },
         degradedError: null,
       },
       subscriptions: { examined: 0, charged: 0, eventsWritten: 0 },
@@ -286,19 +300,13 @@ describe("fetchAllDueProviders per-provider timeout budget", () => {
       retention: { skipped: true as const, reason: "interval" as const },
       alerts: {
         evaluatedProviders: 2,
-        activeAlerts: 1,
-        sent: 1,
+        activeAlerts: 0,
+        sent: 0,
         resolved: 0,
         skipped: 0,
         errors: [],
         persistenceDegraded: [],
-        deferredError: {
-          stage: "alerts" as const,
-          operation: "post_send_notification_summary" as const,
-          code: "P1008" as const,
-          model: "ProviderAlertNotification" as const,
-          message: "busy",
-        },
+        deferredError: null,
       },
     }));
     const { runUsagePollingSchedulerTick } = await import("@/lib/usage-recorder");
@@ -316,7 +324,12 @@ describe("fetchAllDueProviders per-provider timeout budget", () => {
       successes: 1,
       failures: 1,
       skipped: 0,
+      maintenanceHealthy: false,
+      cloudflareLegacyHandoff: "charge_proof_missing",
     });
+    expect(JSON.stringify(markTickCompleted.mock.calls)).not.toContain(
+      "must-not-leak"
+    );
   });
 
   it("marks a completed scheduler tick unhealthy on channel-state persistence degradation", async () => {
@@ -382,6 +395,8 @@ describe("fetchAllDueProviders per-provider timeout budget", () => {
       successes: 1,
       failures: 0,
       skipped: 0,
+      maintenanceHealthy: false,
+      cloudflareLegacyHandoff: "disabled",
     });
   });
 

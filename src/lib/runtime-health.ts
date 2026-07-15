@@ -1,10 +1,13 @@
 import packageJson from "../../package.json";
+import type { CloudflareLegacyHandoffStatus } from "@/lib/external-billing-subscription-adoption";
 
 export interface SchedulerRunSummary {
   total: number;
   successes: number;
   failures: number;
   skipped: number;
+  maintenanceHealthy: boolean;
+  cloudflareLegacyHandoff: CloudflareLegacyHandoffStatus;
 }
 
 export interface SchedulerRuntimeStatus {
@@ -65,6 +68,19 @@ const state =
     },
   });
 
+function normalizeSchedulerRunSummary(
+  summary: SchedulerRunSummary
+): SchedulerRunSummary {
+  return {
+    total: summary.total,
+    successes: summary.successes,
+    failures: summary.failures,
+    skipped: summary.skipped,
+    maintenanceHealthy: summary.maintenanceHealthy,
+    cloudflareLegacyHandoff: summary.cloudflareLegacyHandoff,
+  };
+}
+
 export function markSchedulerStarted(at = new Date()): void {
   state.scheduler.startedAt ??= at.toISOString();
 }
@@ -89,13 +105,17 @@ export function markSchedulerTickCompleted(
     state.scheduler.consecutiveFailures += 1;
     state.scheduler.firstFailureAt ??= at.toISOString();
   }
-  state.scheduler.lastRun = lastRun;
+  state.scheduler.lastRun = lastRun
+    ? normalizeSchedulerRunSummary(lastRun)
+    : null;
 }
 
 export function getSchedulerRuntimeStatus(): SchedulerRuntimeStatus {
   return {
     ...state.scheduler,
-    lastRun: state.scheduler.lastRun ? { ...state.scheduler.lastRun } : null,
+    lastRun: state.scheduler.lastRun
+      ? normalizeSchedulerRunSummary(state.scheduler.lastRun)
+      : null,
   };
 }
 

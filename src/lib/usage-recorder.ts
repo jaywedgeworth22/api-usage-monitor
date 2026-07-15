@@ -371,11 +371,15 @@ export async function runUsagePollingSchedulerTick(
   try {
     const result = await (dependencies.fetchProviders ?? fetchAllDueProviders)();
     const maintenance = await (dependencies.runMaintenance ?? runUsageMaintenance)();
-    markTickCompleted(isUsageMaintenanceHealthy(maintenance), {
+    const maintenanceHealthy = isUsageMaintenanceHealthy(maintenance);
+    markTickCompleted(maintenanceHealthy, {
       total: result.total,
       successes: result.successes,
       failures: result.failures,
       skipped: result.skipped,
+      maintenanceHealthy,
+      cloudflareLegacyHandoff:
+        maintenance.subscriptionAdoption.cloudflareLegacyHandoff,
     });
   } catch (error) {
     markTickCompleted(false, null);

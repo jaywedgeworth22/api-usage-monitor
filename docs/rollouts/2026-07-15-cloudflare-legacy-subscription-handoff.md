@@ -37,6 +37,15 @@ states. Every other configured status marks the scheduler cycle unhealthy so a
 bad or obsolete flag cannot persist silently; it does not synthesize a provider
 alert or couple the result to PagerDuty delivery.
 
+Each completed polling cycle persists only `maintenanceHealthy` and the typed
+`cloudflareLegacyHandoff` enum alongside the existing aggregate counts in the
+in-memory scheduler `lastRun` summary. `/api/ready` already returns that summary,
+so even a first unhealthy cycle identifies the bounded handoff reason before the
+repeated-failure readiness threshold is crossed. The copy is an explicit
+allowlist: subscription/provider IDs, raw env values, billing payloads, provider
+errors, secrets, and every other maintenance field are excluded. Alert delivery
+and readiness thresholds are unchanged.
+
 ## In-place mutation and lifecycle
 
 Success changes only `externalBillingManaged=true`, `autoRenew=false`, and the
@@ -64,6 +73,7 @@ replay calls remain no-ops under the existing deterministic key and watermark.
 - next provider period writes exactly one event on the same Subscription UUID
 - maintenance success/degraded result compatibility
 - configured blocked-status scheduler health without provider-alert creation
+- bounded scheduler/readiness reason propagation and explicit non-leakage
 
 No production environment, database, provider, PagerDuty, push, merge, or
 deployment was changed by this implementation lane.
