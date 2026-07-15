@@ -172,8 +172,8 @@ export default function AddSubscriptionModal({
   };
 
   const inputClass =
-    "w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500";
-  const labelClass = "block text-sm font-medium text-gray-700 mb-1";
+    "w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 dark:border-gray-600 dark:bg-gray-900 dark:text-gray-100";
+  const labelClass = "block text-sm font-medium text-gray-700 mb-1 dark:text-gray-200";
 
   const handleStatusChange = (nextStatus: string) => {
     const nextStartDate = startDateForStatusTransition({
@@ -263,7 +263,7 @@ export default function AddSubscriptionModal({
       closeDisabled={saving}
     >
           {error && (
-            <div role="alert" className="mb-4 p-3 bg-red-50 text-red-700 text-sm rounded-lg">{error}</div>
+            <div role="alert" className="mb-4 p-3 bg-red-50 text-red-700 text-sm rounded-lg dark:bg-red-950/60 dark:text-red-300">{error}</div>
           )}
 
           {editSubscription?.effectiveStatus === "expired" && (
@@ -390,7 +390,7 @@ export default function AddSubscriptionModal({
                     );
                   })}
                 </select>
-                <p className="mt-1 text-xs text-gray-500">
+                <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
                   Selecting a compatible record fills its amount, cadence, active status, and current-period start so the budget engine can dedupe that exact fixed charge safely.
                 </p>
               </div>
@@ -421,7 +421,7 @@ export default function AddSubscriptionModal({
                   {currency !== "USD" && <option value={currency}>{currency} (convert before saving)</option>}
                   <option value="USD">USD</option>
                 </select>
-                <p className="mt-1 text-xs text-gray-500">Budget and telemetry totals are normalized to USD.</p>
+                <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">Budget and telemetry totals are normalized to USD.</p>
               </div>
             </div>
 
@@ -493,7 +493,7 @@ export default function AddSubscriptionModal({
                   </p>
                 )}
                 {isActivating && activationMode === "repurchase" && (
-                  <p className={`mt-1 text-xs ${activationDateReset ? "text-emerald-700" : "text-gray-500"}`}>
+                  <p className={`mt-1 text-xs ${activationDateReset ? "text-emerald-700 dark:text-emerald-400" : "text-gray-500 dark:text-gray-400"}`}>
                     Reset to today to avoid charging evaluation time. Change it only to the actual purchase date.
                   </p>
                 )}
@@ -507,14 +507,14 @@ export default function AddSubscriptionModal({
                       </option>
                     ))}
                   </select>
-                  <p className="mt-1 text-xs text-gray-500">{selectedStatus?.help}</p>
+                  <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">{selectedStatus?.help}</p>
               </div>
             </div>
 
             {canResumeExistingTerm && (
-              <fieldset className="rounded-lg border border-gray-200 p-3">
-                <legend className="px-1 text-sm font-medium text-gray-700">Reactivation billing</legend>
-                <label className="mt-1 flex items-start gap-2 text-sm text-gray-700">
+              <fieldset className="rounded-lg border border-gray-200 p-3 dark:border-gray-700">
+                <legend className="px-1 text-sm font-medium text-gray-700 dark:text-gray-200">Reactivation billing</legend>
+                <label className="mt-1 flex items-start gap-2 text-sm text-gray-700 dark:text-gray-200">
                   <input
                     type="radio"
                     name="activation-mode"
@@ -528,7 +528,7 @@ export default function AddSubscriptionModal({
                   />
                   <span><strong>Repurchase now</strong> — start a new paid term and post a charge now.</span>
                 </label>
-                <label className="mt-2 flex items-start gap-2 text-sm text-gray-700">
+                <label className="mt-2 flex items-start gap-2 text-sm text-gray-700 dark:text-gray-200">
                   <input
                     type="radio"
                     name="activation-mode"
@@ -547,7 +547,7 @@ export default function AddSubscriptionModal({
               </fieldset>
             )}
 
-            <label className="flex items-center gap-2 text-sm text-gray-700">
+            <label className="flex items-center gap-2 text-sm text-gray-700 dark:text-gray-200">
               <input
                 type="checkbox"
                 checked={autoRenew}
@@ -565,7 +565,7 @@ export default function AddSubscriptionModal({
                     );
                   }
                 }}
-                className="rounded border-gray-300"
+                className="rounded border-gray-300 dark:border-gray-600 dark:bg-gray-900"
               />
               Auto-renews
             </label>
@@ -582,12 +582,12 @@ export default function AddSubscriptionModal({
             </div>
           </div>
 
-          <div className="mt-6 flex flex-wrap items-center justify-end gap-3 pt-6 border-t border-gray-100">
+          <div className="mt-6 flex flex-wrap items-center justify-end gap-3 pt-6 border-t border-gray-100 dark:border-gray-700">
             <button
               type="button"
               onClick={onClose}
               disabled={saving}
-              className="px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50"
+              className="px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 dark:text-gray-200 dark:bg-gray-800 dark:border-gray-600 dark:hover:bg-gray-700"
             >
               Cancel
             </button>

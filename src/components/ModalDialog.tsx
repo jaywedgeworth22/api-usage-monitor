@@ -96,11 +96,11 @@ export default function ModalDialog({
         aria-modal="true"
         aria-labelledby={titleId}
         tabIndex={-1}
-        className={`relative max-h-[calc(100dvh-1.5rem)] w-full overflow-y-auto rounded-2xl bg-white shadow-xl sm:max-h-[90vh] ${maxWidthClass}`}
+        className={`relative max-h-[calc(100dvh-1.5rem)] w-full overflow-y-auto rounded-2xl bg-white shadow-xl dark:bg-gray-800 sm:max-h-[90vh] ${maxWidthClass}`}
       >
         <div className="p-4 sm:p-6">
           <div className="mb-6 flex items-center justify-between gap-4">
-            <h2 id={titleId} className="text-xl font-semibold text-gray-900">
+            <h2 id={titleId} className="text-xl font-semibold text-gray-900 dark:text-gray-100">
               {title}
             </h2>
             <button
@@ -108,7 +108,7 @@ export default function ModalDialog({
               onClick={onClose}
               disabled={closeDisabled}
               aria-label={`Close ${title}`}
-              className="min-h-10 min-w-10 rounded-lg text-2xl leading-none text-gray-500 hover:bg-gray-100 hover:text-gray-900 focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50"
+              className="min-h-10 min-w-10 rounded-lg text-2xl leading-none text-gray-500 hover:bg-gray-100 hover:text-gray-900 focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50 dark:text-gray-400 dark:hover:bg-gray-700 dark:hover:text-gray-100"
             >
               &times;
             </button>

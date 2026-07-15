@@ -53,11 +53,11 @@ function LoginForm() {
 
   return (
     <div className="flex items-center justify-center min-h-[60vh]">
-      <div className="w-full max-w-sm bg-white rounded-xl border border-gray-200 p-6 space-y-4">
-        <h1 className="text-xl font-bold text-gray-900">Log in</h1>
+      <div className="w-full max-w-sm bg-white rounded-xl border border-gray-200 p-6 space-y-4 dark:bg-gray-800 dark:border-gray-700">
+        <h1 className="text-xl font-bold text-gray-900 dark:text-gray-100">Log in</h1>
         <form onSubmit={handleSubmit} className="space-y-4">
           <div>
-            <label htmlFor="password" className="block text-xs text-gray-500 mb-1">
+            <label htmlFor="password" className="block text-xs text-gray-500 mb-1 dark:text-gray-400">
               Password
             </label>
             <input
@@ -69,11 +69,11 @@ function LoginForm() {
               value={password}
               onChange={(e) => setPassword(e.target.value)}
               placeholder="Dashboard password"
-              className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+              className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 dark:border-gray-600 dark:bg-gray-900 dark:text-gray-100"
             />
           </div>
           {error && (
-            <p id="login-error" role="alert" className="text-sm text-red-600 bg-red-50 rounded-lg px-3 py-2">
+            <p id="login-error" role="alert" className="text-sm text-red-600 bg-red-50 rounded-lg px-3 py-2 dark:text-red-300 dark:bg-red-950/60">
               {error}
             </p>
           )}

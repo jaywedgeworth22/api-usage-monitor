@@ -84,8 +84,8 @@ function Section({
   children: ReactNode;
 }) {
   return (
-    <section className="space-y-2 border-t border-gray-100 pt-5">
-      <h3 className="text-sm font-semibold text-gray-900">{title}</h3>
+    <section className="space-y-2 border-t border-gray-100 pt-5 dark:border-gray-700">
+      <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100">{title}</h3>
       {children}
     </section>
   );
@@ -93,10 +93,10 @@ function Section({
 
 function BulletList({ items }: { items: string[] }) {
   return (
-    <ul className="space-y-2 text-sm leading-6 text-gray-600">
+    <ul className="space-y-2 text-sm leading-6 text-gray-600 dark:text-gray-300">
       {items.map((item) => (
         <li key={item} className="flex gap-2">
-          <span aria-hidden="true" className="mt-2 h-1.5 w-1.5 flex-none rounded-full bg-gray-300" />
+          <span aria-hidden="true" className="mt-2 h-1.5 w-1.5 flex-none rounded-full bg-gray-300 dark:bg-gray-600" />
           <span>{item}</span>
         </li>
       ))}
@@ -269,18 +269,18 @@ export default function ProviderIntegrationDrawer({
         aria-labelledby={headingId}
         aria-describedby={summaryId}
         tabIndex={-1}
-        className="h-full w-full max-w-xl overflow-y-auto bg-white shadow-2xl outline-none"
+        className="h-full w-full max-w-xl overflow-y-auto bg-white shadow-2xl outline-none dark:bg-gray-800"
       >
-        <header className="sticky top-0 z-10 border-b border-gray-200 bg-white/95 px-5 py-4 backdrop-blur sm:px-7">
+        <header className="sticky top-0 z-10 border-b border-gray-200 bg-white/95 px-5 py-4 backdrop-blur sm:px-7 dark:border-gray-700 dark:bg-gray-800/95">
           <div className="flex items-start justify-between gap-4">
             <div className="min-w-0">
-              <p className="text-xs font-medium uppercase tracking-wide text-gray-500">
+              <p className="text-xs font-medium uppercase tracking-wide text-gray-500 dark:text-gray-400">
                 Integration details
               </p>
-              <h2 id={headingId} className="mt-1 text-xl font-semibold text-gray-950">
+              <h2 id={headingId} className="mt-1 text-xl font-semibold text-gray-950 dark:text-gray-100">
                 {displayName}
               </h2>
-              <p className="mt-1 text-xs text-gray-500">
+              <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
                 {profile.displayName} adapter · {profile.category}
               </p>
             </div>
@@ -289,7 +289,7 @@ export default function ProviderIntegrationDrawer({
               type="button"
               onClick={onClose}
               aria-label={`Close ${displayName} integration details`}
-              className="flex h-10 w-10 flex-none items-center justify-center rounded-lg border border-gray-200 text-xl text-gray-500 hover:bg-gray-50 hover:text-gray-900 focus:outline-none focus:ring-2 focus:ring-blue-500"
+              className="flex h-10 w-10 flex-none items-center justify-center rounded-lg border border-gray-200 text-xl text-gray-500 hover:bg-gray-50 hover:text-gray-900 focus:outline-none focus:ring-2 focus:ring-blue-500 dark:border-gray-700 dark:text-gray-400 dark:hover:bg-gray-700 dark:hover:text-gray-100"
             >
               <span aria-hidden="true">×</span>
             </button>
@@ -298,22 +298,22 @@ export default function ProviderIntegrationDrawer({
 
         <div className="space-y-5 px-5 py-6 sm:px-7">
           <div className="flex flex-wrap gap-2">
-            <span className="rounded-full bg-blue-50 px-2.5 py-1 text-xs font-semibold text-blue-700">
+            <span className="rounded-full bg-blue-50 px-2.5 py-1 text-xs font-semibold text-blue-700 dark:bg-blue-950/60 dark:text-blue-300">
               {MODE_LABELS[profile.mode]}
             </span>
-            <span className="rounded-full bg-gray-100 px-2.5 py-1 text-xs font-semibold text-gray-700">
+            <span className="rounded-full bg-gray-100 px-2.5 py-1 text-xs font-semibold text-gray-700 dark:bg-gray-700 dark:text-gray-200">
               {BILLING_LABELS[profile.billing.visibility]}
             </span>
-            <span className="rounded-full bg-emerald-50 px-2.5 py-1 text-xs font-semibold text-emerald-700">
+            <span className="rounded-full bg-emerald-50 px-2.5 py-1 text-xs font-semibold text-emerald-700 dark:bg-emerald-950/60 dark:text-emerald-300">
               {profile.provenance.confidence} confidence
             </span>
           </div>
 
-          <p id={summaryId} className="text-sm leading-6 text-gray-700">
+          <p id={summaryId} className="text-sm leading-6 text-gray-700 dark:text-gray-200">
             {profile.summary}
           </p>
 
-          <div className="rounded-xl border border-blue-100 bg-blue-50 p-4 text-sm leading-6 text-blue-950">
+          <div className="rounded-xl border border-blue-100 bg-blue-50 p-4 text-sm leading-6 text-blue-950 dark:border-blue-900 dark:bg-blue-950/30 dark:text-blue-100">
             <p className="font-semibold">Account boundaries</p>
             <p className="mt-1">
               Each configured row keeps independent credentials and snapshots. Same-name rows do
@@ -326,9 +326,9 @@ export default function ProviderIntegrationDrawer({
           {instanceState ? (
             <Section title="Current configured state">
               <dl className="grid grid-cols-1 gap-3 text-sm sm:grid-cols-2">
-                <div className="rounded-lg bg-gray-50 p-3">
-                  <dt className="text-xs font-medium text-gray-500">Polling</dt>
-                  <dd className="mt-1 font-medium text-gray-900">
+                <div className="rounded-lg bg-gray-50 p-3 dark:bg-gray-900/60">
+                  <dt className="text-xs font-medium text-gray-500 dark:text-gray-400">Polling</dt>
+                  <dd className="mt-1 font-medium text-gray-900 dark:text-gray-100">
                     {!instanceState.isActive
                       ? "Inactive"
                       : pollingNotApplicable
@@ -338,13 +338,13 @@ export default function ProviderIntegrationDrawer({
                         : "Active"}
                   </dd>
                 </div>
-                <div className="rounded-lg bg-gray-50 p-3">
-                  <dt className="text-xs font-medium text-gray-500">
+                <div className="rounded-lg bg-gray-50 p-3 dark:bg-gray-900/60">
+                  <dt className="text-xs font-medium text-gray-500 dark:text-gray-400">
                     {anthropicWithoutAdmin
                       ? "Legacy Messages credential"
                       : "Primary credential"}
                   </dt>
-                  <dd className="mt-1 font-medium text-gray-900">
+                  <dd className="mt-1 font-medium text-gray-900 dark:text-gray-100">
                     {instanceState.primaryCredentialConfigured
                       ? keyLastFour
                         ? `Configured · •••• ${keyLastFour}${anthropicWithoutAdmin ? " · not polled" : ""}`
@@ -355,112 +355,112 @@ export default function ProviderIntegrationDrawer({
                   </dd>
                 </div>
                 {geminiKeyStatus && (
-                  <div className="rounded-lg bg-gray-50 p-3">
-                    <dt className="text-xs font-medium text-gray-500">
+                  <div className="rounded-lg bg-gray-50 p-3 dark:bg-gray-900/60">
+                    <dt className="text-xs font-medium text-gray-500 dark:text-gray-400">
                       Gemini key validation
                     </dt>
-                    <dd className="mt-1 font-medium text-gray-900">
+                    <dd className="mt-1 font-medium text-gray-900 dark:text-gray-100">
                       {geminiKeyStatusText}
                     </dd>
                     {geminiKeyStatus.checkedAt && (
-                      <dd className="mt-1 text-xs text-gray-500">
+                      <dd className="mt-1 text-xs text-gray-500 dark:text-gray-400">
                         Checked {new Date(geminiKeyStatus.checkedAt).toLocaleString()}
                       </dd>
                     )}
                     {geminiKeyStatus.state === "invalid" && (
-                      <dd className="mt-1 text-xs leading-5 text-red-700">
+                      <dd className="mt-1 text-xs leading-5 text-red-700 dark:text-red-300">
                         Enable the Generative Language API and check the key&apos;s API and application restrictions.
                       </dd>
                     )}
                     {geminiKeyStatus.state === "unreadable" && (
-                      <dd className="mt-1 text-xs leading-5 text-red-700">
+                      <dd className="mt-1 text-xs leading-5 text-red-700 dark:text-red-300">
                         The encrypted key exists, but this runtime cannot decrypt it. Restore the correct encryption key or save the Gemini key again.
                       </dd>
                     )}
                     {geminiKeyStatus.state === "unchecked" && (
-                      <dd className="mt-1 text-xs leading-5 text-amber-700">
+                      <dd className="mt-1 text-xs leading-5 text-amber-700 dark:text-amber-300">
                         Run Verify &amp; fetch after saving a replacement key. Billing sync is checked independently.
                       </dd>
                     )}
                     {geminiKeyStatus.state === "unavailable" && (
-                      <dd className="mt-1 text-xs leading-5 text-amber-700">
+                      <dd className="mt-1 text-xs leading-5 text-amber-700 dark:text-amber-300">
                         The current key could not be classified because Google returned a transient, quota, or service error. Retry the check; billing sync reports its own result.
                       </dd>
                     )}
                   </div>
                 )}
                 {geminiBillingStatus && (
-                  <div className="rounded-lg bg-gray-50 p-3">
-                    <dt className="text-xs font-medium text-gray-500">
+                  <div className="rounded-lg bg-gray-50 p-3 dark:bg-gray-900/60">
+                    <dt className="text-xs font-medium text-gray-500 dark:text-gray-400">
                       Google Cloud Billing sync
                     </dt>
-                    <dd className="mt-1 font-medium text-gray-900">
+                    <dd className="mt-1 font-medium text-gray-900 dark:text-gray-100">
                       {geminiBillingStatusText}
                     </dd>
                     {geminiBillingStatus.checkedAt && (
-                      <dd className="mt-1 text-xs text-gray-500">
+                      <dd className="mt-1 text-xs text-gray-500 dark:text-gray-400">
                         Checked {new Date(geminiBillingStatus.checkedAt).toLocaleString()}
                       </dd>
                     )}
                     {geminiBillingStatus.state === "error" && (
-                      <dd className="mt-1 text-xs leading-5 text-red-700">
+                      <dd className="mt-1 text-xs leading-5 text-red-700 dark:text-red-300">
                         Any last cost from this same billing configuration remains visible but incomplete; cost from a prior configuration is excluded.
                         {geminiBillingStatus.retryable ? " The monitor will retry on the next scheduler tick." : " Review the billing dataset, project, and service-account access."}
                       </dd>
                     )}
                     {geminiBillingStatus.state === "configuration_changed" && (
-                      <dd className="mt-1 text-xs leading-5 text-amber-700">
+                      <dd className="mt-1 text-xs leading-5 text-amber-700 dark:text-amber-300">
                         Prior cost belongs to the previous billing configuration and is excluded until a fresh export read completes.
                       </dd>
                     )}
                     {geminiBillingStatus.state === "pending" && (
-                      <dd className="mt-1 text-xs leading-5 text-amber-700">
+                      <dd className="mt-1 text-xs leading-5 text-amber-700 dark:text-amber-300">
                         Pending is not $0. Google may take days to backfill a newly enabled Standard Cloud Billing export.
                       </dd>
                     )}
                   </div>
                 )}
                 {geminiMonitoringStatus && (
-                  <div className="rounded-lg bg-gray-50 p-3">
-                    <dt className="text-xs font-medium text-gray-500">
+                  <div className="rounded-lg bg-gray-50 p-3 dark:bg-gray-900/60">
+                    <dt className="text-xs font-medium text-gray-500 dark:text-gray-400">
                       Google Cloud Monitoring sync
                     </dt>
-                    <dd className="mt-1 font-medium text-gray-900">
+                    <dd className="mt-1 font-medium text-gray-900 dark:text-gray-100">
                       {geminiMonitoringStatusText}
                     </dd>
                     {geminiMonitoringStatus.projectId && (
-                      <dd className="mt-1 text-xs text-gray-500">
+                      <dd className="mt-1 text-xs text-gray-500 dark:text-gray-400">
                         Project {geminiMonitoringStatus.projectId}
                       </dd>
                     )}
                     {geminiMonitoringStatus.checkedAt && (
-                      <dd className="mt-1 text-xs text-gray-500">
+                      <dd className="mt-1 text-xs text-gray-500 dark:text-gray-400">
                         Checked {new Date(geminiMonitoringStatus.checkedAt).toLocaleString()}
                       </dd>
                     )}
                     {geminiMonitoringStatus.state === "permission_denied" && (
-                      <dd className="mt-1 text-xs leading-5 text-red-700">
+                      <dd className="mt-1 text-xs leading-5 text-red-700 dark:text-red-300">
                         Grant the service account Monitoring Viewer on this exact project and ensure the Cloud Monitoring API is enabled. Billing export access is separate.
                       </dd>
                     )}
                     {geminiMonitoringStatus.state === "partial" && (
-                      <dd className="mt-1 text-xs leading-5 text-amber-700">
+                      <dd className="mt-1 text-xs leading-5 text-amber-700 dark:text-amber-300">
                         Successful request or quota metrics remain visible; failed metric families will retry on the next fetch.
                       </dd>
                     )}
                   </div>
                 )}
-                <div className="rounded-lg bg-gray-50 p-3 sm:col-span-2">
-                  <dt className="text-xs font-medium text-gray-500">Public configuration fields</dt>
-                  <dd className="mt-1 break-words text-gray-900">
+                <div className="rounded-lg bg-gray-50 p-3 sm:col-span-2 dark:bg-gray-900/60">
+                  <dt className="text-xs font-medium text-gray-500 dark:text-gray-400">Public configuration fields</dt>
+                  <dd className="mt-1 break-words text-gray-900 dark:text-gray-100">
                     {instanceState.publicConfigFields.length > 0
                       ? instanceState.publicConfigFields.join(", ")
                       : "None"}
                   </dd>
                 </div>
-                <div className="rounded-lg bg-gray-50 p-3 sm:col-span-2">
-                  <dt className="text-xs font-medium text-gray-500">Protected configuration fields</dt>
-                  <dd className="mt-1 break-words text-gray-900">
+                <div className="rounded-lg bg-gray-50 p-3 sm:col-span-2 dark:bg-gray-900/60">
+                  <dt className="text-xs font-medium text-gray-500 dark:text-gray-400">Protected configuration fields</dt>
+                  <dd className="mt-1 break-words text-gray-900 dark:text-gray-100">
                     {instanceState.protectedConfigFields.length > 0
                       ? instanceState.protectedConfigFields.join(", ")
                       : "None"}
@@ -470,17 +470,17 @@ export default function ProviderIntegrationDrawer({
                       : ""}
                   </dd>
                 </div>
-                <div className="rounded-lg bg-gray-50 p-3">
-                  <dt className="text-xs font-medium text-gray-500">Latest snapshot</dt>
-                  <dd className="mt-1 font-medium text-gray-900">
+                <div className="rounded-lg bg-gray-50 p-3 dark:bg-gray-900/60">
+                  <dt className="text-xs font-medium text-gray-500 dark:text-gray-400">Latest snapshot</dt>
+                  <dd className="mt-1 font-medium text-gray-900 dark:text-gray-100">
                     {instanceState.lastSnapshotAt
                       ? new Date(instanceState.lastSnapshotAt).toLocaleString()
                       : "None"}
                   </dd>
                 </div>
-                <div className="rounded-lg bg-gray-50 p-3">
-                  <dt className="text-xs font-medium text-gray-500">Connected billing records</dt>
-                  <dd className="mt-1 font-medium text-gray-900">
+                <div className="rounded-lg bg-gray-50 p-3 dark:bg-gray-900/60">
+                  <dt className="text-xs font-medium text-gray-500 dark:text-gray-400">Connected billing records</dt>
+                  <dd className="mt-1 font-medium text-gray-900 dark:text-gray-100">
                     {instanceState.externalBillingRecordCount}
                     {instanceState.externalBillingSources.length > 0
                       ? ` · ${instanceState.externalBillingSources.join(", ")}`
@@ -505,7 +505,7 @@ export default function ProviderIntegrationDrawer({
 
           <Section title="Credentials and exposure">
             <BulletList items={profile.credentialInputs} />
-            <div className="rounded-lg bg-emerald-50 p-3 text-sm leading-6 text-emerald-950">
+            <div className="rounded-lg bg-emerald-50 p-3 text-sm leading-6 text-emerald-950 dark:bg-emerald-950/30 dark:text-emerald-100">
               Primary keys and credential-shaped config fields are encrypted at rest and decrypted
               only on the server for a fetch. Browser responses receive a masked key preview and
               secret-field metadata, never the secret values. A configured key preview is last-four
@@ -514,7 +514,7 @@ export default function ProviderIntegrationDrawer({
           </Section>
 
           <Section title="Billing and subscription coverage">
-            <p className="text-sm leading-6 text-gray-600">{profile.billing.summary}</p>
+            <p className="text-sm leading-6 text-gray-600 dark:text-gray-300">{profile.billing.summary}</p>
           </Section>
 
           <Section title="What else could be connected">
@@ -530,11 +530,11 @@ export default function ProviderIntegrationDrawer({
           </Section>
 
           <Section title="Confidence and source date">
-            <p className="text-sm leading-6 text-gray-600">
+            <p className="text-sm leading-6 text-gray-600 dark:text-gray-300">
               Reviewed {profile.provenance.reviewedOn} · {profile.provenance.confidence} confidence.
               This describes the app code at that date; vendor APIs and account permissions can change.
             </p>
-            <ul className="space-y-1 text-xs text-gray-500">
+            <ul className="space-y-1 text-xs text-gray-500 dark:text-gray-400">
               {profile.provenance.sources.map((source) => (
                 <li key={source}>
                   <code>{source}</code>
