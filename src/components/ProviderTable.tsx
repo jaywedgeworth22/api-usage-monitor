@@ -64,6 +64,7 @@ function providerProfile(provider: Provider) {
 }
 
 function supportsManualFetch(provider: Provider): boolean {
+  if (provider.credentialManagement?.alias) return false;
   const profile = providerProfile(provider);
   if (profile.mode === "manual" || profile.mode === "push-only") {
     return false;
@@ -457,6 +458,7 @@ export default function ProviderTable({
                         isActive: provider.isActive,
                         primaryCredentialConfigured:
                           Boolean(provider.keyPreview) ||
+                          provider.credentialManagement?.status === "active" ||
                           (provider.geminiKeyStatus != null &&
                             provider.geminiKeyStatus.state !== "not_configured"),
                         keyPreview: provider.keyPreview,
@@ -476,6 +478,13 @@ export default function ProviderTable({
                     <p className="text-xs text-gray-400 dark:text-gray-500">{provider.name}</p>
                     {provider.label && (
                       <p className="mt-0.5 text-xs text-gray-500 dark:text-gray-400">{provider.label}</p>
+                    )}
+                    {provider.credentialManagement && (
+                      <span className="mt-1 inline-flex rounded border border-blue-200 bg-blue-50 px-1.5 py-0.5 text-[10px] font-medium text-blue-700 dark:border-blue-900 dark:bg-blue-950/60 dark:text-blue-300">
+                        {provider.credentialManagement.alias
+                          ? "Infisical managed alias"
+                          : "Infisical managed"}
+                      </span>
                     )}
                     {provider.groupId && (
                       <span className="mt-1 inline-flex items-center gap-1 rounded border border-amber-200 bg-amber-50 px-1.5 py-0.5 text-[10px] font-medium text-amber-700 dark:border-amber-900 dark:bg-amber-950/60 dark:text-amber-300">
@@ -498,8 +507,9 @@ export default function ProviderTable({
                       type="button"
                       aria-label={`${provider.isActive ? "Deactivate" : "Activate"} ${provider.displayName}`}
                       onClick={() => onToggleActive(provider)}
-                      disabled={actionLoading === provider.id}
-                      className={`inline-flex items-center gap-1.5 text-xs font-medium px-2 py-1 rounded-full transition-colors ${statusStyle.badge}`}
+                      disabled={actionLoading === provider.id || Boolean(provider.credentialManagement)}
+                      title={provider.credentialManagement ? "Managed by Infisical" : undefined}
+                      className={`inline-flex items-center gap-1.5 text-xs font-medium px-2 py-1 rounded-full transition-colors disabled:cursor-not-allowed ${statusStyle.badge}`}
                     >
                       <span className={`w-1.5 h-1.5 rounded-full ${statusStyle.dot}`} />
                       {providerStatusLabel(provider)}
@@ -638,7 +648,7 @@ export default function ProviderTable({
                     >
                       Edit
                     </button>
-                    {deleteConfirm === provider.id ? (
+                    {!provider.credentialManagement && (deleteConfirm === provider.id ? (
                       <div className="flex items-center gap-1">
                         <button
                           type="button"
@@ -667,7 +677,7 @@ export default function ProviderTable({
                       >
                         Delete
                       </button>
-                    )}
+                    ))}
                   </div>
                 </td>
               </tr>

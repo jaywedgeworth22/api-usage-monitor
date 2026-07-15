@@ -25,6 +25,12 @@ import {
   deriveGeminiMonitoringStatus,
 } from "@/lib/gemini-key-status";
 import { projectGeminiExternalBillingForClient } from "@/lib/gemini-external-billing";
+import {
+  containsProviderManagementClaim,
+  hasStPrimaryCredentialOwnership,
+  isReservedStPrimaryManagedLabel,
+  providerCredentialManagementForClient,
+} from "@/lib/managed-provider-credential";
 
 function decryptKey(encryptedKey: string | null): string | null {
   if (!encryptedKey) return null;
@@ -147,6 +153,15 @@ export async function GET(
 
   const { snapshots, apiKey, config, secretConfig, ...rest } = provider;
   const clientConfig = providerConfigForClient(config, secretConfig);
+  const credentialManagement = providerCredentialManagementForClient(
+    config,
+    secretConfig
+  );
+  const credentialManaged = hasStPrimaryCredentialOwnership(
+    config,
+    secretConfig,
+    provider.label
+  );
   const latestSnapshotWithRawData = snapshots[0] ?? null;
   const latestSnapshot = latestSnapshotWithRawData
     ? {
@@ -223,7 +238,8 @@ export async function GET(
     ...rest,
     externalBilling,
     ...clientConfig,
-    keyPreview: buildKeyPreview(decryptedKey),
+    credentialManagement,
+    keyPreview: credentialManaged ? null : buildKeyPreview(decryptedKey),
     geminiKeyStatus,
     geminiBillingStatus,
     geminiMonitoringStatus,
@@ -294,6 +310,44 @@ export async function PUT(
   } catch (error) {
     return NextResponse.json(
       { error: error instanceof Error ? error.message : "Invalid request" },
+      { status: 400 }
+    );
+  }
+
+  const credentialManaged = hasStPrimaryCredentialOwnership(
+    existing.config,
+    existing.secretConfig,
+    existing.label
+  );
+  if (credentialManaged) {
+    const clearsManagedBinding =
+      input.config === null ||
+      input.secretConfigOperations?.some(
+        (operation) => operation.path[0] === "infisicalCredential"
+      );
+    const changesManagedLabel =
+      input.label !== undefined && input.label !== existing.label;
+    if (
+      input.apiKey !== undefined ||
+      input.isActive !== undefined ||
+      clearsManagedBinding ||
+      changesManagedLabel
+    ) {
+      return NextResponse.json(
+        {
+          error:
+            "This provider's credential, active state, and label are managed by Infisical",
+        },
+        { status: 409 }
+      );
+    }
+  }
+  if (
+    containsProviderManagementClaim(input.config) ||
+    (!credentialManaged && isReservedStPrimaryManagedLabel(input.label))
+  ) {
+    return NextResponse.json(
+      { error: "Provider credential-management metadata is server-only" },
       { status: 400 }
     );
   }
@@ -424,6 +478,17 @@ export async function DELETE(
   const existing = await prisma.provider.findUnique({ where: { id } });
   if (!existing) {
     return NextResponse.json({ error: "Not found" }, { status: 404 });
+  }
+
+  if (hasStPrimaryCredentialOwnership(
+    existing.config,
+    existing.secretConfig,
+    existing.label
+  )) {
+    return NextResponse.json(
+      { error: "Infisical-managed providers cannot be deleted" },
+      { status: 409 }
+    );
   }
 
   await prisma.provider.delete({ where: { id } });

@@ -73,6 +73,14 @@ export interface Provider {
   allocations: { projectId: string; percentage: number }[];
   externalBilling?: ExternalBillingRecord[];
   secretConfigMeta?: { configured: boolean; fields: string[]; readable: boolean };
+  credentialManagement?: {
+    source: "infisical";
+    scope: "st-primary";
+    label: string;
+    status: "active" | "revoked";
+    alias: boolean;
+    readOnlyFields: readonly string[];
+  } | null;
   alerts: ProviderAlert[];
   estimatedMonthlyCostUsd: number;
   spentUsd?: number;

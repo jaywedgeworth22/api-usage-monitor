@@ -1,10 +1,14 @@
 import { Prisma } from "@prisma/client";
-import { timingSafeEqual } from "node:crypto";
+import { createHash, timingSafeEqual } from "node:crypto";
 import { decrypt, encrypt, encryptJson } from "@/lib/crypto";
 import { geminiApiKeyFingerprint } from "@/lib/gemini-key-status";
 import { withInternalUsageWriteAdmission } from "@/lib/ingest-admission";
 import { prisma } from "@/lib/prisma";
 import { BUILT_IN_PROVIDERS } from "@/lib/provider-definitions";
+import {
+  readStPrimaryCredentialBinding,
+  ST_PRIMARY_MANAGED_LABEL,
+} from "@/lib/managed-provider-credential";
 import {
   canonicalProjectKey,
   canonicalProviderKey,
@@ -17,7 +21,7 @@ import {
   splitProviderConfig,
 } from "@/lib/provider-secret-config";
 
-export type InfisicalCredentialScope = "st" | "ct" | "shared";
+export type InfisicalCredentialScope = "st" | "ct" | "shared" | "st-primary";
 
 export interface InfisicalCredentialSyncSourceResult {
   source: InfisicalCredentialScope;
@@ -123,6 +127,32 @@ interface StoredBinding {
   scope: InfisicalCredentialScope;
   source: InfisicalCredentialScope;
   providerName: string;
+  sequence?: number;
+  status?: "active" | "revoked";
+  fingerprint?: string | null;
+  aliasOfProviderId?: string;
+}
+
+interface StPrimaryManifestEntry {
+  id: "gemini.apiKey" | "deepseek.apiKey";
+  providerName: "google-ai" | "deepseek";
+  capability: "apiKey";
+  secretName: "GEMINI_API_KEY" | "DEEPSEEK_API_KEY";
+  status: "active" | "revoked";
+  fingerprint: string | null;
+}
+
+interface StPrimaryManifest {
+  schemaVersion: 1;
+  source: "socratic-trade-primary";
+  complete: true;
+  sequence: number;
+  entries: StPrimaryManifestEntry[];
+}
+
+interface StPrimaryBridgeRead {
+  manifest: StPrimaryManifest;
+  values: Map<StPrimaryManifestEntry["id"], string>;
 }
 
 type ProviderRecord = Prisma.ProviderGetPayload<{
@@ -147,6 +177,22 @@ const ST_GEMINI_PROVIDER_ID = "4a888d41-3988-4774-86d8-67d7aa14d7e2";
 const ST_GEMINI_SECRET_NAME = "GEMINI_API_KEY";
 const ST_PROJECT_NAME = "SocraticTrade.com";
 const ST_GEMINI_VALIDATION_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+const ST_PRIMARY_SYNC_FLAG = "INFISICAL_ST_PRIMARY_SYNC_ENABLED";
+const ST_PRIMARY_SECRET_PATH = "/usage-monitor/st-primary/v1";
+const ST_PRIMARY_MANIFEST_SECRET = "BRIDGE_MANIFEST_V1";
+const ST_PRIMARY_CLIENT_ID_ENV = "INFISICAL_ST_PRIMARY_CLIENT_ID";
+const ST_PRIMARY_CLIENT_SECRET_ENV = "INFISICAL_ST_PRIMARY_CLIENT_SECRET";
+const MAX_BRIDGE_MANIFEST_BYTES = 8 * 1024;
+const ST_PRIMARY_ENTRY_CONTRACT = {
+  "gemini.apiKey": {
+    providerName: "google-ai",
+    secretName: "GEMINI_API_KEY",
+  },
+  "deepseek.apiKey": {
+    providerName: "deepseek",
+    secretName: "DEEPSEEK_API_KEY",
+  },
+} as const;
 
 // Project IDs identify Infisical projects; they are not credentials. Verified
 // defaults keep the Render bootstrap to the three Universal Auth ID/secret
@@ -338,6 +384,7 @@ const SCOPE_LABELS: Readonly<Record<InfisicalCredentialScope, string>> = {
   st: "SocraticTrade.com",
   ct: "Congress.Trade",
   shared: "Shared",
+  "st-primary": ST_PRIMARY_MANAGED_LABEL,
 };
 
 let syncInFlight: Promise<InfisicalCredentialSyncResult> | null = null;
@@ -359,18 +406,30 @@ function configuredSources(): SourceConfig[] {
   }));
 }
 
-function emptyResult(enabled: boolean): InfisicalCredentialSyncResult {
-  return {
-    enabled,
-    configured: false,
-    sources: SOURCE_DEFINITIONS.map(({ source }) => ({
+function emptyResult(
+  enabled: boolean,
+  stPrimaryEnabled = false
+): InfisicalCredentialSyncResult {
+  const rootSources: InfisicalCredentialSyncSourceResult[] =
+    SOURCE_DEFINITIONS.map(({ source }) => ({
       source,
       configured: false,
       status: enabled ? "unconfigured" : "disabled",
       available: 0,
       missing: 0,
       failed: 0,
-    })),
+    }));
+  return {
+    enabled,
+    configured: false,
+    sources: [...rootSources, {
+      source: "st-primary" as const,
+      configured: false,
+      status: stPrimaryEnabled ? "unconfigured" as const : "disabled" as const,
+      available: 0,
+      missing: 0,
+      failed: 0,
+    }],
     created: 0,
     updated: 0,
     unchanged: 0,
@@ -917,11 +976,19 @@ function readStoredBinding(provider: ProviderRecord): StoredBindingRead {
     const config = providerConfigForServer(provider.config, provider.secretConfig);
     const value = config.infisicalCredential;
     if (value == null) return { readable: true };
-    if (
-      !isRecord(value) ||
+    if (!isRecord(value) || typeof value.providerName !== "string") {
+      return { readable: false };
+    }
+    if (value.scope === "st-primary" || value.source === "st-primary") {
+      const primary = readStPrimaryCredentialBinding(
+        provider.config,
+        provider.secretConfig
+      );
+      if (!primary.readable || !primary.binding) return { readable: false };
+      return { readable: true, binding: primary.binding };
+    } else if (
       (value.scope !== "st" && value.scope !== "ct" && value.scope !== "shared") ||
-      (value.source !== "st" && value.source !== "ct" && value.source !== "shared") ||
-      typeof value.providerName !== "string"
+      (value.source !== "st" && value.source !== "ct" && value.source !== "shared")
     ) {
       return { readable: false };
     }
@@ -1276,10 +1343,16 @@ function selectTarget(
 ): ProviderRecord | undefined {
   const canonical = canonicalProviderKey(candidate.providerName);
   const available = providers.filter(
-    (provider) =>
-      provider.type.trim().toLowerCase() === "builtin" &&
-      canonicalProviderKey(provider.name) === canonical &&
-      !claimed.has(provider.id)
+    (provider) => {
+      const stored = readStoredBinding(provider);
+      return (
+        stored.readable &&
+        stored.binding?.scope !== "st-primary" &&
+        provider.type.trim().toLowerCase() === "builtin" &&
+        canonicalProviderKey(provider.name) === canonical &&
+        !claimed.has(provider.id)
+      );
+    }
   );
   const bound = available.filter((provider) => {
     const binding = bindingFor(provider);
@@ -1614,7 +1687,442 @@ async function applyCandidates(candidates: readonly CredentialCandidate[]): Prom
   return { created, updated, unchanged, failed };
 }
 
-async function syncOnce(
+function fixedStPrimarySource(): SourceConfig {
+  const st = SOURCE_DEFINITIONS.find(({ source }) => source === "st")!;
+  return {
+    ...st,
+    source: "st-primary",
+    clientIdEnv: ST_PRIMARY_CLIENT_ID_ENV,
+    clientSecretEnv: ST_PRIMARY_CLIENT_SECRET_ENV,
+    pathEnv: "",
+    clientId: cleanEnv(ST_PRIMARY_CLIENT_ID_ENV),
+    clientSecret: cleanEnv(ST_PRIMARY_CLIENT_SECRET_ENV),
+    projectId: st.defaultProjectId,
+    environment: DEFAULT_ENVIRONMENT,
+    secretPath: ST_PRIMARY_SECRET_PATH,
+  };
+}
+
+function hasExactKeys(
+  value: Record<string, unknown>,
+  expected: readonly string[]
+): boolean {
+  const actual = Object.keys(value).sort();
+  const wanted = [...expected].sort();
+  return actual.length === wanted.length && actual.every((key, index) => key === wanted[index]);
+}
+
+function rejectDuplicateJsonObjectMembers(input: string): void {
+  let index = 0;
+  const invalid = () => {
+    throw new InfisicalSyncError("bridge_manifest_invalid_json");
+  };
+  const skipWhitespace = () => {
+    while (/\s/.test(input[index] ?? "")) index++;
+  };
+  const parseString = (): string => {
+    if (input[index] !== '"') invalid();
+    const start = index++;
+    let escaped = false;
+    while (index < input.length) {
+      const char = input[index++];
+      if (escaped) {
+        escaped = false;
+        continue;
+      }
+      if (char === "\\") {
+        escaped = true;
+        continue;
+      }
+      if (char === '"') {
+        try {
+          return JSON.parse(input.slice(start, index)) as string;
+        } catch {
+          invalid();
+        }
+      }
+    }
+    invalid();
+    throw new InfisicalSyncError("bridge_manifest_invalid_json");
+  };
+  const parseValue = (): void => {
+    skipWhitespace();
+    if (input[index] === "{") {
+      index++;
+      skipWhitespace();
+      const keys = new Set<string>();
+      if (input[index] === "}") {
+        index++;
+        return;
+      }
+      while (index < input.length) {
+        skipWhitespace();
+        const key = parseString();
+        if (keys.has(key)) {
+          throw new InfisicalSyncError("bridge_manifest_duplicate_member");
+        }
+        keys.add(key);
+        skipWhitespace();
+        if (input[index++] !== ":") invalid();
+        parseValue();
+        skipWhitespace();
+        const delimiter = input[index++];
+        if (delimiter === "}") return;
+        if (delimiter !== ",") invalid();
+      }
+      invalid();
+    }
+    if (input[index] === "[") {
+      index++;
+      skipWhitespace();
+      if (input[index] === "]") {
+        index++;
+        return;
+      }
+      while (index < input.length) {
+        parseValue();
+        skipWhitespace();
+        const delimiter = input[index++];
+        if (delimiter === "]") return;
+        if (delimiter !== ",") invalid();
+      }
+      invalid();
+    }
+    if (input[index] === '"') {
+      parseString();
+      return;
+    }
+    const start = index;
+    while (index < input.length && !/[\s,}\]]/.test(input[index])) index++;
+    if (index === start) invalid();
+  };
+
+  parseValue();
+  skipWhitespace();
+  if (index !== input.length) invalid();
+}
+
+function parseStPrimaryManifest(value: string): StPrimaryManifest {
+  if (Buffer.byteLength(value, "utf8") > MAX_BRIDGE_MANIFEST_BYTES) {
+    throw new InfisicalSyncError("bridge_manifest_too_large");
+  }
+  rejectDuplicateJsonObjectMembers(value);
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(value);
+  } catch {
+    throw new InfisicalSyncError("bridge_manifest_invalid_json");
+  }
+  if (
+    !isRecord(parsed) ||
+    !hasExactKeys(parsed, ["schemaVersion", "source", "complete", "sequence", "entries"]) ||
+    parsed.schemaVersion !== 1 ||
+    parsed.source !== "socratic-trade-primary" ||
+    parsed.complete !== true ||
+    !Number.isSafeInteger(parsed.sequence) ||
+    (parsed.sequence as number) < 1 ||
+    !Array.isArray(parsed.entries) ||
+    parsed.entries.length !== 2
+  ) {
+    throw new InfisicalSyncError("bridge_manifest_invalid");
+  }
+
+  const entries: StPrimaryManifestEntry[] = [];
+  const seen = new Set<string>();
+  for (const valueEntry of parsed.entries) {
+    if (
+      !isRecord(valueEntry) ||
+      !hasExactKeys(valueEntry, [
+        "id",
+        "providerName",
+        "capability",
+        "secretName",
+        "status",
+        "fingerprint",
+      ]) ||
+      (valueEntry.id !== "gemini.apiKey" && valueEntry.id !== "deepseek.apiKey") ||
+      seen.has(valueEntry.id)
+    ) {
+      throw new InfisicalSyncError("bridge_manifest_entries_invalid");
+    }
+    seen.add(valueEntry.id);
+    const contract = ST_PRIMARY_ENTRY_CONTRACT[valueEntry.id];
+    if (
+      valueEntry.providerName !== contract.providerName ||
+      valueEntry.capability !== "apiKey" ||
+      valueEntry.secretName !== contract.secretName ||
+      (valueEntry.status !== "active" && valueEntry.status !== "revoked") ||
+      (valueEntry.status === "active"
+        ? typeof valueEntry.fingerprint !== "string" ||
+          !/^[a-f0-9]{64}$/.test(valueEntry.fingerprint)
+        : valueEntry.fingerprint !== null)
+    ) {
+      throw new InfisicalSyncError("bridge_manifest_entries_invalid");
+    }
+    entries.push(valueEntry as unknown as StPrimaryManifestEntry);
+  }
+  return {
+    schemaVersion: 1,
+    source: "socratic-trade-primary",
+    complete: true,
+    sequence: parsed.sequence as number,
+    entries,
+  };
+}
+
+function bridgeFingerprint(value: string): string {
+  return createHash("sha256").update(value, "utf8").digest("hex");
+}
+
+async function readStPrimaryBridge(
+  baseUrl: string,
+  source: SourceConfig
+): Promise<StPrimaryBridgeRead> {
+  const token = await login(baseUrl, source);
+  const names = await preflightSourceScope(baseUrl, source, token);
+  if (!names.has(ST_PRIMARY_MANIFEST_SECRET)) {
+    throw new InfisicalSyncError("bridge_manifest_missing");
+  }
+  const manifestRecord = await fetchBootstrapSecretRecord(
+    baseUrl,
+    source,
+    token,
+    ST_PRIMARY_MANIFEST_SECRET,
+    "bridge_manifest_scope_mismatch"
+  );
+  if (!manifestRecord.found) {
+    throw new InfisicalSyncError("bridge_manifest_missing");
+  }
+  const manifest = parseStPrimaryManifest(manifestRecord.value ?? "");
+  const values = new Map<StPrimaryManifestEntry["id"], string>();
+  for (const entry of manifest.entries) {
+    if (entry.status === "revoked") continue;
+    if (!names.has(entry.secretName)) {
+      throw new InfisicalSyncError("bridge_complete_set_missing_value");
+    }
+    const record = await fetchBootstrapSecretRecord(
+      baseUrl,
+      source,
+      token,
+      entry.secretName,
+      "bridge_value_scope_mismatch"
+    );
+    if (!record.found || !record.value) {
+      throw new InfisicalSyncError("bridge_complete_set_missing_value");
+    }
+    const actual = bridgeFingerprint(record.value);
+    if (!sameFingerprint(actual, entry.fingerprint ?? "")) {
+      throw new InfisicalSyncError("bridge_fingerprint_mismatch");
+    }
+    values.set(entry.id, record.value);
+  }
+  return { manifest, values };
+}
+
+function stPrimaryBindingFor(
+  provider: ProviderRecord
+): StoredBinding | undefined {
+  const read = readStoredBinding(provider);
+  return read.readable && read.binding?.scope === "st-primary"
+    ? read.binding
+    : undefined;
+}
+
+function exactCredentialDuplicate(
+  providers: readonly ProviderRecord[],
+  targetId: string | undefined,
+  providerName: string,
+  fingerprint: string
+): ProviderRecord | undefined {
+  const canonical = canonicalProviderKey(providerName);
+  return providers.find((provider) => {
+    if (
+      provider.id === targetId ||
+      !provider.isActive ||
+      canonicalProviderKey(provider.name) !== canonical ||
+      !provider.apiKey
+    ) {
+      return false;
+    }
+    try {
+      return sameFingerprint(bridgeFingerprint(decrypt(provider.apiKey)), fingerprint);
+    } catch {
+      return false;
+    }
+  });
+}
+
+async function applyStPrimaryBridge(read: StPrimaryBridgeRead): Promise<{
+  created: number;
+  updated: number;
+  unchanged: number;
+}> {
+  const projectId = (
+    await ensureScopeProjects(new Set<InfisicalCredentialScope>(["st"]))
+  ).get("st");
+  return prisma.$transaction(async (tx) => {
+    // Re-read only after the complete remote set has been validated and the
+    // database transaction has begun. Both provider members then advance (or
+    // roll back) together.
+    const providers = await tx.provider.findMany({
+      where: { type: "builtin" },
+      include: { allocations: { select: { projectId: true, percentage: true } } },
+      orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+    });
+    const targets = new Map<StPrimaryManifestEntry["id"], ProviderRecord>();
+
+    // Validate replay/ordering for the complete set before writing any member.
+    for (const entry of read.manifest.entries) {
+      const matches = providers.filter((provider) => {
+        const binding = stPrimaryBindingFor(provider);
+        return binding && canonicalProviderKey(binding.providerName) ===
+          canonicalProviderKey(entry.providerName);
+      });
+      if (matches.length > 1) {
+        throw new InfisicalSyncError("bridge_ambiguous_bound_provider");
+      }
+      const target = matches[0];
+      if (!target) continue;
+      targets.set(entry.id, target);
+      const binding = stPrimaryBindingFor(target)!;
+      if ((binding.sequence ?? 0) > read.manifest.sequence) {
+        throw new InfisicalSyncError("bridge_sequence_replay");
+      }
+      if (
+        binding.sequence === read.manifest.sequence &&
+        (binding.status !== entry.status ||
+          binding.fingerprint !== entry.fingerprint)
+      ) {
+        throw new InfisicalSyncError("bridge_sequence_mismatch");
+      }
+    }
+
+    let created = 0;
+    let updated = 0;
+    let unchanged = 0;
+    for (const entry of read.manifest.entries) {
+      const target = targets.get(entry.id);
+      const definition = BUILT_IN_PROVIDERS.find(
+        (item) => item.name === entry.providerName
+      );
+      if (!definition) throw new InfisicalSyncError("unknown_provider_mapping");
+      const value = read.values.get(entry.id);
+      if (entry.status === "active" && !value) {
+        throw new InfisicalSyncError("bridge_complete_set_missing_value");
+      }
+      const duplicate = entry.status === "active"
+        ? exactCredentialDuplicate(
+            providers,
+            target?.id,
+            entry.providerName,
+            entry.fingerprint!
+          )
+        : undefined;
+      const binding: StoredBinding = {
+        scope: "st-primary",
+        source: "st-primary",
+        providerName: entry.providerName,
+        sequence: read.manifest.sequence,
+        status: entry.status,
+        fingerprint: entry.fingerprint,
+        ...(duplicate ? { aliasOfProviderId: duplicate.id } : {}),
+      };
+      const desiredActive = entry.status === "active" && !duplicate;
+
+      if (!target) {
+        // Revocations are persisted even when first observed. The keyless,
+        // inactive tombstone retains sequence so an older active manifest can
+        // never resurrect a credential.
+        const provider = await tx.provider.create({
+          data: {
+            name: definition.name,
+            displayName: definition.displayName,
+            type: "builtin",
+            category: definition.category,
+            label: ST_PRIMARY_MANAGED_LABEL,
+            isActive: desiredActive,
+            apiKey: value ? encrypt(value) : null,
+            config: Prisma.JsonNull,
+            secretConfig: encryptJson({ infisicalCredential: binding }),
+            refreshIntervalMin: definition.defaultRefreshIntervalMin ?? 60,
+            ...(projectId
+              ? { allocations: { create: { projectId, percentage: 100 } } }
+              : {}),
+          },
+          include: { allocations: { select: { projectId: true, percentage: true } } },
+        });
+        providers.push(provider);
+        created++;
+        continue;
+      }
+
+      const oldBinding = stPrimaryBindingFor(target)!;
+      const stored = mergedStoredConfig(target);
+      const allocationPresent =
+        !projectId || target.allocations.some((row) => row.projectId === projectId);
+      let keyMatches = target.apiKey == null && entry.status === "revoked";
+      if (value && target.apiKey) {
+        try {
+          keyMatches = sameFingerprint(
+            bridgeFingerprint(decrypt(target.apiKey)),
+            entry.fingerprint!
+          );
+        } catch {
+          keyMatches = false;
+        }
+      }
+      const bindingMatches =
+        oldBinding.sequence === binding.sequence &&
+        oldBinding.status === binding.status &&
+        oldBinding.fingerprint === binding.fingerprint &&
+        oldBinding.aliasOfProviderId === binding.aliasOfProviderId;
+      if (
+        bindingMatches &&
+        keyMatches &&
+        target.isActive === desiredActive &&
+        target.label === ST_PRIMARY_MANAGED_LABEL &&
+        allocationPresent &&
+        !stored.hadLegacySecrets
+      ) {
+        unchanged++;
+        continue;
+      }
+
+      const secretConfig = {
+        ...stored.secretConfig,
+        infisicalCredential: binding,
+      };
+      const write = await tx.provider.updateMany({
+        where: {
+          id: target.id,
+          alertConfigGeneration: target.alertConfigGeneration,
+        },
+        data: {
+          apiKey: value ? encrypt(value) : null,
+          isActive: desiredActive,
+          label: ST_PRIMARY_MANAGED_LABEL,
+          config: jsonInput(stored.publicConfig),
+          secretConfig: encryptJson(secretConfig),
+          alertConfigGeneration: { increment: 1 },
+        },
+      });
+      if (write.count !== 1) {
+        throw new InfisicalSyncError("concurrent_provider_edit");
+      }
+      if (projectId && !allocationPresent) {
+        await tx.providerProjectAllocation.upsert({
+          where: { providerId_projectId: { providerId: target.id, projectId } },
+          create: { providerId: target.id, projectId, percentage: 100 },
+          update: {},
+        });
+      }
+      updated++;
+    }
+    return { created, updated, unchanged };
+  });
+}
+
+async function syncRootOnce(
   options: InfisicalCredentialSyncOptions
 ): Promise<InfisicalCredentialSyncResult> {
   const enabled = cleanEnv("INFISICAL_PROVIDER_SYNC_ENABLED") !== "false";
@@ -1683,6 +2191,80 @@ async function syncOnce(
     result.failed += applied.failed;
   }
   return result;
+}
+
+async function syncOnce(
+  options: InfisicalCredentialSyncOptions
+): Promise<InfisicalCredentialSyncResult> {
+  const stPrimaryEnabled = cleanEnv(ST_PRIMARY_SYNC_FLAG) === "true";
+  const root = await syncRootOnce(options);
+  if (!stPrimaryEnabled) return root;
+
+  const source = fixedStPrimarySource();
+  const configured = Boolean(source.clientId && source.clientSecret);
+  const sourceIndex = root.sources.findIndex((item) => item.source === "st-primary");
+  const setSource = (value: InfisicalCredentialSyncSourceResult) => {
+    if (sourceIndex >= 0) root.sources[sourceIndex] = value;
+    else root.sources.push(value);
+  };
+  root.enabled = true;
+  root.configured ||= configured;
+  if (!source.clientId && !source.clientSecret) {
+    setSource({
+      source: "st-primary",
+      configured: false,
+      status: "unconfigured",
+      available: 0,
+      missing: 0,
+      failed: 0,
+    });
+    return root;
+  }
+  if (!configured) {
+    setSource({
+      source: "st-primary",
+      configured: false,
+      status: "incomplete",
+      available: 0,
+      missing: 0,
+      failed: 2,
+      errorCode: "incomplete_credentials",
+    });
+    root.failed += 2;
+    return root;
+  }
+  try {
+    const baseUrl = infisicalBaseUrl();
+    const bridge = await readStPrimaryBridge(baseUrl, source);
+    const applied = await withInternalUsageWriteAdmission(() =>
+      applyStPrimaryBridge(bridge)
+    );
+    root.created += applied.created;
+    root.updated += applied.updated;
+    root.unchanged += applied.unchanged;
+    setSource({
+      source: "st-primary",
+      configured: true,
+      status: "synced",
+      available: bridge.values.size,
+      missing: 0,
+      failed: 0,
+    });
+  } catch (error) {
+    const errorCode =
+      error instanceof InfisicalSyncError ? error.code : "bridge_sync_failed";
+    setSource({
+      source: "st-primary",
+      configured: true,
+      status: "error",
+      available: 0,
+      missing: 0,
+      failed: 2,
+      errorCode,
+    });
+    root.failed += 2;
+  }
+  return root;
 }
 
 /**

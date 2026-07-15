@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { createHash } from "node:crypto";
 import type { Prisma } from "@prisma/client";
 import {
   afterAll,
@@ -15,7 +16,7 @@ import {
 import { geminiApiKeyFingerprint } from "../gemini-key-status";
 import { setupPrismaSqliteTestDb } from "./setup-test-db";
 
-type Scope = "st" | "ct" | "shared";
+type Scope = "st" | "ct" | "shared" | "st-primary";
 
 const ENCRYPTION_KEY = "57".repeat(32);
 const ST_GEMINI_PROVIDER_ID = "4a888d41-3988-4774-86d8-67d7aa14d7e2";
@@ -63,6 +64,16 @@ const SOURCE_ENV: Record<
     projectId: "test-project-shared",
     secretPath: "/shared-scope",
   },
+  "st-primary": {
+    clientId: "test-client-st-primary",
+    clientSecret: "test-bootstrap-st-primary",
+    clientIdEnv: "INFISICAL_ST_PRIMARY_CLIENT_ID",
+    clientSecretEnv: "INFISICAL_ST_PRIMARY_CLIENT_SECRET",
+    projectIdEnv: "INFISICAL_ST_PRIMARY_UNUSED_PROJECT_ID",
+    pathEnv: "INFISICAL_ST_PRIMARY_UNUSED_PATH",
+    projectId: ST_INFISICAL_PROJECT_ID,
+    secretPath: "/usage-monitor/st-primary/v1",
+  },
 };
 
 const ALLOWLIST: Record<Scope, readonly string[]> = {
@@ -96,6 +107,7 @@ const ALLOWLIST: Record<Scope, readonly string[]> = {
     "TWILIO_ACCOUNT_SID",
     "TWILIO_AUTH_TOKEN",
   ],
+  "st-primary": ["BRIDGE_MANIFEST_V1", "GEMINI_API_KEY", "DEEPSEEK_API_KEY"],
 };
 
 interface SecretRead {
@@ -166,6 +178,54 @@ function clearSyncEnvironment(): void {
   delete process.env.INFISICAL_ENV;
   delete process.env.INFISICAL_PROVIDER_SYNC_ENABLED;
   delete process.env.INFISICAL_ST_GEMINI_BOOTSTRAP_ENABLED;
+  delete process.env.INFISICAL_ST_PRIMARY_SYNC_ENABLED;
+}
+
+function configureStPrimary(): void {
+  process.env.INFISICAL_PROVIDER_SYNC_ENABLED = "false";
+  process.env.INFISICAL_ST_PRIMARY_SYNC_ENABLED = "true";
+  process.env.INFISICAL_ST_PRIMARY_CLIENT_ID = SOURCE_ENV["st-primary"].clientId;
+  process.env.INFISICAL_ST_PRIMARY_CLIENT_SECRET =
+    SOURCE_ENV["st-primary"].clientSecret;
+}
+
+function stPrimaryManifest(
+  sequence: number,
+  gemini: { status: "active" | "revoked"; value?: string },
+  deepseek: { status: "active" | "revoked"; value?: string }
+): string {
+  const fingerprint = (value: string) =>
+    createHash("sha256").update(value, "utf8").digest("hex");
+  return JSON.stringify({
+    schemaVersion: 1,
+    source: "socratic-trade-primary",
+    complete: true,
+    sequence,
+    entries: [
+      {
+        id: "gemini.apiKey",
+        providerName: "google-ai",
+        capability: "apiKey",
+        secretName: "GEMINI_API_KEY",
+        status: gemini.status,
+        fingerprint:
+          gemini.status === "active"
+            ? fingerprint(gemini.value ?? "")
+            : null,
+      },
+      {
+        id: "deepseek.apiKey",
+        providerName: "deepseek",
+        capability: "apiKey",
+        secretName: "DEEPSEEK_API_KEY",
+        status: deepseek.status,
+        fingerprint:
+          deepseek.status === "active"
+            ? fingerprint(deepseek.value ?? "")
+            : null,
+      },
+    ],
+  });
 }
 
 function configureSources(...sources: Scope[]): void {
@@ -504,6 +564,293 @@ beforeEach(async () => {
   vi.spyOn(console, "info").mockImplementation(() => undefined);
   await prisma.provider.deleteMany();
   await prisma.project.deleteMany();
+});
+
+describe("Socratic primary-account bridge reader", () => {
+  const geminiKey = "primary-gemini-key";
+  const deepseekKey = "primary-deepseek-key";
+
+  function bridgeSecrets(sequence = 1) {
+    return {
+      BRIDGE_MANIFEST_V1: stPrimaryManifest(
+        sequence,
+        { status: "active", value: geminiKey },
+        { status: "active", value: deepseekKey }
+      ),
+      GEMINI_API_KEY: geminiKey,
+      DEEPSEEK_API_KEY: deepseekKey,
+    };
+  }
+
+  it("is independently default-off even when its identity is present", async () => {
+    process.env.INFISICAL_PROVIDER_SYNC_ENABLED = "false";
+    process.env.INFISICAL_ST_PRIMARY_CLIENT_ID = SOURCE_ENV["st-primary"].clientId;
+    process.env.INFISICAL_ST_PRIMARY_CLIENT_SECRET =
+      SOURCE_ENV["st-primary"].clientSecret;
+    const capture = installInfisicalMock({ "st-primary": bridgeSecrets() });
+
+    const result = await syncProviderCredentialsFromInfisical();
+
+    expect(result.enabled).toBe(false);
+    expect(capture.loginSources).not.toContain("st-primary");
+    expect(await prisma.provider.count()).toBe(0);
+  });
+
+  it("creates isolated rows and makes an identical existing credential an inactive alias", async () => {
+    configureStPrimary();
+    const manual = await prisma.provider.create({
+      data: {
+        name: "google-ai",
+        displayName: "Google AI (manual)",
+        type: "builtin",
+        isActive: true,
+        apiKey: encrypt(geminiKey),
+      },
+    });
+    const capture = installInfisicalMock({ "st-primary": bridgeSecrets() });
+
+    const result = await syncProviderCredentialsFromInfisical();
+
+    expect(result.sources.find((source) => source.source === "st-primary"))
+      .toMatchObject({ configured: true, status: "synced", available: 2 });
+    expect(capture.scopeReads).toContainEqual(expect.objectContaining({
+      source: "st-primary",
+      projectId: ST_INFISICAL_PROJECT_ID,
+      environment: "prod",
+      secretPath: "/usage-monitor/st-primary/v1",
+      viewSecretValue: "false",
+      includeImports: "false",
+    }));
+    const managedGemini = await prisma.provider.findFirstOrThrow({
+      where: { name: "google-ai", label: "SocraticTrade.com · Primary account" },
+    });
+    expect(managedGemini.id).not.toBe(manual.id);
+    expect(managedGemini.isActive).toBe(false);
+    expect(decrypt(managedGemini.apiKey!)).toBe(geminiKey);
+    expect(decryptJson(managedGemini.secretConfig!)).toMatchObject({
+      infisicalCredential: {
+        scope: "st-primary",
+        source: "st-primary",
+        sequence: 1,
+        status: "active",
+        aliasOfProviderId: manual.id,
+      },
+    });
+    const managedDeepseek = await prisma.provider.findFirstOrThrow({
+      where: { name: "deepseek", label: "SocraticTrade.com · Primary account" },
+    });
+    expect(managedDeepseek.isActive).toBe(true);
+    expect(decrypt(managedDeepseek.apiKey!)).toBe(deepseekKey);
+    expectRedacted(result, [geminiKey, deepseekKey]);
+  });
+
+  it("retains last-known-good values on a fingerprint mismatch", async () => {
+    configureStPrimary();
+    installInfisicalMock({ "st-primary": bridgeSecrets(1) });
+    await syncProviderCredentialsFromInfisical();
+    const before = await prisma.provider.findFirstOrThrow({
+      where: { name: "google-ai", label: "SocraticTrade.com · Primary account" },
+    });
+
+    const badManifest = JSON.parse(stPrimaryManifest(
+      2,
+      { status: "active", value: "expected-rotated-value" },
+      { status: "active", value: deepseekKey }
+    )) as { entries: Array<Record<string, unknown>> };
+    installInfisicalMock({
+      "st-primary": {
+        BRIDGE_MANIFEST_V1: JSON.stringify(badManifest),
+        GEMINI_API_KEY: "different-rotated-value",
+        DEEPSEEK_API_KEY: deepseekKey,
+      },
+    });
+
+    const result = await syncProviderCredentialsFromInfisical();
+
+    expect(result.sources.find((source) => source.source === "st-primary"))
+      .toMatchObject({ status: "error", errorCode: "bridge_fingerprint_mismatch" });
+    const preserved = await prisma.provider.findUniqueOrThrow({
+      where: { id: before.id },
+    });
+    expect(decrypt(preserved.apiKey!)).toBe(geminiKey);
+    expect(decryptJson(preserved.secretConfig!)).toMatchObject({
+      infisicalCredential: { sequence: 1 },
+    });
+  });
+
+  it("rejects lower-sequence replay and applies a higher tombstone only to bridge-owned fields", async () => {
+    configureStPrimary();
+    installInfisicalMock({ "st-primary": bridgeSecrets(2) });
+    await syncProviderCredentialsFromInfisical();
+    const managed = await prisma.provider.findFirstOrThrow({
+      where: { name: "google-ai", label: "SocraticTrade.com · Primary account" },
+    });
+    await prisma.provider.update({
+      where: { id: managed.id },
+      data: {
+        config: { projectId: "billing-project" },
+        refreshIntervalMin: 47,
+      },
+    });
+
+    installInfisicalMock({
+      "st-primary": {
+        BRIDGE_MANIFEST_V1: stPrimaryManifest(
+          1,
+          { status: "revoked" },
+          { status: "active", value: deepseekKey }
+        ),
+        DEEPSEEK_API_KEY: deepseekKey,
+      },
+    });
+    const replay = await syncProviderCredentialsFromInfisical();
+    expect(replay.sources.find((source) => source.source === "st-primary"))
+      .toMatchObject({ status: "error", errorCode: "bridge_sequence_replay" });
+    expect(decrypt((await prisma.provider.findUniqueOrThrow({ where: { id: managed.id } })).apiKey!))
+      .toBe(geminiKey);
+
+    installInfisicalMock({
+      "st-primary": {
+        BRIDGE_MANIFEST_V1: stPrimaryManifest(
+          3,
+          { status: "revoked" },
+          { status: "active", value: deepseekKey }
+        ),
+        DEEPSEEK_API_KEY: deepseekKey,
+      },
+    });
+    const revoked = await syncProviderCredentialsFromInfisical();
+    expect(revoked.sources.find((source) => source.source === "st-primary"))
+      .toMatchObject({ status: "synced" });
+    const stored = await prisma.provider.findUniqueOrThrow({ where: { id: managed.id } });
+    expect(stored.apiKey).toBeNull();
+    expect(stored.isActive).toBe(false);
+    expect(stored.config).toEqual({ projectId: "billing-project" });
+    expect(stored.refreshIntervalMin).toBe(47);
+    expect(decryptJson(stored.secretConfig!)).toMatchObject({
+      infisicalCredential: {
+        sequence: 3,
+        status: "revoked",
+        fingerprint: null,
+      },
+    });
+  });
+
+  it("never lets ordinary ST root sync claim or overwrite primary bridge rows", async () => {
+    configureStPrimary();
+    installInfisicalMock({ "st-primary": bridgeSecrets(1) });
+    await syncProviderCredentialsFromInfisical();
+    const primary = await prisma.provider.findFirstOrThrow({
+      where: { name: "deepseek", label: "SocraticTrade.com · Primary account" },
+    });
+
+    delete process.env.INFISICAL_ST_PRIMARY_SYNC_ENABLED;
+    delete process.env.INFISICAL_ST_PRIMARY_CLIENT_ID;
+    delete process.env.INFISICAL_ST_PRIMARY_CLIENT_SECRET;
+    configureSources("st");
+    const rootSecrets = valuesFor("st");
+    rootSecrets.DEEPSEEK_API_KEY = "different-root-deepseek-key";
+    installInfisicalMock({ st: rootSecrets });
+    await syncProviderCredentialsFromInfisical();
+
+    const preserved = await prisma.provider.findUniqueOrThrow({
+      where: { id: primary.id },
+    });
+    expect(decrypt(preserved.apiKey!)).toBe(deepseekKey);
+    expect(preserved.label).toBe("SocraticTrade.com · Primary account");
+    expect(decryptJson(preserved.secretConfig!)).toMatchObject({
+      infisicalCredential: { scope: "st-primary", sequence: 1 },
+    });
+    const root = await prisma.provider.findFirstOrThrow({
+      where: { name: "deepseek", label: "SocraticTrade.com", id: { not: primary.id } },
+    });
+    expect(decrypt(root.apiKey!)).toBe("different-root-deepseek-key");
+  });
+
+  it("persists revoked-first tombstones and blocks older resurrection", async () => {
+    configureStPrimary();
+    installInfisicalMock({
+      "st-primary": {
+        BRIDGE_MANIFEST_V1: stPrimaryManifest(
+          10,
+          { status: "revoked" },
+          { status: "revoked" }
+        ),
+      },
+    });
+    await syncProviderCredentialsFromInfisical();
+    const tombstones = await prisma.provider.findMany({
+      where: { label: "SocraticTrade.com · Primary account" },
+    });
+    expect(tombstones).toHaveLength(2);
+    expect(tombstones.every((provider) => !provider.isActive && provider.apiKey == null))
+      .toBe(true);
+
+    installInfisicalMock({ "st-primary": bridgeSecrets(9) });
+    const replay = await syncProviderCredentialsFromInfisical();
+    expect(replay.sources.find((source) => source.source === "st-primary"))
+      .toMatchObject({ status: "error", errorCode: "bridge_sequence_replay" });
+    const preserved = await prisma.provider.findMany({
+      where: { label: "SocraticTrade.com · Primary account" },
+    });
+    expect(preserved.every((provider) => !provider.isActive && provider.apiKey == null))
+      .toBe(true);
+  });
+
+  it("rejects duplicate manifest members and partial reader credentials without writes", async () => {
+    configureStPrimary();
+    const duplicateSequence = stPrimaryManifest(
+      1,
+      { status: "active", value: geminiKey },
+      { status: "active", value: deepseekKey }
+    ).replace('"sequence":1', '"sequence":1,"sequence":2');
+    installInfisicalMock({
+      "st-primary": {
+        BRIDGE_MANIFEST_V1: duplicateSequence,
+        GEMINI_API_KEY: geminiKey,
+        DEEPSEEK_API_KEY: deepseekKey,
+      },
+    });
+    const duplicate = await syncProviderCredentialsFromInfisical();
+    expect(duplicate.sources.find((source) => source.source === "st-primary"))
+      .toMatchObject({
+        status: "error",
+        errorCode: "bridge_manifest_duplicate_member",
+      });
+    expect(await prisma.provider.count()).toBe(0);
+
+    clearSyncEnvironment();
+    process.env.INFISICAL_PROVIDER_SYNC_ENABLED = "false";
+    process.env.INFISICAL_ST_PRIMARY_SYNC_ENABLED = "true";
+    process.env.INFISICAL_ST_PRIMARY_CLIENT_ID = SOURCE_ENV["st-primary"].clientId;
+    const capture = installInfisicalMock({ "st-primary": bridgeSecrets() });
+    const incomplete = await syncProviderCredentialsFromInfisical();
+    expect(incomplete.sources.find((source) => source.source === "st-primary"))
+      .toMatchObject({ status: "incomplete", errorCode: "incomplete_credentials" });
+    expect(capture.loginSources).not.toContain("st-primary");
+    expect(await prisma.provider.count()).toBe(0);
+  });
+
+  it("rolls back the complete set when the second provider write fails", async () => {
+    configureStPrimary();
+    installInfisicalMock({ "st-primary": bridgeSecrets(1) });
+    await prisma.$executeRawUnsafe(`
+      CREATE TRIGGER fail_st_primary_deepseek
+      BEFORE INSERT ON Provider
+      WHEN NEW.name = 'deepseek'
+      BEGIN
+        SELECT RAISE(ABORT, 'forced second bridge write failure');
+      END
+    `);
+    try {
+      const result = await syncProviderCredentialsFromInfisical();
+      expect(result.sources.find((source) => source.source === "st-primary"))
+        .toMatchObject({ status: "error", errorCode: "bridge_sync_failed" });
+      expect(await prisma.provider.count()).toBe(0);
+    } finally {
+      await prisma.$executeRawUnsafe("DROP TRIGGER fail_st_primary_deepseek");
+    }
+  });
 });
 
 afterEach(() => {
