@@ -16,6 +16,7 @@ describe("provider identity", () => {
     ["Alpha-Vantage", "alphavantage"],
     ["Twelve Data", "twelvedata"],
     ["Voyage AI", "voyage"],
+    ["fintechstudios", "fintech-studios"],
   ])("maps %s to %s", (input, expected) => {
     expect(canonicalProviderKey(input)).toBe(expected);
   });

@@ -28,6 +28,7 @@ const PROVIDER_ALIASES: Readonly<Record<string, string>> = {
   deepseek: "deepseek",
   financialmodelingprep: "fmp",
   financialmodelingpreparation: "fmp",
+  fintechstudios: "fintech-studios",
   fmp: "fmp",
   gemini: "google-ai",
   geminiapi: "google-ai",
