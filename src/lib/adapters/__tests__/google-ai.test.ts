@@ -1,5 +1,6 @@
 import { generateKeyPairSync } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { geminiMonitoringConfigFingerprint } from "../../gemini-key-status";
 import { fetchUsage } from "../google-ai";
 
 function jsonResponse(body: unknown, status = 200, headers: Record<string, string> = {}): Response {
@@ -351,11 +352,12 @@ describe("google-ai billing adapter", () => {
   it("adds project request/quota monitoring without changing BigQuery cash cost", async () => {
     mockGoogle({ monitoringRequestCount: 14 });
 
-    const result = await fetchUsage("gemini-key", {
+    const monitoringConfig = {
       billingDataset: "billing-data-project.billing_export",
       serviceAccountJson: serviceAccountJson(),
       googleProjectId: "gemini-prod",
-    });
+    };
+    const result = await fetchUsage("gemini-key", monitoringConfig);
 
     expect(result.totalCost).toBe(8.25);
     expect(result.totalRequests).toBe(14);
@@ -375,6 +377,8 @@ describe("google-ai billing adapter", () => {
         configured: true,
         status: "ready",
         projectId: "gemini-prod",
+        configFingerprint:
+          geminiMonitoringConfigFingerprint(monitoringConfig),
         requests: { status: "ready", total: 14 },
       },
       capabilities: { billingCost: true, monitoringUsage: true },
@@ -385,11 +389,12 @@ describe("google-ai billing adapter", () => {
   it("preserves exact cash cost when Monitoring permissions are denied", async () => {
     mockGoogle({ monitoringStatus: 403 });
 
-    const result = await fetchUsage("gemini-key", {
+    const monitoringConfig = {
       billingDataset: "billing-data-project.billing_export",
       serviceAccountJson: serviceAccountJson(),
       googleProjectId: "gemini-prod",
-    });
+    };
+    const result = await fetchUsage("gemini-key", monitoringConfig);
 
     expect(result.totalCost).toBe(8.25);
     expect(result.totalRequests).toBeNull();
@@ -405,6 +410,8 @@ describe("google-ai billing adapter", () => {
       monitoring: {
         configured: true,
         status: "permission_denied",
+        configFingerprint:
+          geminiMonitoringConfigFingerprint(monitoringConfig),
         requests: { status: "error", httpStatus: 403 },
       },
       capabilities: { billingCost: true, monitoringUsage: false },

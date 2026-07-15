@@ -637,6 +637,133 @@ describe("Google Cloud Monitoring Gemini enrichment", () => {
     expect(result.partialError).toBeUndefined();
   });
 
+  it("keeps valid aggregate requests and sibling limits when a native GAUGE value is unsafe", async () => {
+    stubMonitoring({
+      descriptors: [descriptor(TOKEN_LIMIT, "GAUGE")],
+      timeSeriesResponder: (metric) => {
+        if (metric === REQUEST_COUNT) {
+          return jsonResponse({
+            timeSeries: [
+              series({
+                metricType: REQUEST_COUNT,
+                resourceType: "consumed_api",
+                points: [point(11)],
+              }),
+            ],
+          });
+        }
+        return jsonResponse({
+          timeSeries: [
+            series({
+              metricType: TOKEN_LIMIT,
+              resourceType: LOCATION_RESOURCE,
+              metricLabels: { model: "gemini-unsafe" },
+              points: [point(Number.MAX_SAFE_INTEGER + 1)],
+            }),
+            series({
+              metricType: TOKEN_LIMIT,
+              resourceType: LOCATION_RESOURCE,
+              metricLabels: { model: "gemini-valid" },
+              points: [point(100)],
+            }),
+          ],
+        });
+      },
+    });
+
+    const result = await fetchGoogleCloudMonitoring(config());
+
+    expect(result).toMatchObject({
+      status: "partial",
+      totalRequests: 11,
+      quotaLimits: {
+        status: "partial",
+        queryFailureCount: 1,
+        availableCount: 1,
+        errorCode: "INVALID_RESPONSE",
+        items: [expect.objectContaining({ model: "gemini-valid", value: 100 })],
+      },
+      partialError: { code: "INVALID_RESPONSE" },
+    });
+    expect(
+      result.externalBillingSyncs.find(
+        (sync) => sync.source === "google-cloud-monitoring-requests"
+      )
+    ).toMatchObject({
+      authoritative: true,
+      records: [expect.objectContaining({ usageQuantity: 11 })],
+    });
+  });
+
+  it("drops an overflowing grouped DELTA without losing valid requests or sibling usage", async () => {
+    stubMonitoring({
+      descriptors: [descriptor(TOKEN_USAGE, "DELTA")],
+      timeSeriesResponder: (metric) => {
+        if (metric === REQUEST_COUNT) {
+          return jsonResponse({
+            timeSeries: [
+              series({
+                metricType: REQUEST_COUNT,
+                resourceType: "consumed_api",
+                points: [point(9)],
+              }),
+            ],
+          });
+        }
+        return jsonResponse({
+          timeSeries: [
+            series({
+              metricType: TOKEN_USAGE,
+              resourceType: LOCATION_RESOURCE,
+              metricLabels: { model: "gemini-overflow" },
+              points: [point(Number.MAX_SAFE_INTEGER)],
+            }),
+            series({
+              metricType: TOKEN_USAGE,
+              resourceType: LOCATION_RESOURCE,
+              metricLabels: { model: "gemini-overflow" },
+              points: [point(1)],
+            }),
+            series({
+              metricType: TOKEN_USAGE,
+              resourceType: LOCATION_RESOURCE,
+              metricLabels: { model: "gemini-valid" },
+              points: [point(5)],
+            }),
+          ],
+        });
+      },
+    });
+
+    const result = await fetchGoogleCloudMonitoring(config());
+
+    expect(result).toMatchObject({
+      status: "partial",
+      totalRequests: 9,
+      quotaUsage: {
+        status: "partial",
+        queryFailureCount: 1,
+        availableCount: 1,
+        errorCode: "INVALID_RESPONSE",
+        items: [expect.objectContaining({ model: "gemini-valid", value: 5 })],
+      },
+      partialError: { code: "INVALID_RESPONSE" },
+    });
+    expect(result.quotaUsage.items).not.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ model: "gemini-overflow" }),
+      ])
+    );
+    expect(
+      result.externalBillingSyncs.find(
+        (sync) => sync.source === "google-cloud-monitoring-requests"
+      )
+    ).toMatchObject({
+      authoritative: true,
+      records: [expect.objectContaining({ usageQuantity: 9 })],
+    });
+  });
+
   it("keeps valid aggregate requests when a native label is non-string", async () => {
     stubMonitoring({
       descriptors: [descriptor(TOKEN_USAGE, "DELTA")],

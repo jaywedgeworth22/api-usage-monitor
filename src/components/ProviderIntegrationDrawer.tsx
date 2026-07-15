@@ -41,7 +41,7 @@ export interface ProviderIntegrationInstanceState {
     checkedAt: string | null;
   } | null;
   geminiMonitoringStatus?: {
-    state: "ready" | "empty" | "partial" | "permission_denied" | "error" | "project_required" | "credential_required" | "unchecked" | "not_configured";
+    state: "ready" | "empty" | "partial" | "permission_denied" | "error" | "configuration_changed" | "project_required" | "credential_required" | "unchecked" | "not_configured";
     projectId: string | null;
     errorCode: string | null;
     httpStatus: number | null;
@@ -200,6 +200,8 @@ export default function ProviderIntegrationDrawer({
                     ? ""
                     : ` · HTTP ${geminiMonitoringStatus.httpStatus}`
                 }`
+              : geminiMonitoringStatus.state === "configuration_changed"
+                ? "Configuration changed · verification required"
               : geminiMonitoringStatus.state === "project_required"
                 ? "Exact Google Cloud project required"
                 : geminiMonitoringStatus.state === "credential_required"

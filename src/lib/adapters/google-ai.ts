@@ -17,6 +17,7 @@ import {
 import {
   geminiApiKeyFingerprint,
   geminiBillingConfigFingerprint,
+  geminiMonitoringConfigFingerprint,
 } from "@/lib/gemini-key-status";
 
 type KeyValidationOutcome =
@@ -110,6 +111,9 @@ export async function fetchUsage(
   const canFetchBilling = billingConfigured && secretConfigReadable;
   const billingConfigFingerprint = canFetchBilling
     ? geminiBillingConfigFingerprint(config)
+    : null;
+  const monitoringConfigFingerprint = canFetchMonitoring
+    ? geminiMonitoringConfigFingerprint(config)
     : null;
   const unreadableKeyError =
     apiKeyConfigured && !canValidateKey
@@ -308,6 +312,7 @@ export async function fetchUsage(
         ? {
             configured: true,
             status: monitoring.status,
+            configFingerprint: monitoringConfigFingerprint,
             projectId: monitoring.projectId,
             windowStart: monitoring.windowStart,
             windowEnd: monitoring.windowEnd,
@@ -359,6 +364,7 @@ export async function fetchUsage(
           ? {
               configured: true,
               status: "error",
+              configFingerprint: monitoringConfigFingerprint,
               projectId: monitoringProjectConfigured
                 ? String(config.googleProjectId).trim()
                 : null,

@@ -12,6 +12,14 @@ the API-key control-plane check and the Cloud Billing BigQuery export:
 - The standard BigQuery export remains the only direct cash-cost source.
 - A Monitoring failure cannot replace, clear, or fabricate BigQuery cash cost.
 
+Each successful or failed Monitoring check is bound server-side to a SHA-256
+fingerprint of the exact project ID and service-account JSON used for that
+check. The fingerprint stays in encrypted/internal snapshot data and is never
+returned by provider APIs or UI. Rotating either input makes the prior result
+`configuration_changed` with no check timestamp until the new identity is
+actually verified; legacy snapshots without a fingerprint are conservatively
+`unchecked`.
+
 ## Required Google access
 
 Grant the configured service account `roles/monitoring.viewer` on the exact
@@ -43,6 +51,11 @@ metadata. Descriptor discovery and per-metric queries are bounded, and a
 failed metric cannot clear successful siblings. The documented legacy-named
 `generate_requests_per_model` quota is explicitly classified as paid tier even
 though its metric path omits `paid_tier`.
+
+Unsafe GAUGE values and overflowing DELTA groups are isolated to the affected
+native quota dimension. The incomplete group is discarded (rather than
+under-reported), the channel becomes partial with an `INVALID_RESPONSE`, and
+valid aggregate requests plus valid sibling quota dimensions remain available.
 
 `serviceruntime.googleapis.com/api/request_count` remains only as a clearly
 labelled aggregate request fallback. It is additionally restricted to
@@ -86,5 +99,7 @@ cost rollups.
 
 Focused adapter and UI tests cover OAuth scope, exact project/service filters,
 request/token parsing, empty results, permission denial, partial-query survival,
-bounded pagination, cash-cost isolation, and token quota labels. Run the full
-repository gate with `npm run verify` before landing.
+credential/project rotation, server-only fingerprint redaction, unsafe GAUGE
+isolation, grouped DELTA overflow isolation, bounded pagination, cash-cost
+isolation, and token quota labels. Run the full repository gate with
+`npm run verify` before landing.

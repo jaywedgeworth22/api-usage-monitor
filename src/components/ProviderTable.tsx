@@ -194,6 +194,8 @@ function geminiMonitoringStatusPresentation(provider: Provider): {
       return { label: "Usage permission denied", className: "text-red-700 dark:text-red-300" };
     case "error":
       return { label: "Usage failed", className: "text-red-700 dark:text-red-300" };
+    case "configuration_changed":
+      return { label: "Usage configuration changed", className: "text-amber-700 dark:text-amber-300" };
     case "project_required":
       return { label: "Usage project required", className: "text-red-700 dark:text-red-300" };
     case "credential_required":

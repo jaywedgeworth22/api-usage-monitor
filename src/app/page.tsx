@@ -38,7 +38,7 @@ interface Provider {
     checkedAt: string | null;
   } | null;
   geminiMonitoringStatus?: {
-    state: "ready" | "empty" | "partial" | "permission_denied" | "error" | "project_required" | "credential_required" | "unchecked" | "not_configured";
+    state: "ready" | "empty" | "partial" | "permission_denied" | "error" | "configuration_changed" | "project_required" | "credential_required" | "unchecked" | "not_configured";
     projectId: string | null;
     errorCode: string | null;
     httpStatus: number | null;

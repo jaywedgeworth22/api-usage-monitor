@@ -103,6 +103,11 @@ interface NativeQueryOutcome {
   outcome: QueryOutcome;
 }
 
+interface NativeAggregationResult {
+  items: GoogleMonitoringQuotaItem[];
+  failures: Array<{ name: string; error: AdapterError }>;
+}
+
 interface DescriptorDiscoverySuccess {
   status: "ready";
   availableCount: number;
@@ -715,8 +720,10 @@ async function queryNativeDescriptors(
 function aggregateNativeQuotas(
   outcomes: NativeQueryOutcome[],
   kind: NativeQuotaKind
-): GoogleMonitoringQuotaItem[] {
+): NativeAggregationResult {
   const grouped = new Map<string, GoogleMonitoringQuotaItem>();
+  const failedKeys = new Set<string>();
+  const failures: Array<{ name: string; error: AdapterError }> = [];
   for (const { descriptor, outcome } of outcomes) {
     if (descriptor.kind !== kind || outcome.status === "error") continue;
     for (const series of outcome.series) {
@@ -733,63 +740,86 @@ function aggregateNativeQuotas(
         location,
         tier,
       ]);
-      const latest = [...series.points].sort((left, right) =>
-        right.endTime.localeCompare(left.endTime)
-      )[0];
-      const value =
-        descriptor.metricKind === "DELTA"
-          ? safeSum(
-              series.points.map((point) => point.value),
-              "native quota usage"
-            )
-          : latest.value;
-      if (value == null || !Number.isSafeInteger(value)) {
-        invalidResponse("Google Cloud Monitoring native quota value is invalid");
-      }
-      const reportThrough =
-        descriptor.metricKind === "DELTA"
-          ? latestTimestamp([series])!
-          : latest.endTime;
-      const existing = grouped.get(key);
-      if (!existing) {
-        grouped.set(key, {
-          metricType: descriptor.type,
-          quotaName: descriptor.quotaName,
-          limitName,
-          model,
-          tier,
-          location,
-          unit,
-          value,
-          reportThrough,
-        });
-      } else if (descriptor.metricKind === "DELTA") {
-        const combined = existing.value + value;
-        if (!Number.isSafeInteger(combined)) {
+      if (failedKeys.has(key)) continue;
+      try {
+        const latest = [...series.points].sort((left, right) =>
+          right.endTime.localeCompare(left.endTime)
+        )[0];
+        const value =
+          descriptor.metricKind === "DELTA"
+            ? safeSum(
+                series.points.map((point) => point.value),
+                "native quota usage"
+              )
+            : latest.value;
+        if (value == null || !Number.isSafeInteger(value)) {
           invalidResponse(
-            "Google Cloud Monitoring native quota total is invalid"
+            "Google Cloud Monitoring native quota value is invalid"
           );
         }
-        existing.value = combined;
-        if (reportThrough > existing.reportThrough) {
+        const reportThrough =
+          descriptor.metricKind === "DELTA"
+            ? latestTimestamp([series])!
+            : latest.endTime;
+        const existing = grouped.get(key);
+        if (!existing) {
+          grouped.set(key, {
+            metricType: descriptor.type,
+            quotaName: descriptor.quotaName,
+            limitName,
+            model,
+            tier,
+            location,
+            unit,
+            value,
+            reportThrough,
+          });
+        } else if (descriptor.metricKind === "DELTA") {
+          const combined = existing.value + value;
+          if (!Number.isSafeInteger(combined)) {
+            invalidResponse(
+              "Google Cloud Monitoring native quota total is invalid"
+            );
+          }
+          existing.value = combined;
+          if (reportThrough > existing.reportThrough) {
+            existing.reportThrough = reportThrough;
+          }
+        } else if (
+          reportThrough > existing.reportThrough ||
+          (reportThrough === existing.reportThrough && value > existing.value)
+        ) {
+          existing.value = value;
           existing.reportThrough = reportThrough;
         }
-      } else if (
-        reportThrough > existing.reportThrough ||
-        (reportThrough === existing.reportThrough && value > existing.value)
-      ) {
-        existing.value = value;
-        existing.reportThrough = reportThrough;
+      } catch (error) {
+        failedKeys.add(key);
+        // Never retain a partial group: doing so would silently under-report a
+        // quota after one of its component series failed validation.
+        grouped.delete(key);
+        failures.push({
+          name: `${descriptor.type}:${model}:${location}`,
+          error:
+            error instanceof AdapterError
+              ? error
+              : new AdapterError(
+                  "Google Cloud Monitoring native quota aggregation failed",
+                  { code: "INVALID_RESPONSE", cause: error }
+                ),
+        });
       }
     }
   }
-  return [...grouped.values()].sort(
-    (left, right) =>
-      left.quotaName.localeCompare(right.quotaName) ||
-      left.model.localeCompare(right.model) ||
-      left.tier.localeCompare(right.tier) ||
-      left.location.localeCompare(right.location)
-  );
+  return {
+    items: [...grouped.values()].sort(
+      (left, right) =>
+        left.quotaName.localeCompare(right.quotaName) ||
+        left.model.localeCompare(right.model) ||
+        left.tier.localeCompare(right.tier) ||
+        left.location.localeCompare(right.location)
+    ),
+    failures,
+  };
 }
 
 function requestRecord(
@@ -891,6 +921,7 @@ function quotaSummary(input: {
   outcomes: NativeQueryOutcome[];
   kind: NativeQuotaKind;
   items: GoogleMonitoringQuotaItem[];
+  aggregationFailures: Array<{ name: string; error: AdapterError }>;
 }): QuotaSummary {
   if (input.discovery.status === "error") {
     return {
@@ -910,10 +941,12 @@ function quotaSummary(input: {
   const descriptors = input.discovery.selected.filter(
     (descriptor) => descriptor.kind === input.kind
   );
-  const failures = input.outcomes.filter(
-    ({ descriptor, outcome }) =>
-      descriptor.kind === input.kind && outcome.status === "error"
+  const queryFailures = input.outcomes.flatMap(({ descriptor, outcome }) =>
+    descriptor.kind === input.kind && outcome.status === "error"
+      ? [{ name: descriptor.type, error: outcome.error }]
+      : []
   );
+  const failures = [...queryFailures, ...input.aggregationFailures];
   const emptyRecentGauges = input.outcomes.filter(
     ({ descriptor, outcome }) =>
       descriptor.kind === input.kind &&
@@ -940,14 +973,11 @@ function quotaSummary(input: {
     retainedCount: retained.length,
     truncated: input.discovery.truncated || itemTruncated,
     items: retained,
-    ...(failures[0]?.outcome.status === "error"
+    ...(failures[0]
       ? {
-          errorCode: failures[0].outcome.error.code,
-          httpStatus: failures[0].outcome.error.status,
-          retryable: failures.some(
-            ({ outcome }) =>
-              outcome.status === "error" && outcome.error.retryable
-          ),
+          errorCode: failures[0].error.code,
+          httpStatus: failures[0].error.status,
+          retryable: failures.some(({ error }) => error.retryable),
         }
       : {}),
   };
@@ -1026,19 +1056,21 @@ export async function fetchGoogleCloudMonitoring(
         );
   const requestReportThrough =
     requests.status === "error" ? null : latestTimestamp(requests.series);
-  const usageItems = aggregateNativeQuotas(nativeOutcomes, "usage");
-  const limitItems = aggregateNativeQuotas(nativeOutcomes, "limit");
+  const usageAggregation = aggregateNativeQuotas(nativeOutcomes, "usage");
+  const limitAggregation = aggregateNativeQuotas(nativeOutcomes, "limit");
   const usage = quotaSummary({
     discovery,
     outcomes: nativeOutcomes,
     kind: "usage",
-    items: usageItems,
+    items: usageAggregation.items,
+    aggregationFailures: usageAggregation.failures,
   });
   const limits = quotaSummary({
     discovery,
     outcomes: nativeOutcomes,
     kind: "limit",
-    items: limitItems,
+    items: limitAggregation.items,
+    aggregationFailures: limitAggregation.failures,
   });
   const failures: Array<{ name: string; error: AdapterError }> = [
     ...(requests.status === "error"
@@ -1052,6 +1084,8 @@ export async function fetchGoogleCloudMonitoring(
         ? [{ name: descriptor.type, error: outcome.error }]
         : []
     ),
+    ...usageAggregation.failures,
+    ...limitAggregation.failures,
   ];
   const successfulQueries =
     (requests.status === "error" ? 0 : 1) +

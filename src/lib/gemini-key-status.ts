@@ -38,6 +38,7 @@ export type GeminiMonitoringState =
   | "partial"
   | "permission_denied"
   | "error"
+  | "configuration_changed"
   | "project_required"
   | "credential_required"
   | "unchecked"
@@ -100,6 +101,20 @@ export function geminiBillingConfigFingerprint(
   ];
   return createHash("sha256")
     .update("api-usage-monitor:gemini-billing-config:v1\0", "utf8")
+    .update(JSON.stringify(identity), "utf8")
+    .digest("hex");
+}
+
+/** Server-only binding for one exact Cloud Monitoring identity. */
+export function geminiMonitoringConfigFingerprint(
+  config: Record<string, unknown>
+): string {
+  const identity = [
+    ["googleProjectId", cleanString(config.googleProjectId)],
+    ["serviceAccountJson", cleanString(config.serviceAccountJson)],
+  ];
+  return createHash("sha256")
+    .update("api-usage-monitor:gemini-monitoring-config:v1\0", "utf8")
     .update(JSON.stringify(identity), "utf8")
     .digest("hex");
 }
@@ -337,6 +352,33 @@ export function deriveGeminiMonitoringStatus(input: {
   if (!input.latestSnapshot || !monitoring) {
     return {
       state: "unchecked",
+      projectId: configuredProjectId || null,
+      errorCode: null,
+      httpStatus: null,
+      retryable: false,
+      checkedAt: null,
+    };
+  }
+  const observedFingerprint =
+    typeof monitoring.configFingerprint === "string"
+      ? monitoring.configFingerprint
+      : null;
+  const currentFingerprint = geminiMonitoringConfigFingerprint(
+    input.monitoringConfig
+  );
+  if (!observedFingerprint) {
+    return {
+      state: "unchecked",
+      projectId: configuredProjectId || null,
+      errorCode: null,
+      httpStatus: null,
+      retryable: false,
+      checkedAt: null,
+    };
+  }
+  if (!sameFingerprint(observedFingerprint, currentFingerprint)) {
+    return {
+      state: "configuration_changed",
       projectId: configuredProjectId || null,
       errorCode: null,
       httpStatus: null,
