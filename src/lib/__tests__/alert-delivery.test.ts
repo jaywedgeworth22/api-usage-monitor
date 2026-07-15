@@ -157,13 +157,19 @@ describe("alert delivery", () => {
 
     await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledOnce());
 
-    // While the HTTP send is in flight, no internal write admission should be
-    // held: the claim write that ran before the fetch call must have already
-    // released it, so an external writer can be admitted here.
-    const releaseHttpWriter = tryAcquireIngestAdmission();
-    expect(releaseHttpWriter).not.toBeNull();
-
+    // Guard every assertion below in try/finally: if any assertion throws,
+    // the finally block still resolves the mocked fetch, releases any
+    // externally held admission lease, and drains `delivery` so a failed
+    // assertion can't leave an in-flight promise pending for the rest of
+    // the vitest process.
+    let releaseHttpWriter: (() => void) | null = null;
     try {
+      // While the HTTP send is in flight, no internal write admission should be
+      // held: the claim write that ran before the fetch call must have already
+      // released it, so an external writer can be admitted here.
+      releaseHttpWriter = tryAcquireIngestAdmission();
+      expect(releaseHttpWriter).not.toBeNull();
+
       resolveFetch?.(new Response("ok", { status: 200 }));
       // Persisting the delivery outcome needs internal write admission, which
       // is queued FIFO behind the external lease held above, so the delivery
@@ -174,7 +180,12 @@ describe("alert delivery", () => {
       ]);
       expect(stateWhileQueued).toBe("queued");
     } finally {
+      // Always unblock the mocked fetch and release the lease, even if an
+      // assertion above threw, then wait for `delivery` to settle (ignoring
+      // its outcome here) so nothing is left in flight past this test.
+      resolveFetch?.(new Response("ok", { status: 200 }));
       releaseHttpWriter?.();
+      await delivery.catch(() => {});
     }
 
     await expect(delivery).resolves.toMatchObject({ sent: 1, errors: [] });
