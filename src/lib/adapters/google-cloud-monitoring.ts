@@ -210,13 +210,15 @@ function cleanLabels(value: unknown, field: string): Record<string, string> {
     if (!/^[a-zA-Z0-9_.-]{1,100}$/.test(key)) {
       invalidResponse(`Google Cloud Monitoring ${field} contain an invalid key`);
     }
-    const text = cleanString(raw);
-    if (text == null || text.length > 512) {
+    // Monitoring label values are strings, but optional metric dimensions can
+    // legitimately be the empty string. Preserve that distinction while
+    // keeping the response bounded and rejecting coercion of non-strings.
+    if (typeof raw !== "string" || raw.length > 512) {
       invalidResponse(
         `Google Cloud Monitoring ${field} contain an invalid value`
       );
     }
-    labels[key] = text;
+    labels[key] = raw;
   }
   return labels;
 }

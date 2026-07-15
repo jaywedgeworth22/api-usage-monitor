@@ -61,6 +61,14 @@ export interface Provider {
     retryable: boolean;
     checkedAt: string | null;
   } | null;
+  geminiMonitoringStatus?: {
+    state: "ready" | "empty" | "partial" | "permission_denied" | "error" | "project_required" | "credential_required" | "unchecked" | "not_configured";
+    projectId: string | null;
+    errorCode: string | null;
+    httpStatus: number | null;
+    retryable: boolean;
+    checkedAt: string | null;
+  } | null;
   plan: ProviderPlan | null;
   allocations: { projectId: string; percentage: number }[];
   externalBilling?: ExternalBillingRecord[];

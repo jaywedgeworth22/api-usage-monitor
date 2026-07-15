@@ -36,6 +36,14 @@ interface WorkspaceProvider {
     retryable: boolean;
     checkedAt: string | null;
   } | null;
+  geminiMonitoringStatus?: {
+    state: "ready" | "empty" | "partial" | "permission_denied" | "error" | "project_required" | "credential_required" | "unchecked" | "not_configured";
+    projectId: string | null;
+    errorCode: string | null;
+    httpStatus: number | null;
+    retryable: boolean;
+    checkedAt: string | null;
+  } | null;
   estimatedMonthlyCostUsd: number;
   projectedEomUsd: number;
   spentUsd?: number;
@@ -714,6 +722,7 @@ export default function DashboardProviderWorkspace({
                                   )}
                                   {provider.geminiKeyStatus && <span>{provider.geminiKeyStatus.state.replaceAll("_", " ")}</span>}
                                   {provider.geminiBillingStatus && <span>{provider.geminiBillingStatus.state.replaceAll("_", " ")}</span>}
+                                  {provider.geminiMonitoringStatus && <span>usage {provider.geminiMonitoringStatus.state.replaceAll("_", " ")}</span>}
                                 </span>
                               </span>
                               <span className="shrink-0 text-right">

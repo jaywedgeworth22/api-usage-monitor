@@ -161,6 +161,14 @@ describe("ProviderTable cost coverage", () => {
           retryable: false,
           checkedAt: "2026-07-14T23:00:00.000Z",
         },
+        geminiMonitoringStatus: {
+          state: "permission_denied",
+          projectId: "gemini-production",
+          errorCode: "HTTP_ERROR",
+          httpStatus: 403,
+          retryable: false,
+          checkedAt: "2026-07-14T23:00:00.000Z",
+        },
         snapshotCostFetchedAt: "2026-07-10T20:00:00.000Z",
       }),
     ]);
@@ -168,6 +176,7 @@ describe("ProviderTable cost coverage", () => {
     expect(rejectedHtml).toContain("Key rejected");
     expect(rejectedHtml).toContain("Verify &amp; fetch");
     expect(rejectedHtml).toContain("Billing pending");
+    expect(rejectedHtml).toContain("Usage permission denied");
     expect(rejectedHtml).toContain("Cost snapshot fetched");
     expect(rejectedHtml).toContain(">Active<");
   });

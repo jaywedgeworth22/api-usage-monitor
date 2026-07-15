@@ -179,6 +179,34 @@ function geminiBillingStatusPresentation(provider: Provider): {
   }
 }
 
+function geminiMonitoringStatusPresentation(provider: Provider): {
+  label: string;
+  className: string;
+} | null {
+  switch (provider.geminiMonitoringStatus?.state) {
+    case "ready":
+      return { label: "Usage ready", className: "text-emerald-700 dark:text-emerald-300" };
+    case "empty":
+      return { label: "Usage connected · empty", className: "text-gray-500 dark:text-gray-400" };
+    case "partial":
+      return { label: "Usage partial", className: "text-amber-700 dark:text-amber-300" };
+    case "permission_denied":
+      return { label: "Usage permission denied", className: "text-red-700 dark:text-red-300" };
+    case "error":
+      return { label: "Usage failed", className: "text-red-700 dark:text-red-300" };
+    case "project_required":
+      return { label: "Usage project required", className: "text-red-700 dark:text-red-300" };
+    case "credential_required":
+      return { label: "Usage credential required", className: "text-red-700 dark:text-red-300" };
+    case "unchecked":
+      return { label: "Usage unchecked", className: "text-amber-700 dark:text-amber-300" };
+    case "not_configured":
+      return { label: "Usage not configured", className: "text-gray-500 dark:text-gray-400" };
+    default:
+      return null;
+  }
+}
+
 function resolvedSpendCoverage(provider: Provider) {
   return (
     provider.spendCoverage ??
@@ -408,6 +436,8 @@ export default function ProviderTable({
                     const geminiStatus = geminiKeyStatusPresentation(provider);
                     const geminiBillingStatus =
                       geminiBillingStatusPresentation(provider);
+                    const geminiMonitoringStatus =
+                      geminiMonitoringStatusPresentation(provider);
 
                     return (
                       <tr
@@ -438,6 +468,7 @@ export default function ProviderTable({
                         externalBillingSources: [...new Set((provider.externalBilling ?? []).map((record) => record.source))].sort(),
                         geminiKeyStatus: provider.geminiKeyStatus,
                         geminiBillingStatus: provider.geminiBillingStatus,
+                        geminiMonitoringStatus: provider.geminiMonitoringStatus,
                       }}
                     />
                     <p className="text-xs text-gray-400 dark:text-gray-500">{provider.name}</p>
@@ -479,6 +510,11 @@ export default function ProviderTable({
                     {geminiBillingStatus && (
                       <span className={`text-[10px] font-medium ${geminiBillingStatus.className}`}>
                         {geminiBillingStatus.label}
+                      </span>
+                    )}
+                    {geminiMonitoringStatus && (
+                      <span className={`text-[10px] font-medium ${geminiMonitoringStatus.className}`}>
+                        {geminiMonitoringStatus.label}
                       </span>
                     )}
                   </div>

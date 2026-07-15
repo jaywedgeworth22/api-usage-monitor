@@ -188,6 +188,14 @@ describe("ProviderIntegrationDrawer", () => {
             retryable: false,
             checkedAt: "2026-07-14T23:00:00.000Z",
           },
+          geminiMonitoringStatus: {
+            state: "permission_denied",
+            projectId: "socratic-trade",
+            errorCode: "HTTP_ERROR",
+            httpStatus: 403,
+            retryable: false,
+            checkedAt: "2026-07-14T23:00:00.000Z",
+          },
         },
         onClose: vi.fn(),
       })
@@ -199,6 +207,10 @@ describe("ProviderIntegrationDrawer", () => {
     expect(html).toContain("Google Cloud Billing sync");
     expect(html).toContain("Pending · export has not published priced rows yet");
     expect(html).toContain("Pending is not $0");
+    expect(html).toContain("Google Cloud Monitoring sync");
+    expect(html).toContain("Permission denied · HTTP 403");
+    expect(html).toContain("Monitoring Viewer");
+    expect(html).toContain("Billing export access is separate");
     expect(html).toContain("google-cloud-billing-export");
   });
 

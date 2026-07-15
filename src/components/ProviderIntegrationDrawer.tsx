@@ -40,6 +40,14 @@ export interface ProviderIntegrationInstanceState {
     retryable: boolean;
     checkedAt: string | null;
   } | null;
+  geminiMonitoringStatus?: {
+    state: "ready" | "empty" | "partial" | "permission_denied" | "error" | "project_required" | "credential_required" | "unchecked" | "not_configured";
+    projectId: string | null;
+    errorCode: string | null;
+    httpStatus: number | null;
+    retryable: boolean;
+    checkedAt: string | null;
+  } | null;
 }
 
 const MODE_LABELS: Record<IntegrationMode, string> = {
@@ -122,6 +130,10 @@ export default function ProviderIntegrationDrawer({
     profile.name === "google-ai"
       ? instanceState?.geminiBillingStatus ?? null
       : null;
+  const geminiMonitoringStatus =
+    profile.name === "google-ai"
+      ? instanceState?.geminiMonitoringStatus ?? null
+      : null;
 
   const geminiKeyStatusText = geminiKeyStatus
     ? geminiKeyStatus.state === "valid"
@@ -168,6 +180,33 @@ export default function ProviderIntegrationDrawer({
           : geminiBillingStatus.state === "not_configured"
             ? "Not configured"
             : "Not checked for the current billing configuration"
+    : null;
+  const geminiMonitoringStatusText = geminiMonitoringStatus
+    ? geminiMonitoringStatus.state === "ready"
+      ? "Ready · project usage and quotas are current"
+      : geminiMonitoringStatus.state === "empty"
+        ? "Connected · no project metrics reported yet"
+        : geminiMonitoringStatus.state === "partial"
+          ? "Partial · some project metrics are unavailable"
+          : geminiMonitoringStatus.state === "permission_denied"
+            ? `Permission denied${
+                geminiMonitoringStatus.httpStatus == null
+                  ? ""
+                  : ` · HTTP ${geminiMonitoringStatus.httpStatus}`
+              }`
+            : geminiMonitoringStatus.state === "error"
+              ? `Failed${
+                  geminiMonitoringStatus.httpStatus == null
+                    ? ""
+                    : ` · HTTP ${geminiMonitoringStatus.httpStatus}`
+                }`
+              : geminiMonitoringStatus.state === "project_required"
+                ? "Exact Google Cloud project required"
+                : geminiMonitoringStatus.state === "credential_required"
+                  ? "Service-account credential required"
+                  : geminiMonitoringStatus.state === "not_configured"
+                    ? "Not configured"
+                    : "Not checked for the current configuration"
     : null;
 
   useEffect(() => {
@@ -375,6 +414,36 @@ export default function ProviderIntegrationDrawer({
                     {geminiBillingStatus.state === "pending" && (
                       <dd className="mt-1 text-xs leading-5 text-amber-700">
                         Pending is not $0. Google may take days to backfill a newly enabled Standard Cloud Billing export.
+                      </dd>
+                    )}
+                  </div>
+                )}
+                {geminiMonitoringStatus && (
+                  <div className="rounded-lg bg-gray-50 p-3">
+                    <dt className="text-xs font-medium text-gray-500">
+                      Google Cloud Monitoring sync
+                    </dt>
+                    <dd className="mt-1 font-medium text-gray-900">
+                      {geminiMonitoringStatusText}
+                    </dd>
+                    {geminiMonitoringStatus.projectId && (
+                      <dd className="mt-1 text-xs text-gray-500">
+                        Project {geminiMonitoringStatus.projectId}
+                      </dd>
+                    )}
+                    {geminiMonitoringStatus.checkedAt && (
+                      <dd className="mt-1 text-xs text-gray-500">
+                        Checked {new Date(geminiMonitoringStatus.checkedAt).toLocaleString()}
+                      </dd>
+                    )}
+                    {geminiMonitoringStatus.state === "permission_denied" && (
+                      <dd className="mt-1 text-xs leading-5 text-red-700">
+                        Grant the service account Monitoring Viewer on this exact project and ensure the Cloud Monitoring API is enabled. Billing export access is separate.
+                      </dd>
+                    )}
+                    {geminiMonitoringStatus.state === "partial" && (
+                      <dd className="mt-1 text-xs leading-5 text-amber-700">
+                        Successful request or quota metrics remain visible; failed metric families will retry on the next fetch.
                       </dd>
                     )}
                   </div>

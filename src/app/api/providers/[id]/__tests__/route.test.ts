@@ -247,6 +247,18 @@ describe("GET /api/providers/:id Gemini key status", () => {
                   geminiBillingConfigFingerprint(billingConfig),
                 privateBillingPayload: "must-not-be-returned",
               },
+              monitoring: {
+                configured: true,
+                status: "permission_denied",
+                projectId: "gemini-production",
+                requests: {
+                  status: "error",
+                  errorCode: "HTTP_ERROR",
+                  httpStatus: 403,
+                  retryable: false,
+                  upstreamBody: "must-not-be-returned",
+                },
+              },
             },
           },
         },
@@ -306,6 +318,14 @@ describe("GET /api/providers/:id Gemini key status", () => {
       state: "pending",
       errorCode: null,
       httpStatus: null,
+      retryable: false,
+      checkedAt: "2026-07-14T23:00:00.000Z",
+    });
+    expect(body.geminiMonitoringStatus).toEqual({
+      state: "permission_denied",
+      projectId: "gemini-production",
+      errorCode: "HTTP_ERROR",
+      httpStatus: 403,
       retryable: false,
       checkedAt: "2026-07-14T23:00:00.000Z",
     });

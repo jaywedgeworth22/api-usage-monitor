@@ -604,6 +604,89 @@ describe("Google Cloud Monitoring Gemini enrichment", () => {
     });
   });
 
+  it("accepts bounded empty metric-label dimensions emitted by native quota series", async () => {
+    stubMonitoring({
+      descriptors: [descriptor(TOKEN_USAGE, "DELTA")],
+      timeSeriesResponder: (metric) =>
+        metric === TOKEN_USAGE
+          ? jsonResponse({
+              timeSeries: [
+                series({
+                  metricType: TOKEN_USAGE,
+                  resourceType: LOCATION_RESOURCE,
+                  metricLabels: { limit_name: "", model: "" },
+                  resourceLabels: { location: "" },
+                  points: [point(125)],
+                }),
+              ],
+            })
+          : jsonResponse({ timeSeries: [] }),
+    });
+
+    const result = await fetchGoogleCloudMonitoring(config());
+
+    expect(result.status).toBe("ready");
+    expect(result.quotaUsage.items).toEqual([
+      expect.objectContaining({
+        model: "all models",
+        limitName: null,
+        location: "global",
+        value: 125,
+      }),
+    ]);
+    expect(result.partialError).toBeUndefined();
+  });
+
+  it("keeps valid aggregate requests when a native label is non-string", async () => {
+    stubMonitoring({
+      descriptors: [descriptor(TOKEN_USAGE, "DELTA")],
+      timeSeriesResponder: (metric) => {
+        if (metric === REQUEST_COUNT) {
+          return jsonResponse({
+            timeSeries: [
+              series({
+                metricType: REQUEST_COUNT,
+                resourceType: "consumed_api",
+                points: [point(7)],
+              }),
+            ],
+          });
+        }
+        return jsonResponse({
+          timeSeries: [
+            series({
+              metricType: TOKEN_USAGE,
+              resourceType: LOCATION_RESOURCE,
+              metricLabels: { model: 42 as unknown as string },
+              points: [point(125)],
+            }),
+          ],
+        });
+      },
+    });
+
+    const result = await fetchGoogleCloudMonitoring(config());
+
+    expect(result).toMatchObject({
+      status: "partial",
+      totalRequests: 7,
+      quotaUsage: {
+        status: "partial",
+        queryFailureCount: 1,
+        errorCode: "INVALID_RESPONSE",
+      },
+      partialError: { code: "INVALID_RESPONSE" },
+    });
+    expect(
+      result.externalBillingSyncs.find(
+        (sync) => sync.source === "google-cloud-monitoring-requests"
+      )
+    ).toMatchObject({
+      authoritative: true,
+      records: [expect.objectContaining({ usageQuantity: 7 })],
+    });
+  });
+
   it("bounds dynamic native queries and marks a truncated catalog non-authoritative", async () => {
     const descriptors = Array.from({ length: 60 }, (_, index) =>
       descriptor(

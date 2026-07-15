@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   deriveGeminiBillingStatus,
   deriveGeminiKeyStatus,
+  deriveGeminiMonitoringStatus,
   geminiApiKeyFingerprint,
   geminiBillingConfigFingerprint,
 } from "@/lib/gemini-key-status";
@@ -224,6 +225,70 @@ describe("deriveGeminiBillingStatus", () => {
     ).toMatchObject({
       state: "error",
       errorCode: "CONFIGURATION_UNREADABLE",
+    });
+  });
+});
+
+describe("deriveGeminiMonitoringStatus", () => {
+  const monitoringConfig = {
+    googleProjectId: "gemini-production",
+    serviceAccountJson: "test-service-account-json",
+  };
+
+  it("surfaces a sanitized Monitoring permission failure separately from billing", () => {
+    const status = deriveGeminiMonitoringStatus({
+      providerName: "google-ai",
+      providerType: "builtin",
+      monitoringConfig,
+      latestSnapshot: {
+        fetchedAt: new Date("2026-07-15T12:00:00.000Z"),
+        rawData: {
+          monitoring: {
+            status: "permission_denied",
+            projectId: "gemini-production",
+            requests: {
+              status: "error",
+              errorCode: "HTTP_ERROR",
+              httpStatus: 403,
+              retryable: false,
+              upstreamBody: "must-not-be-returned",
+            },
+          },
+        },
+      },
+    });
+
+    expect(status).toEqual({
+      state: "permission_denied",
+      projectId: "gemini-production",
+      errorCode: "HTTP_ERROR",
+      httpStatus: 403,
+      retryable: false,
+      checkedAt: "2026-07-15T12:00:00.000Z",
+    });
+    expect(JSON.stringify(status)).not.toContain("upstreamBody");
+  });
+
+  it("does not present a prior project's Monitoring result as current", () => {
+    expect(
+      deriveGeminiMonitoringStatus({
+        providerName: "google-ai",
+        providerType: "builtin",
+        monitoringConfig,
+        latestSnapshot: {
+          fetchedAt: new Date("2026-07-15T12:00:00.000Z"),
+          rawData: {
+            monitoring: { status: "ready", projectId: "another-project" },
+          },
+        },
+      })
+    ).toEqual({
+      state: "unchecked",
+      projectId: "gemini-production",
+      errorCode: null,
+      httpStatus: null,
+      retryable: false,
+      checkedAt: null,
     });
   });
 });

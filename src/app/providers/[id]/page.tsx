@@ -32,6 +32,14 @@ interface Provider {
     retryable: boolean;
     checkedAt: string | null;
   } | null;
+  geminiMonitoringStatus?: {
+    state: "ready" | "empty" | "partial" | "permission_denied" | "error" | "project_required" | "credential_required" | "unchecked" | "not_configured";
+    projectId: string | null;
+    errorCode: string | null;
+    httpStatus: number | null;
+    retryable: boolean;
+    checkedAt: string | null;
+  } | null;
   secretConfigMeta?: { configured: boolean; fields: string[]; readable: boolean };
   refreshIntervalMin: number;
   isActive: boolean;
@@ -277,6 +285,7 @@ export default function ProviderDetailPage() {
               externalBillingSources: [...new Set((provider.externalBilling ?? []).map((record) => record.source))].sort(),
               geminiKeyStatus: provider.geminiKeyStatus,
               geminiBillingStatus: provider.geminiBillingStatus,
+              geminiMonitoringStatus: provider.geminiMonitoringStatus,
             }}
           />
         </div>

@@ -20,6 +20,7 @@ import {
 import {
   deriveGeminiBillingStatus,
   deriveGeminiKeyStatus,
+  deriveGeminiMonitoringStatus,
 } from "@/lib/gemini-key-status";
 import { projectGeminiExternalBillingForClient } from "@/lib/gemini-external-billing";
 
@@ -198,6 +199,12 @@ export async function GET() {
       apiKeyConfigured: apiKey != null,
       latestSnapshot: geminiStatusSnapshot,
     });
+    const geminiMonitoringStatus = deriveGeminiMonitoringStatus({
+      providerName: p.name,
+      providerType: p.type,
+      monitoringConfig: adapterConfig,
+      latestSnapshot: geminiStatusSnapshot,
+    });
     const externalBilling = projectGeminiExternalBillingForClient(
       rest.externalBilling,
       geminiBillingStatus,
@@ -236,6 +243,7 @@ export async function GET() {
       keyPreview: buildKeyPreview(decryptedKey),
       geminiKeyStatus,
       geminiBillingStatus,
+      geminiMonitoringStatus,
       anthropicAdminApiConfigured: hasStoredAnthropicAdminApiKey({
         name: p.name,
         apiKey,
