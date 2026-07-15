@@ -23,6 +23,7 @@ vi.mock("@/lib/prisma", () => ({
 import { POST } from "../route";
 import { tryAcquireIngestAdmission } from "@/lib/ingest-admission";
 import { signReceiptCashEvent } from "@/lib/receipt-cash";
+import { MAX_USAGE_TELEMETRY_BODY_BYTES } from "@/lib/usage-telemetry";
 
 const USAGE_TOKEN = "usage-test-token";
 const RECEIPT_TOKEN = "receipt-test-token-distinct";
@@ -284,5 +285,61 @@ describe("POST /api/ingest/usage admission", () => {
     );
     expect(response.status).toBe(400);
     expect(externalUsageMocks.persist).not.toHaveBeenCalled();
+  });
+});
+
+describe("POST /api/ingest/usage body limits", () => {
+  it("rejects an oversized declared Content-Length before JSON decoding", async () => {
+    ipCounter += 1;
+    const request = new NextRequest("https://usage.jays.services/api/ingest/usage", {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${USAGE_TOKEN}`,
+        "content-type": "application/json",
+        "content-length": String(MAX_USAGE_TELEMETRY_BODY_BYTES + 1),
+        "x-forwarded-for": `10.1.0.${ipCounter}`,
+      },
+      body: "{}",
+    });
+
+    const response = await POST(request);
+    expect(response.status).toBe(413);
+    await expect(response.json()).resolves.toMatchObject({
+      error: expect.stringContaining("exceeds"),
+    });
+    expect(externalUsageMocks.persist).not.toHaveBeenCalled();
+  });
+
+  it("rejects an oversized chunked stream before JSON decoding", async () => {
+    ipCounter += 1;
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new Uint8Array(MAX_USAGE_TELEMETRY_BODY_BYTES));
+        controller.enqueue(new Uint8Array([0x7b]));
+        controller.close();
+      },
+    });
+    const request = new NextRequest(
+      new Request("https://usage.jays.services/api/ingest/usage", {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${USAGE_TOKEN}`,
+          "content-type": "application/json",
+          "x-forwarded-for": `10.1.0.${ipCounter}`,
+        },
+        body: stream,
+        duplex: "half",
+      } as RequestInit & { duplex: "half" })
+    );
+
+    const response = await POST(request);
+    expect(response.status).toBe(413);
+    expect(externalUsageMocks.persist).not.toHaveBeenCalled();
+  });
+
+  it("preserves valid ingest behavior below the limit", async () => {
+    const response = await POST(ordinaryRequest());
+    expect(response.status).toBe(202);
+    expect(externalUsageMocks.persist).toHaveBeenCalledTimes(1);
   });
 });
