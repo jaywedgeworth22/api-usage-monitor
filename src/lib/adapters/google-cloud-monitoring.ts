@@ -32,6 +32,10 @@ const MAX_DESCRIPTOR_RESULTS =
   MAX_DESCRIPTOR_PAGES * DESCRIPTOR_PAGE_SIZE;
 const MAX_NATIVE_QUOTA_QUERIES = 40;
 const NATIVE_QUERY_CONCURRENCY = 10;
+// Native Gemini quota GAUGEs are sampled every 60 seconds and documented as
+// visible within 150 seconds. Fifteen minutes leaves a wide ingestion buffer
+// without requesting tens of thousands of raw MTD points per model/location.
+const GAUGE_RECENT_LOOKBACK_MS = 15 * 60 * 1_000;
 const MAX_RESPONSE_BYTES = 512 * 1024;
 const REQUEST_TIMEOUT_MS = 15_000;
 const MAX_RETAINED_QUOTAS = 100;
@@ -91,6 +95,7 @@ interface NativeMetricDescriptor {
   metricKind: MetricKind;
   kind: NativeQuotaKind;
   quotaName: string;
+  displayName: string | null;
 }
 
 interface NativeQueryOutcome {
@@ -130,6 +135,7 @@ interface QuotaSummary {
   status: QueryStatus;
   descriptorCount: number;
   queryFailureCount: number;
+  emptyRecentGaugeCount: number;
   availableCount: number;
   retainedCount: number;
   truncated: boolean;
@@ -428,6 +434,7 @@ function nativeDescriptor(value: unknown): NativeMetricDescriptor | null {
     metricKind,
     quotaName: match[1],
     kind: match[2] as NativeQuotaKind,
+    displayName: cleanString(record.displayName),
   };
 }
 
@@ -582,11 +589,21 @@ function displayQuotaName(value: string): string {
     .slice(0, 160);
 }
 
-function quotaTier(quotaName: string): string {
+function quotaTier(descriptor: NativeMetricDescriptor): string {
+  const quotaName = descriptor.quotaName;
+  // Google documents this legacy-looking name as "requests per model (paid
+  // tier)" even though the metric path itself omits paid_tier.
+  // https://cloud.google.com/monitoring/api/metrics_gcp_d_h
+  if (quotaName === "generate_requests_per_model") return "paid tier";
   const numbered = quotaName.match(/paid_tier_(\d+)/);
   if (numbered) return `paid tier ${numbered[1]}`;
   if (quotaName.includes("paid_tier")) return "paid tier";
   if (quotaName.includes("free_tier")) return "free tier";
+  const display = descriptor.displayName?.toLowerCase() ?? "";
+  const displayNumbered = display.match(/paid tier\s+(\d+)/);
+  if (displayNumbered) return `paid tier ${displayNumbered[1]}`;
+  if (display.includes("paid tier")) return "paid tier";
+  if (display.includes("free tier")) return "free tier";
   return "provider-defined tier";
 }
 
@@ -603,12 +620,21 @@ function querySpecForDescriptor(
   descriptor: NativeMetricDescriptor,
   window: { start: string; end: string }
 ): QuerySpec {
+  const descriptorWindow =
+    descriptor.metricKind === "GAUGE"
+      ? {
+          start: new Date(
+            Date.parse(window.end) - GAUGE_RECENT_LOOKBACK_MS
+          ).toISOString(),
+          end: window.end,
+        }
+      : window;
   return {
     name: `native:${descriptor.type}`,
     metricType: descriptor.type,
     metricKind: descriptor.metricKind,
     resourceType: GEMINI_LOCATION_RESOURCE,
-    window,
+    window: descriptorWindow,
     serviceFilter: false,
     ...(descriptor.metricKind === "DELTA"
       ? {
@@ -696,7 +722,7 @@ function aggregateNativeQuotas(
       const model = series.metricLabels.model || "all models";
       const limitName = series.metricLabels.limit_name || null;
       const location = series.resourceLabels.location || "global";
-      const tier = quotaTier(descriptor.quotaName);
+      const tier = quotaTier(descriptor);
       const unit = quotaUnit(descriptor.quotaName);
       const key = JSON.stringify([
         descriptor.type,
@@ -869,6 +895,7 @@ function quotaSummary(input: {
       status: "error",
       descriptorCount: 0,
       queryFailureCount: 0,
+      emptyRecentGaugeCount: 0,
       availableCount: 0,
       retainedCount: 0,
       truncated: false,
@@ -885,10 +912,19 @@ function quotaSummary(input: {
     ({ descriptor, outcome }) =>
       descriptor.kind === input.kind && outcome.status === "error"
   );
+  const emptyRecentGauges = input.outcomes.filter(
+    ({ descriptor, outcome }) =>
+      descriptor.kind === input.kind &&
+      descriptor.metricKind === "GAUGE" &&
+      outcome.status === "empty"
+  );
   const retained = input.items.slice(0, MAX_RETAINED_QUOTAS);
   const itemTruncated = retained.length !== input.items.length;
   const partial =
-    input.discovery.truncated || failures.length > 0 || itemTruncated;
+    input.discovery.truncated ||
+    failures.length > 0 ||
+    emptyRecentGauges.length > 0 ||
+    itemTruncated;
   return {
     status: partial
       ? "partial"
@@ -897,6 +933,7 @@ function quotaSummary(input: {
         : "empty",
     descriptorCount: descriptors.length,
     queryFailureCount: failures.length,
+    emptyRecentGaugeCount: emptyRecentGauges.length,
     availableCount: input.items.length,
     retainedCount: retained.length,
     truncated: input.discovery.truncated || itemTruncated,
@@ -1021,7 +1058,9 @@ export async function fetchGoogleCloudMonitoring(
     requestTotal != null || usage.items.length > 0 || limits.items.length > 0;
   const boundedPartial =
     discovery.status === "ready" &&
-    (discovery.truncated || usage.truncated || limits.truncated);
+    (discovery.truncated ||
+      usage.status === "partial" ||
+      limits.status === "partial");
   const permissionDenied =
     successfulQueries === 0 &&
     failures.length > 0 &&

@@ -34,9 +34,15 @@ selector. The primary quota path discovers active metric descriptors under:
 
 These current Gemini-native metrics use the
 `generativelanguage.googleapis.com/Location` monitored resource and preserve
-model, tier, and location. `DELTA` descriptors are summed month-to-date;
-`GAUGE` descriptors use the newest point. Descriptor discovery and per-metric
-queries are bounded, and a failed metric cannot clear successful siblings.
+model, tier, and location. `DELTA` descriptors are summed month-to-date.
+`GAUGE` descriptors query only the latest 15-minute window (well beyond the
+documented 60-second sample period plus 150-second visibility delay) and use
+the newest point, avoiding more than 5,000 raw points per dimension later in a
+month. An empty recent GAUGE window is partial/unknown and preserves prior
+metadata. Descriptor discovery and per-metric queries are bounded, and a
+failed metric cannot clear successful siblings. The documented legacy-named
+`generate_requests_per_model` quota is explicitly classified as paid tier even
+though its metric path omits `paid_tier`.
 
 `serviceruntime.googleapis.com/api/request_count` remains only as a clearly
 labelled aggregate request fallback. It is additionally restricted to

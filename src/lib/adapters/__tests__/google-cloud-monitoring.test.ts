@@ -218,6 +218,9 @@ describe("Google Cloud Monitoring Gemini enrichment", () => {
           });
         }
         if (metric === TOKEN_USAGE) {
+          expect(url.searchParams.get("interval.startTime")).toBe(
+            "2026-07-01T00:00:00.000Z"
+          );
           expect(url.searchParams.get("aggregation.perSeriesAligner")).toBe(
             "ALIGN_SUM"
           );
@@ -248,6 +251,9 @@ describe("Google Cloud Monitoring Gemini enrichment", () => {
         }
         if (metric === TOKEN_LIMIT) {
           expect(url.searchParams.get("aggregation.perSeriesAligner")).toBeNull();
+          expect(url.searchParams.get("interval.startTime")).toBe(
+            "2026-07-13T20:15:00.000Z"
+          );
           return jsonResponse({
             timeSeries: [
               series({
@@ -261,6 +267,36 @@ describe("Google Cloud Monitoring Gemini enrichment", () => {
                   point(2_000_000),
                   point(1_000_000, "2026-07-12T20:00:00Z"),
                 ],
+              }),
+            ],
+          });
+        }
+        if (metric === REQUEST_USAGE) {
+          return jsonResponse({
+            timeSeries: [
+              series({
+                metricType: REQUEST_USAGE,
+                resourceType: LOCATION_RESOURCE,
+                metricLabels: {
+                  limit_name: "RequestsPerMinute",
+                  model: "gemini-2.5-flash",
+                },
+                points: [point(3)],
+              }),
+            ],
+          });
+        }
+        if (metric === REQUEST_LIMIT) {
+          return jsonResponse({
+            timeSeries: [
+              series({
+                metricType: REQUEST_LIMIT,
+                resourceType: LOCATION_RESOURCE,
+                metricLabels: {
+                  limit_name: "RequestsPerMinute",
+                  model: "gemini-2.5-flash",
+                },
+                points: [point(60)],
               }),
             ],
           });
@@ -288,13 +324,13 @@ describe("Google Cloud Monitoring Gemini enrichment", () => {
       },
       quotaUsage: {
         status: "ready",
-        availableCount: 2,
-        retainedCount: 2,
+        availableCount: 3,
+        retainedCount: 3,
       },
       quotaLimits: {
         status: "ready",
-        availableCount: 1,
-        retainedCount: 1,
+        availableCount: 2,
+        retainedCount: 2,
       },
     });
     expect(result.quotaUsage.items).toEqual(
@@ -322,6 +358,17 @@ describe("Google Cloud Monitoring Gemini enrichment", () => {
       value: 2_000_000,
       reportThrough: "2026-07-13T20:00:00.000Z",
     });
+    expect(result.quotaUsage.items).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          metricType: REQUEST_USAGE,
+          model: "gemini-2.5-flash",
+          tier: "paid tier",
+          unit: "requests",
+          value: 3,
+        }),
+      ])
+    );
     expect(result.externalBillingSyncs.map((sync) => sync.source)).toEqual([
       "google-cloud-monitoring-requests",
       "google-cloud-monitoring-native-quota-usage",
@@ -438,6 +485,7 @@ describe("Google Cloud Monitoring Gemini enrichment", () => {
     expect(result.quotaUsage.items[0]).toMatchObject({
       metricType: REQUEST_USAGE,
       model: "gemini-2.5-flash",
+      tier: "paid tier",
       value: 8,
     });
     expect(
@@ -468,6 +516,82 @@ describe("Google Cloud Monitoring Gemini enrichment", () => {
       code: "HTTP_ERROR",
       status: 403,
       retryable: false,
+    });
+  });
+
+  it("bounds a production-cardinality GAUGE to a recent window and keeps its newest value", async () => {
+    const hypotheticalMonthlyPoints = 13 * 24 * 60;
+    expect(hypotheticalMonthlyPoints).toBeGreaterThan(5_000);
+    const recentPoints = Array.from({ length: 16 }, (_, index) => {
+      const timestamp = new Date(
+        Date.parse("2026-07-13T20:15:00.000Z") + index * 60_000
+      ).toISOString();
+      return point(index === 15 ? 2_000_000 : 1_000_000 + index, timestamp);
+    });
+    stubMonitoring({
+      descriptors: [descriptor(TOKEN_LIMIT, "GAUGE")],
+      timeSeriesResponder: (metric, url) => {
+        if (metric !== TOKEN_LIMIT) return jsonResponse({ timeSeries: [] });
+        expect(url.searchParams.get("interval.startTime")).toBe(
+          "2026-07-13T20:15:00.000Z"
+        );
+        expect(url.searchParams.get("interval.endTime")).toBe(
+          "2026-07-13T20:30:00.000Z"
+        );
+        return jsonResponse({
+          timeSeries: [
+            series({
+              metricType: TOKEN_LIMIT,
+              resourceType: LOCATION_RESOURCE,
+              metricLabels: {
+                limit_name: "InputTokensPerMinute",
+                model: "gemini-2.5-pro",
+              },
+              points: recentPoints,
+            }),
+          ],
+        });
+      },
+    });
+
+    const result = await fetchGoogleCloudMonitoring(config());
+
+    expect(result.status).toBe("ready");
+    expect(result.quotaLimits).toMatchObject({
+      status: "ready",
+      emptyRecentGaugeCount: 0,
+      availableCount: 1,
+    });
+    expect(result.quotaLimits.items[0]).toMatchObject({
+      value: 2_000_000,
+      reportThrough: "2026-07-13T20:30:00.000Z",
+    });
+  });
+
+  it("treats an empty recent GAUGE window as partial unknown without clearing history", async () => {
+    stubMonitoring({ descriptors: [descriptor(TOKEN_LIMIT, "GAUGE")] });
+
+    const result = await fetchGoogleCloudMonitoring(config());
+
+    expect(result.status).toBe("partial");
+    expect(result.totalRequests).toBeNull();
+    expect(result.reportThrough).toBeNull();
+    expect(result.quotaLimits).toMatchObject({
+      status: "partial",
+      descriptorCount: 1,
+      emptyRecentGaugeCount: 1,
+      availableCount: 0,
+      items: [],
+    });
+    expect(result.partialError).toBeUndefined();
+    expect(
+      result.externalBillingSyncs.find(
+        (sync) => sync.source === "google-cloud-monitoring-native-quota-limits"
+      )
+    ).toEqual({
+      source: "google-cloud-monitoring-native-quota-limits",
+      authoritative: false,
+      records: [],
     });
   });
 

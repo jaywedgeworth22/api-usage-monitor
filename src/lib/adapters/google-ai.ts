@@ -316,6 +316,10 @@ export async function fetchUsage(
             requests: monitoring.requests,
             quotaUsage: {
               status: monitoring.quotaUsage.status,
+              descriptorCount: monitoring.quotaUsage.descriptorCount,
+              queryFailureCount: monitoring.quotaUsage.queryFailureCount,
+              emptyRecentGaugeCount:
+                monitoring.quotaUsage.emptyRecentGaugeCount,
               availableCount: monitoring.quotaUsage.availableCount,
               retainedCount: monitoring.quotaUsage.retainedCount,
               truncated: monitoring.quotaUsage.truncated,
@@ -325,6 +329,10 @@ export async function fetchUsage(
             },
             quotaLimits: {
               status: monitoring.quotaLimits.status,
+              descriptorCount: monitoring.quotaLimits.descriptorCount,
+              queryFailureCount: monitoring.quotaLimits.queryFailureCount,
+              emptyRecentGaugeCount:
+                monitoring.quotaLimits.emptyRecentGaugeCount,
               availableCount: monitoring.quotaLimits.availableCount,
               retainedCount: monitoring.quotaLimits.retainedCount,
               truncated: monitoring.quotaLimits.truncated,
