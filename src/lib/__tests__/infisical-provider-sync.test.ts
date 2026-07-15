@@ -83,6 +83,7 @@ const ALLOWLIST: Record<Scope, readonly string[]> = {
     "TWELVEDATA_API_KEY",
   ],
   shared: [
+    "FIRECRAWL_API_KEY",
     "LANGFUSE_BASE_URL",
     "LANGFUSE_PUBLIC_KEY",
     "LANGFUSE_SECRET_KEY",
@@ -360,7 +361,7 @@ describe("Infisical provider credential sync", () => {
     expect(result).toMatchObject({
       enabled: true,
       configured: true,
-      created: 17,
+      created: 18,
       updated: 0,
       unchanged: 0,
       missing: 0,
@@ -371,7 +372,7 @@ describe("Infisical provider credential sync", () => {
     const providers = await prisma.provider.findMany({
       include: { allocations: { include: { project: true } } },
     });
-    expect(providers).toHaveLength(17);
+    expect(providers).toHaveLength(18);
     const deepseek = providers.filter((provider) => provider.name === "deepseek");
     expect(deepseek).toHaveLength(2);
     expect(
@@ -400,6 +401,15 @@ describe("Infisical provider credential sync", () => {
     expect(
       providers.filter((provider) => provider.name === "twelvedata")
     ).toHaveLength(1);
+    const firecrawl = providers.find((provider) => provider.name === "firecrawl")!;
+    expect(decrypt(firecrawl.apiKey!)).toBe(secrets.shared.FIRECRAWL_API_KEY);
+    expect(decryptJson(firecrawl.secretConfig!)).toMatchObject({
+      infisicalCredential: {
+        scope: "shared",
+        source: "shared",
+        providerName: "firecrawl",
+      },
+    });
     const langfuse = providers.find((provider) => provider.name === "langfuse")!;
     expect(langfuse.secretConfig).not.toContain(secrets.shared.LANGFUSE_SECRET_KEY);
     expect(decryptJson(langfuse.secretConfig!)).toMatchObject({
@@ -449,7 +459,7 @@ describe("Infisical provider credential sync", () => {
     const second = await syncProviderCredentialsFromInfisical();
 
     expect(second.updated).toBe(1);
-    expect(second.unchanged).toBe(16);
+    expect(second.unchanged).toBe(17);
     const updated = await prisma.provider.findUniqueOrThrow({
       where: { id: stResend.id },
     });
@@ -822,7 +832,7 @@ describe("Infisical provider credential sync", () => {
 
     const result = await syncProviderCredentialsFromInfisical();
 
-    expect(result.failed).toBe(17);
+    expect(result.failed).toBe(18);
     expect(result.sources[0]).toMatchObject({
       source: "st",
       status: "error",
