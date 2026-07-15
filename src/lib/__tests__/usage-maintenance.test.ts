@@ -28,6 +28,7 @@ const subscriptionAdoption: AdoptExternalBillingSubscriptionsResult = {
   reconciled: 0,
   deactivated: 0,
   raced: 0,
+  cloudflareLegacyHandoff: "disabled",
 };
 const successfulSubscriptionAdoption = {
   ...subscriptionAdoption,
@@ -193,6 +194,49 @@ describe("runUsageMaintenance", () => {
     expect(isUsageMaintenanceHealthy(second)).toBe(true);
     expect(deliverAlerts).toHaveBeenCalledTimes(2);
   });
+
+  it.each(["disabled", "handed_off", "already_managed"] as const)(
+    "keeps the %s Cloudflare legacy-handoff status healthy",
+    async (cloudflareLegacyHandoff) => {
+      const deps = dependencies(vi.fn(async () => deliveredAlerts));
+      deps.adoptSubscriptions = vi.fn(async () => ({
+        ...subscriptionAdoption,
+        cloudflareLegacyHandoff,
+      }));
+      expect(isUsageMaintenanceHealthy(await runUsageMaintenance(deps))).toBe(
+        true
+      );
+    }
+  );
+
+  it.each([
+    "invalid_target",
+    "not_found",
+    "wrong_provider",
+    "wrong_identity",
+    "owner_guard_present",
+    "provider_plan_conflict",
+    "external_billing_ineligible",
+    "term_mismatch",
+    "guard_collision",
+    "charge_proof_missing",
+    "not_run",
+  ] as const)(
+    "marks the configured %s Cloudflare legacy-handoff status unhealthy without creating a provider alert",
+    async (cloudflareLegacyHandoff) => {
+      const deps = dependencies(vi.fn(async () => deliveredAlerts));
+      deps.adoptSubscriptions = vi.fn(async () => ({
+        ...subscriptionAdoption,
+        cloudflareLegacyHandoff,
+      }));
+      const result = await runUsageMaintenance(deps);
+      expect(isUsageMaintenanceHealthy(result)).toBe(false);
+      expect(result.alerts).toEqual({
+        ...deliveredAlerts,
+        deferredError: null,
+      });
+    }
+  );
 
   it("marks channel-state persistence degradation unhealthy without a summary timeout", async () => {
     const degraded: AlertDeliveryResult = {

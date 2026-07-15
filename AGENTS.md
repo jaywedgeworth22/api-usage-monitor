@@ -138,6 +138,19 @@ usage — no special-casing. Idempotent by `(subscriptionId, periodStart)` hash 
   compute the effective next renewal in-memory; the maintenance cycle persists the advance.
 - Both the materializer and the renewal roll-forward run inside `runUsageMaintenance`
   (`src/lib/usage-maintenance.ts`), before retention and alert delivery.
+- `CLOUDFLARE_LEGACY_HANDOFF_SUBSCRIPTION_ID` is a default-off, exact-UUID
+  migration path for the previously owner-entered Congress.Trade Workers Paid
+  row. Inside the adoption writer transaction it requires the exact built-in
+  `cloudflare` provider and external identity, no positive ProviderPlan fixed fee, a fresh
+  authoritative USD term matching the local cadence/window/cents, a null
+  legacy guard, and the exact deterministic current-period event plus
+  watermark. Success updates the same row's management flag, adoption guard,
+  and `autoRenew` only; IDs, display name, project, terms, notes, knobs, event,
+  and history remain intact. An unmanaged row with a non-null guard is an owner
+  relinquishment and is never retaken while the flag remains configured.
+  Disabled, handed-off, and already-managed are the only healthy audit states;
+  any other configured status makes scheduler maintenance unhealthy without
+  creating or changing a provider/PagerDuty alert.
 - Maintenance first runs `adoptExternalBillingSubscriptions`, which can create a linked
   `Subscription` only when the adapter set that exact record's default-false
   `paidRecurringAuthoritative` marker. `AdapterExternalBillingSync.authoritative` means only that

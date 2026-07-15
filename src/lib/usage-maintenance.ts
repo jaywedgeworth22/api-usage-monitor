@@ -21,6 +21,7 @@ import { withInternalUsageWriteAdmission } from "@/lib/ingest-admission";
 import {
   adoptExternalBillingSubscriptions,
   type AdoptExternalBillingSubscriptionsResult,
+  type CloudflareLegacyHandoffStatus,
 } from "@/lib/external-billing-subscription-adoption";
 
 export interface UsageMaintenanceResult {
@@ -61,9 +62,16 @@ export interface UsageMaintenanceDependencies {
   deliverAlerts?: typeof deliverProviderAlerts;
 }
 
+const HEALTHY_CLOUDFLARE_LEGACY_HANDOFF_STATUSES = new Set<
+  CloudflareLegacyHandoffStatus
+>(["disabled", "handed_off", "already_managed"]);
+
 export function isUsageMaintenanceHealthy(result: UsageMaintenanceResult): boolean {
   return (
     result.subscriptionAdoption.degradedError === null &&
+    HEALTHY_CLOUDFLARE_LEGACY_HANDOFF_STATUSES.has(
+      result.subscriptionAdoption.cloudflareLegacyHandoff
+    ) &&
     result.alerts.deferredError === null &&
     result.alerts.persistenceDegraded.length === 0
   );
@@ -120,6 +128,7 @@ export async function runUsageMaintenance(
             reconciled: 0,
             deactivated: 0,
             raced: 0,
+            cloudflareLegacyHandoff: "not_run",
             degradedError: {
               stage: "subscription_adoption",
               message:

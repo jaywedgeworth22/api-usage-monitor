@@ -97,6 +97,10 @@ services:
       # it back to false immediately; this is not a reverse-sync switch.
       - key: INFISICAL_ST_GEMINI_BOOTSTRAP_ENABLED
         value: "false"
+      # Optional exact UUID for the reviewed legacy Cloudflare Subscription.
+      # Unset is disabled; Render never generates or discovers this identity.
+      - key: CLOUDFLARE_LEGACY_HANDOFF_SUBSCRIPTION_ID
+        sync: false
       - key: INFISICAL_BASE_URL
         value: https://app.infisical.com
       - key: INFISICAL_ENV

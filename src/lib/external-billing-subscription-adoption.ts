@@ -23,7 +23,24 @@ export interface AdoptExternalBillingSubscriptionsResult {
   reconciled: number;
   deactivated: number;
   raced: number;
+  cloudflareLegacyHandoff: CloudflareLegacyHandoffStatus;
 }
+
+export type CloudflareLegacyHandoffStatus =
+  | "disabled"
+  | "invalid_target"
+  | "not_found"
+  | "wrong_provider"
+  | "wrong_identity"
+  | "already_managed"
+  | "owner_guard_present"
+  | "provider_plan_conflict"
+  | "external_billing_ineligible"
+  | "term_mismatch"
+  | "guard_collision"
+  | "charge_proof_missing"
+  | "handed_off"
+  | "not_run";
 
 export interface ExternalBillingSubscriptionAdoptionOptions {
   /** Test-only synchronization point after preflight and before DB write lock. */
@@ -60,11 +77,14 @@ export interface PaidRecurringAdoptionCandidate {
 const providerStateSelect = {
   id: true,
   name: true,
+  type: true,
+  isActive: true,
   refreshIntervalMin: true,
   plan: { select: { fixedMonthlyCostUsd: true } },
   subscriptions: {
     select: {
       id: true,
+      projectId: true,
       externalBillingSource: true,
       externalBillingId: true,
       externalBillingManaged: true,
@@ -111,6 +131,17 @@ type AdoptionTransaction = Prisma.TransactionClient;
 
 type AdoptionCandidate = PaidRecurringAdoptionCandidate;
 
+interface CloudflareLegacyHandoffConfig {
+  targetId: string | null;
+  initialStatus: "disabled" | "invalid_target" | "not_found";
+}
+
+const CLOUDFLARE_LEGACY_SOURCE = "cloudflare-subscriptions";
+const CLOUDFLARE_LEGACY_DISPLAY_NAME =
+  "Cloudflare Workers Paid (Congress.Trade)";
+const UUID_PATTERN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
 const TERMINAL_STATUSES = new Set([
   "canceled",
   "cancelled",
@@ -125,6 +156,16 @@ const TERMINAL_STATUSES = new Set([
 function cleanLabel(value: string | null): string | null {
   const label = value?.trim();
   return label || null;
+}
+
+function cloudflareLegacyHandoffConfig(): CloudflareLegacyHandoffConfig {
+  const configured =
+    process.env.CLOUDFLARE_LEGACY_HANDOFF_SUBSCRIPTION_ID?.trim() ?? "";
+  if (!configured) return { targetId: null, initialStatus: "disabled" };
+  if (!UUID_PATTERN.test(configured)) {
+    return { targetId: null, initialStatus: "invalid_target" };
+  }
+  return { targetId: configured, initialStatus: "not_found" };
 }
 
 const USD_MINOR_UNIT_TOLERANCE = 1e-6;
@@ -334,12 +375,11 @@ function hasChargedCurrentPeriod(
   );
 }
 
-function chargedTermsMatchCandidate(
+function chargedBillingTermsMatchCandidate(
   subscription: ProviderState["subscriptions"][number],
   candidate: AdoptionCandidate
 ): boolean {
   return (
-    subscription.name === candidate.serviceName &&
     exactUsdCents(subscription.costUsd) === candidate.amountCents &&
     normalizeExternalBillingCadence(subscription.interval) ===
       candidate.cadence &&
@@ -347,6 +387,28 @@ function chargedTermsMatchCandidate(
     subscription.currentPeriodStart.getTime() ===
       candidate.periodStart.getTime() &&
     subscription.nextRenewalAt.getTime() === candidate.periodEnd.getTime()
+  );
+}
+
+function chargedTermsMatchCandidate(
+  subscription: ProviderState["subscriptions"][number],
+  candidate: AdoptionCandidate
+): boolean {
+  return (
+    subscription.name === candidate.serviceName &&
+    chargedBillingTermsMatchCandidate(subscription, candidate)
+  );
+}
+
+function preservesCloudflareLegacyDisplayName(
+  provider: ProviderState,
+  subscription: ProviderState["subscriptions"][number]
+): boolean {
+  return (
+    provider.type === "builtin" &&
+    provider.name === "cloudflare" &&
+    subscription.externalBillingSource === CLOUDFLARE_LEGACY_SOURCE &&
+    subscription.name === CLOUDFLARE_LEGACY_DISPLAY_NAME
   );
 }
 
@@ -365,7 +427,7 @@ async function recordChargedCorrectionProof(
     candidate.periodStart.getTime() !==
       subscription.currentPeriodStart.getTime() ||
     !hasChargedCurrentPeriod(subscription) ||
-    chargedTermsMatchCandidate(subscription, candidate)
+    chargedBillingTermsMatchCandidate(subscription, candidate)
   ) {
     return false;
   }
@@ -435,6 +497,205 @@ async function recordChargedCorrectionProof(
     update: {},
   });
   return true;
+}
+
+function hasExactSubscriptionChargeMetadata(
+  value: Prisma.JsonValue | null,
+  subscription: ProviderState["subscriptions"][number],
+  candidate: AdoptionCandidate
+): boolean {
+  const metadata = asRecord(value);
+  if (!metadata) return false;
+  const keys = Object.keys(metadata).sort();
+  return (
+    JSON.stringify(keys) ===
+      JSON.stringify(
+        [
+          "currency",
+          "interval",
+          "intervalCount",
+          "subscriptionId",
+          "subscriptionName",
+        ].sort()
+      ) &&
+    metadata.subscriptionId === subscription.id &&
+    metadata.subscriptionName === subscription.name &&
+    metadata.interval === candidate.cadence &&
+    metadata.intervalCount === 1 &&
+    metadata.currency === "USD"
+  );
+}
+
+async function hasExactCurrentPeriodChargeProof(
+  tx: AdoptionTransaction,
+  provider: ProviderState,
+  subscription: ProviderState["subscriptions"][number],
+  candidate: AdoptionCandidate
+): Promise<boolean> {
+  if (
+    subscription.lastChargedPeriodStart?.getTime() !==
+    candidate.periodStart.getTime()
+  ) {
+    return false;
+  }
+  const event = await tx.externalUsageEvent.findUnique({
+    where: {
+      idempotencyKey: subscriptionChargeIdempotencyKey(
+        subscription.id,
+        candidate.periodStart
+      ),
+    },
+    select: {
+      sourceApp: true,
+      provider: true,
+      service: true,
+      label: true,
+      billingMode: true,
+      metricType: true,
+      unit: true,
+      costUsd: true,
+      confidence: true,
+      occurredAt: true,
+      windowStart: true,
+      windowEnd: true,
+      projectId: true,
+      metadata: true,
+    },
+  });
+  return Boolean(
+    event &&
+      event.sourceApp === SUBSCRIPTION_SOURCE_APP &&
+      event.provider === provider.name &&
+      event.service === subscription.name &&
+      event.label === subscription.name &&
+      event.billingMode === "manual" &&
+      event.metricType === "subscription" &&
+      event.unit === "usd" &&
+      exactUsdCents(event.costUsd) === candidate.amountCents &&
+      event.confidence === "actual" &&
+      event.occurredAt.getTime() === candidate.periodStart.getTime() &&
+      event.windowStart?.getTime() === candidate.periodStart.getTime() &&
+      event.windowEnd?.getTime() === candidate.periodEnd.getTime() &&
+      event.projectId === subscription.projectId &&
+      hasExactSubscriptionChargeMetadata(
+        event.metadata,
+        subscription,
+        candidate
+      )
+  );
+}
+
+async function handoffCloudflareLegacySubscription(
+  tx: AdoptionTransaction,
+  providers: ProviderState[],
+  candidatesByExternalKey: Map<string, AdoptionCandidate>,
+  targetId: string | null,
+  initialStatus: CloudflareLegacyHandoffStatus
+): Promise<CloudflareLegacyHandoffStatus> {
+  if (!targetId) return initialStatus;
+
+  const provider = providers.find((item) =>
+    item.subscriptions.some((subscription) => subscription.id === targetId)
+  );
+  const subscription = provider?.subscriptions.find(
+    (item) => item.id === targetId
+  );
+  if (!provider || !subscription) return "not_found";
+  if (
+    provider.type !== "builtin" ||
+    provider.name !== "cloudflare" ||
+    !provider.isActive
+  ) {
+    return "wrong_provider";
+  }
+  if (
+    subscription.externalBillingSource !== CLOUDFLARE_LEGACY_SOURCE ||
+    !subscription.externalBillingId
+  ) {
+    return "wrong_identity";
+  }
+  const identity = externalKey(
+    subscription.externalBillingSource,
+    subscription.externalBillingId
+  );
+  if (
+    !provider.externalBilling.some(
+      (record) => externalKey(record.source, record.externalId) === identity
+    )
+  ) {
+    return "wrong_identity";
+  }
+  if (subscription.externalBillingManaged) return "already_managed";
+  if (subscription.externalAdoptionGuardKey !== null) {
+    return "owner_guard_present";
+  }
+  if (conflictsWithProviderPlan(provider.plan?.fixedMonthlyCostUsd)) {
+    return "provider_plan_conflict";
+  }
+
+  const candidate = candidatesByExternalKey.get(
+    `${provider.id}\u0000${identity}`
+  );
+  if (!candidate) return "external_billing_ineligible";
+  if (
+    !preservesCloudflareLegacyDisplayName(provider, subscription) ||
+    exactUsdCents(subscription.costUsd) !== candidate.amountCents ||
+    subscription.currency !== "USD" ||
+    subscription.interval !== candidate.cadence ||
+    subscription.intervalCount !== 1 ||
+    subscription.currentPeriodStart.getTime() !==
+      candidate.periodStart.getTime() ||
+    subscription.nextRenewalAt.getTime() !== candidate.periodEnd.getTime() ||
+    !subscription.autoRenew ||
+    subscription.status !== "active" ||
+    subscription.canceledAt !== null
+  ) {
+    return "term_mismatch";
+  }
+  if (
+    Array.from(candidatesByExternalKey.values()).filter(
+      (other) => other.guardKey === candidate.guardKey
+    ).length !== 1 ||
+    provider.subscriptions.some(
+      (other) =>
+        other.id !== subscription.id &&
+        hasExistingRecurringCharge(candidate, [other])
+    ) ||
+    providers.some((item) =>
+      item.subscriptions.some(
+        (other) =>
+          other.id !== subscription.id &&
+          other.externalAdoptionGuardKey === candidate.guardKey
+      )
+    )
+  ) {
+    return "guard_collision";
+  }
+  if (
+    !(await hasExactCurrentPeriodChargeProof(
+      tx,
+      provider,
+      subscription,
+      candidate
+    ))
+  ) {
+    return "charge_proof_missing";
+  }
+
+  await tx.subscription.update({
+    where: { id: subscription.id },
+    data: {
+      externalBillingManaged: true,
+      externalAdoptionGuardKey: candidate.guardKey,
+      autoRenew: false,
+    },
+  });
+  Object.assign(subscription, {
+    externalBillingManaged: true,
+    externalAdoptionGuardKey: candidate.guardKey,
+    autoRenew: false,
+  });
+  return "handed_off";
 }
 
 async function pauseAmbiguousSubscriptions(
@@ -574,13 +835,17 @@ async function reconcileManagedSubscriptions(
 
       // Once this exact period has materialized, its local terms and guard are
       // historical accounting evidence. Provider corrections to amount,
-      // cadence, end, or display name must not rewrite that evidence or mark
+      // cadence or end must not rewrite that evidence or mark
       // the old charge exact again. Pause for explicit reconciliation while
       // preserving both the original guard and materialized event.
       if (
         candidateStart === storedStart &&
         hasChargedCurrentPeriod(subscription) &&
-        !chargedTermsMatchCandidate(subscription, candidate)
+        !chargedTermsMatchCandidate(subscription, candidate) &&
+        !(
+          preservesCloudflareLegacyDisplayName(provider, subscription) &&
+          chargedBillingTermsMatchCandidate(subscription, candidate)
+        )
       ) {
         result.ambiguous += 1;
         await pauseAmbiguousSubscriptions(
@@ -598,7 +863,12 @@ async function reconcileManagedSubscriptions(
       const data = {
         ...(canRefreshChargeTerms
           ? {
-              name: candidate.serviceName,
+              ...(preservesCloudflareLegacyDisplayName(
+                provider,
+                subscription
+              )
+                ? {}
+                : { name: candidate.serviceName }),
               costUsd: candidate.amountUsd,
               interval: candidate.cadence,
               intervalCount: 1,
@@ -626,7 +896,8 @@ async function reconcileAndAdopt(
   tx: AdoptionTransaction,
   providers: ProviderState[],
   now: Date,
-  raced: number
+  raced: number,
+  legacyHandoff: CloudflareLegacyHandoffConfig
 ): Promise<AdoptExternalBillingSubscriptionsResult> {
   const result: AdoptExternalBillingSubscriptionsResult = {
     examined: providers.reduce(
@@ -640,6 +911,7 @@ async function reconcileAndAdopt(
     reconciled: 0,
     deactivated: 0,
     raced,
+    cloudflareLegacyHandoff: legacyHandoff.initialStatus,
   };
 
   const candidates: AdoptionCandidate[] = [];
@@ -661,6 +933,15 @@ async function reconcileAndAdopt(
     }
   }
   result.eligible = candidates.length;
+
+  result.cloudflareLegacyHandoff =
+    await handoffCloudflareLegacySubscription(
+      tx,
+      providers,
+      candidatesByExternalKey,
+      legacyHandoff.targetId,
+      legacyHandoff.initialStatus
+    );
 
   await reconcileManagedSubscriptions(
     tx,
@@ -743,6 +1024,7 @@ export async function adoptExternalBillingSubscriptions(
   now = new Date(),
   options: ExternalBillingSubscriptionAdoptionOptions = {}
 ): Promise<AdoptExternalBillingSubscriptionsResult> {
+  const legacyHandoff = cloudflareLegacyHandoffConfig();
   const preflight = await prisma.provider.findMany({
     select: providerStateSelect,
   });
@@ -756,6 +1038,7 @@ export async function adoptExternalBillingSubscriptions(
       reconciled: 0,
       deactivated: 0,
       raced: 0,
+      cloudflareLegacyHandoff: legacyHandoff.initialStatus,
     };
   }
 
@@ -777,7 +1060,13 @@ export async function adoptExternalBillingSubscriptions(
             select: providerStateSelect,
           });
           await options.afterTransactionalRecheck?.();
-          return reconcileAndAdopt(tx, providers, now, raced);
+          return reconcileAndAdopt(
+            tx,
+            providers,
+            now,
+            raced,
+            legacyHandoff
+          );
         },
         {
           isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
