@@ -101,6 +101,9 @@ async function fetchJson<T>(url: string, label: string): Promise<T> {
   return response.json() as Promise<T>;
 }
 
+const AUTO_REFRESH_INTERVAL_MS = 60_000;
+const FOCUS_REFRESH_THROTTLE_MS = 15_000;
+
 export default function DashboardPage() {
   const [providers, setProviders] = useState<Provider[]>([]);
   const [usageSummary, setUsageSummary] = useState<ExternalUsageSummary | null>(null);
@@ -114,12 +117,32 @@ export default function DashboardPage() {
   const [lastUpdatedAt, setLastUpdatedAt] = useState<string | null>(null);
   const loadedOnce = useRef(false);
   const hasProviderData = useRef(false);
+  const isFetchingRef = useRef(false);
+  const lastSuccessAtRef = useRef(0);
 
-  const fetchProviders = useCallback(async () => {
-    if (loadedOnce.current && hasProviderData.current) setRefreshing(true);
-    else setLoading(true);
-    setError("");
-    setWarnings([]);
+  const fetchProviders = useCallback(async (opts?: { background?: boolean }) => {
+    if (isFetchingRef.current) return; // guard against overlapping in-flight refreshes
+    isFetchingRef.current = true;
+
+    const background = opts?.background === true;
+    // Background refreshes (interval poll, focus/visibility refetch) must never blank
+    // the UI or disable the manual refresh button - only data and the timestamp update.
+    if (background) {
+      // no loading/refreshing UI state
+    } else if (loadedOnce.current && hasProviderData.current) {
+      setRefreshing(true);
+    } else {
+      setLoading(true);
+    }
+    // Background calls must not clear a visible full-page error up front - that would
+    // flash the (still-empty) main content before the outcome is known. Foreground calls
+    // (initial load, manual refresh/retry) clear it immediately, matching prior behavior.
+    if (!background) setError("");
+    // Same rationale as the error clear above: clearing warnings up front would blank
+    // the visible warnings banner mid-flight for background refreshes. setWarnings(nextWarnings)
+    // below always runs after Promise.allSettled (which never rejects), so background
+    // outcomes still update the banner atomically once the fetch settles.
+    if (!background) setWarnings([]);
 
     try {
       const [providersResult, usageResult, projectsResult, subscriptionsResult] = await Promise.allSettled([
@@ -133,6 +156,7 @@ export default function DashboardPage() {
       if (providersResult.status === "fulfilled") {
         setProviders(providersResult.value);
         hasProviderData.current = true;
+        setError("");
       } else if (!hasProviderData.current) {
         setError(providersResult.reason instanceof Error ? providersResult.reason.message : "Failed to load providers");
       } else {
@@ -159,17 +183,51 @@ export default function DashboardPage() {
       }
 
       setWarnings(nextWarnings);
-      if (providersResult.status === "fulfilled") setLastUpdatedAt(new Date().toISOString());
+      if (providersResult.status === "fulfilled") {
+        setLastUpdatedAt(new Date().toISOString());
+        lastSuccessAtRef.current = Date.now();
+      }
     } finally {
       loadedOnce.current = true;
       setLoading(false);
       setRefreshing(false);
+      isFetchingRef.current = false;
     }
   }, []);
 
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect -- data fetching on mount
     fetchProviders();
+  }, [fetchProviders]);
+
+  useEffect(() => {
+    // Refetch on regained focus / visibility, throttled so tab-switching doesn't
+    // hammer the API when the last refresh (poll, focus, or manual) was recent.
+    const refreshIfDue = () => {
+      if (document.hidden) return;
+      if (Date.now() - lastSuccessAtRef.current < FOCUS_REFRESH_THROTTLE_MS) return;
+      fetchProviders({ background: true });
+    };
+
+    // Skip ticks while the tab is hidden; visibilitychange picks up the refresh on return.
+    const handleIntervalTick = () => {
+      if (document.hidden) return;
+      fetchProviders({ background: true });
+    };
+
+    const handleVisibilityChange = () => {
+      if (!document.hidden) refreshIfDue();
+    };
+
+    const intervalId = window.setInterval(handleIntervalTick, AUTO_REFRESH_INTERVAL_MS);
+    window.addEventListener("focus", refreshIfDue);
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+
+    return () => {
+      window.clearInterval(intervalId);
+      window.removeEventListener("focus", refreshIfDue);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+    };
   }, [fetchProviders]);
 
   // Deduplicate balance by groupId: only count each group's balance once
@@ -247,7 +305,7 @@ export default function DashboardPage() {
         <p role="alert" className="text-red-600">{error}</p>
         <button
           type="button"
-          onClick={fetchProviders}
+          onClick={() => fetchProviders()}
           className="px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700"
         >
           Retry
@@ -268,7 +326,7 @@ export default function DashboardPage() {
           )}
           <button
             type="button"
-            onClick={fetchProviders}
+            onClick={() => fetchProviders()}
             disabled={refreshing}
             className="rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-50"
           >
