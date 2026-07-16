@@ -70,6 +70,7 @@ const typeColors: Record<string, string> = {
   deepseek: "bg-teal-500",
   xai: "bg-slate-500",
   mistral: "bg-rose-500",
+  openrouter: "bg-fuchsia-500",
   llamaindex: "bg-violet-500",
   voyage: "bg-purple-500",
   sentry: "bg-red-500",

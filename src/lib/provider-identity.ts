@@ -47,6 +47,8 @@ const PROVIDER_ALIASES: Readonly<Record<string, string>> = {
   massivecom: "massive",
   polygon: "massive",
   polygonio: "massive",
+  openrouter: "openrouter",
+  openrouterai: "openrouter",
   pinecone: "pinecone",
   pineconedb: "pinecone",
   quiver: "quiver-quant",
