@@ -7,6 +7,7 @@ import { buildProviderAlertState } from "@/lib/provider-alerts";
 import { computeBudgetStatus } from "@/lib/budget-status";
 import { toPrismaProviderPlanData } from "@/lib/provider-plan";
 import { canonicalProviderKey } from "@/lib/provider-identity";
+import { buildKeyPreview } from "@/lib/provider-key-preview";
 import {
   hasProviderSecrets,
   providerConfigForClient,
@@ -37,11 +38,6 @@ function decryptKey(encryptedKey: string | null): string | null {
   } catch {
     return null;
   }
-}
-
-function buildKeyPreview(decryptedKey: string | null): string | null {
-  if (!decryptedKey || decryptedKey.length <= 10) return null;
-  return `${decryptedKey.slice(0, 6)}...${decryptedKey.slice(-4)}`;
 }
 
 function serverConfig(

@@ -116,7 +116,7 @@ export default function ProviderIntegrationDrawer({
   const closeRef = useRef<HTMLButtonElement>(null);
   const headingId = useId();
   const summaryId = useId();
-  const keyLastFour = instanceState?.keyPreview?.slice(-4) ?? null;
+  const keyPreview = instanceState?.keyPreview ?? null;
   const anthropicAdminConfigured =
     profile.name === "anthropic" &&
     (instanceState?.anthropicAdminApiConfigured ?? false);
@@ -346,8 +346,8 @@ export default function ProviderIntegrationDrawer({
                   </dt>
                   <dd className="mt-1 font-medium text-gray-900 dark:text-gray-100">
                     {instanceState.primaryCredentialConfigured
-                      ? keyLastFour
-                        ? `Configured · •••• ${keyLastFour}${anthropicWithoutAdmin ? " · not polled" : ""}`
+                      ? keyPreview
+                        ? `Configured · ${keyPreview}${anthropicWithoutAdmin ? " · not polled" : ""}`
                         : `Configured${anthropicWithoutAdmin ? " · not polled" : ""}`
                       : anthropicWithoutAdmin
                         ? "Not needed"
@@ -508,8 +508,8 @@ export default function ProviderIntegrationDrawer({
             <div className="rounded-lg bg-emerald-50 p-3 text-sm leading-6 text-emerald-950 dark:bg-emerald-950/30 dark:text-emerald-100">
               Primary keys and credential-shaped config fields are encrypted at rest and decrypted
               only on the server for a fetch. Browser responses receive a masked key preview and
-              secret-field metadata, never the secret values. A configured key preview is last-four
-              only.
+              secret-field metadata, never the secret values. A configured key preview shows the
+              first six and last four characters only.
             </div>
           </Section>
 

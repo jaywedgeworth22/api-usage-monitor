@@ -13,7 +13,7 @@ describe("ProviderIntegrationDrawer", () => {
         instanceState: {
           isActive: true,
           primaryCredentialConfigured: true,
-          keyPreview: "1234",
+          keyPreview: "abcdef...9876",
           publicConfigFields: ["accountId", "r2BucketName"],
           protectedConfigFields: ["apiToken"],
           protectedConfigReadable: true,
@@ -30,7 +30,8 @@ describe("ProviderIntegrationDrawer", () => {
     expect(html).toContain("Cloudflare Production");
     expect(html).toContain("Account boundaries");
     expect(html).toContain("Current configured state");
-    expect(html).toContain("•••• 1234");
+    expect(html).toContain("Configured · abcdef...9876");
+    expect(html).toContain("first six and last four characters");
     expect(html).toContain("accountId, r2BucketName");
     expect(html).toContain("apiToken");
     expect(html).toContain("cloudflare-subscriptions");
@@ -288,5 +289,31 @@ describe("ProviderIntegrationDrawer", () => {
     expect(html).toContain("Stored key cannot be decrypted");
     expect(html).toContain("save the Gemini key again");
     expect(html).not.toContain("Primary credential</dt><dd class=\"mt-1 font-medium text-gray-900\">Not configured");
+  });
+
+  it("shows a neutral label with no partial digits when no key preview is available (managed credential or short key)", () => {
+    const html = renderToStaticMarkup(
+      createElement(ProviderIntegrationDrawer, {
+        providerName: "cloudflare",
+        providerType: "builtin",
+        displayName: "Managed Cloudflare",
+        instanceState: {
+          isActive: true,
+          primaryCredentialConfigured: true,
+          keyPreview: null,
+          publicConfigFields: ["accountId"],
+          protectedConfigFields: ["apiToken"],
+          protectedConfigReadable: true,
+          lastSnapshotAt: null,
+          externalBillingRecordCount: 0,
+          externalBillingSources: [],
+        },
+        onClose: vi.fn(),
+      })
+    );
+
+    expect(html).toContain("Configured");
+    expect(html).not.toContain("••••");
+    expect(html).not.toMatch(/Configured\s*·\s*[a-zA-Z0-9]/);
   });
 });
