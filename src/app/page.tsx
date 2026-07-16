@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback, useRef } from "react";
 import Link from "next/link";
+import { ChevronRight } from "lucide-react";
 import { type ProviderCostCoverage } from "@/components/ProviderCard";
 import SentryHealthCard from "@/components/SentryHealthCard";
 import DashboardSummaryCards from "@/components/DashboardSummaryCards";
@@ -119,6 +120,7 @@ export default function DashboardPage() {
   const hasProviderData = useRef(false);
   const isFetchingRef = useRef(false);
   const lastSuccessAtRef = useRef(0);
+  const portfolioDetailsRef = useRef<HTMLDetailsElement>(null);
 
   const fetchProviders = useCallback(async (opts?: { background?: boolean }) => {
     const background = opts?.background === true;
@@ -247,6 +249,24 @@ export default function DashboardPage() {
     };
   }, [fetchProviders]);
 
+  // Shared open+scroll routine for the "Portfolio detail" accordion: used both by the
+  // #attention hash-open effect below and by DashboardSummaryCards' Open Alerts cell so a
+  // re-click while the hash is already #attention (and the accordion was re-closed) still works.
+  const openAttentionPanel = useCallback(() => {
+    if (portfolioDetailsRef.current) portfolioDetailsRef.current.open = true;
+    document.getElementById("attention")?.scrollIntoView({ block: "start" });
+  }, []);
+
+  useEffect(() => {
+    const openIfAttentionHash = () => {
+      if (window.location.hash !== "#attention") return;
+      openAttentionPanel();
+    };
+    openIfAttentionHash();
+    window.addEventListener("hashchange", openIfAttentionHash);
+    return () => window.removeEventListener("hashchange", openIfAttentionHash);
+  }, [loading, openAttentionPanel]); // re-run after the skeleton is replaced - the details ref is null during loading
+
   // Deduplicate balance by groupId: only count each group's balance once
   const seenGroups = new Set<string | null>();
   const totalBalance = providers.reduce((sum, p) => {
@@ -297,21 +317,26 @@ export default function DashboardPage() {
     (item) => item.alert.severity === "critical"
   ).length;
 
+  // "Portfolio detail" accordion summary line - page-level state only (no Sentry/telemetry
+  // counts: SentryHealthCard fetches its own data and page.tsx has no Sentry state).
+  const portfolioSummaryParts = [
+    `${subscriptions.length} paid service${subscriptions.length === 1 ? "" : "s"}`,
+  ];
+  if (projects.length > 0 || (projectSummary?.unassignedSpentUsd ?? 0) > 0) {
+    portfolioSummaryParts.push(`${projects.length} project${projects.length === 1 ? "" : "s"}`);
+  }
+  portfolioSummaryParts.push(
+    `${attentionItems.length} open alert${attentionItems.length === 1 ? "" : "s"}`
+  );
+  const portfolioSummary = `${portfolioSummaryParts.join(" · ")} · charts & health`;
+
   if (loading) {
     return (
       <div className="space-y-8 animate-pulse">
         <div className="h-8 w-48 bg-gray-200 rounded"></div>
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-          {[...Array(4)].map((_, i) => (
-            <div key={i} className="bg-gray-100 rounded-xl border border-gray-200 p-6 h-28"></div>
-          ))}
-        </div>
-        <div className="bg-gray-100 rounded-xl border border-gray-200 h-48"></div>
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-          {[...Array(3)].map((_, i) => (
-            <div key={i} className="bg-gray-100 rounded-xl border border-gray-200 p-6 h-40"></div>
-          ))}
-        </div>
+        <div className="bg-gray-100 rounded-xl border border-gray-200 h-24"></div>
+        <div className="bg-gray-100 rounded-xl border border-gray-200 h-96"></div>
+        <div className="bg-gray-100 rounded-xl border border-gray-200 h-14"></div>
       </div>
     );
   }
@@ -367,71 +392,83 @@ export default function DashboardPage() {
         criticalCount={criticalCount}
         hasAnyCredits={hasAnyCredits}
         totalCredits={totalCredits}
+        onAlertsNavigate={openAttentionPanel}
       />
-
-      <PaidServicesPanel
-        providers={providers}
-        subscriptions={subscriptions}
-        variant="dashboard"
-        maxItems={6}
-      />
-
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-        <div className="lg:col-span-2 space-y-8">
-          {usageSummary && <ExternalTelemetryPanel usageSummary={usageSummary} />}
-
-          {(projects.length > 0 || (projectSummary?.unassignedSpentUsd ?? 0) > 0) && (
-            <ProjectsPanel projects={projects} summary={projectSummary} />
-          )}
-        </div>
-        <div className="space-y-8">
-          <DashboardCharts providers={providers} />
-          <SentryHealthCard />
-        </div>
-      </div>
-
-      <div id="attention" className="bg-white dark:bg-gray-800 rounded-xl border border-gray-200 dark:border-gray-700 overflow-hidden">
-        <div className="px-6 py-4 border-b border-gray-100 dark:border-gray-700 flex items-center justify-between">
-          <h2 className="text-sm font-semibold text-gray-800">Attention</h2>
-          <Link href="/settings" className="text-xs font-medium text-blue-600">
-            Manage budgets
-          </Link>
-        </div>
-        {attentionItems.length === 0 ? (
-          <div className="px-6 py-5 text-sm text-gray-500">
-            No payment, budget, or limit alerts.
-          </div>
-        ) : (
-          <div className="divide-y divide-gray-100">
-            {attentionItems.slice(0, 8).map(({ provider, alert }, index) => (
-              <Link
-                key={`${provider.id}-${index}`}
-                href={`/providers/${provider.id}`}
-                className="flex items-start justify-between gap-4 px-6 py-4 hover:bg-gray-50"
-              >
-                <div>
-                  <p className="text-sm font-medium text-gray-900">
-                    {provider.displayName}
-                    {provider.label ? ` - ${provider.label}` : ""}
-                  </p>
-                  <p className="text-xs text-gray-500 mt-0.5">{alert.message}</p>
-                </div>
-                <span
-                  className={`text-xs font-medium px-2 py-1 rounded-full ${
-                    alert.severity === "critical"
-                      ? "bg-red-50 text-red-700"
-                      : "bg-amber-50 text-amber-700"
-                  }`}
-                >
-                  {alert.severity}
-                </span>
-              </Link>
-            ))}
-          </div>
-        )}
-      </div>
 
       <DashboardProviderWorkspace providers={providers} subscriptions={subscriptions} />
+
+      <details ref={portfolioDetailsRef} className="group">
+        <summary className="flex cursor-pointer list-none items-center gap-2 rounded-xl border border-gray-200 bg-white px-6 py-4 text-sm font-semibold text-gray-900 hover:bg-gray-50 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-100 dark:hover:bg-gray-700/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 dark:focus-visible:ring-blue-400 [&::-webkit-details-marker]:hidden">
+          <ChevronRight className="h-4 w-4 shrink-0 text-gray-400 transition-transform group-open:rotate-90" aria-hidden="true" />
+          Portfolio detail
+          <span className="ml-1 min-w-0 truncate text-xs font-normal text-gray-500 dark:text-gray-400">
+            {portfolioSummary}
+          </span>
+        </summary>
+        <div className="mt-8 space-y-8">
+          <PaidServicesPanel
+            providers={providers}
+            subscriptions={subscriptions}
+            variant="dashboard"
+            maxItems={6}
+          />
+
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
+            <div className="lg:col-span-2 space-y-8">
+              {usageSummary && <ExternalTelemetryPanel usageSummary={usageSummary} />}
+
+              {(projects.length > 0 || (projectSummary?.unassignedSpentUsd ?? 0) > 0) && (
+                <ProjectsPanel projects={projects} summary={projectSummary} />
+              )}
+            </div>
+            <div className="space-y-8">
+              <DashboardCharts providers={providers} />
+              <SentryHealthCard />
+            </div>
+          </div>
+
+          <div id="attention" className="bg-white dark:bg-gray-800 rounded-xl border border-gray-200 dark:border-gray-700 overflow-hidden">
+            <div className="px-6 py-4 border-b border-gray-100 dark:border-gray-700 flex items-center justify-between">
+              <h2 className="text-sm font-semibold text-gray-800">Attention</h2>
+              <Link href="/settings" className="text-xs font-medium text-blue-600">
+                Manage budgets
+              </Link>
+            </div>
+            {attentionItems.length === 0 ? (
+              <div className="px-6 py-5 text-sm text-gray-500">
+                No payment, budget, or limit alerts.
+              </div>
+            ) : (
+              <div className="divide-y divide-gray-100">
+                {attentionItems.slice(0, 8).map(({ provider, alert }, index) => (
+                  <Link
+                    key={`${provider.id}-${index}`}
+                    href={`/providers/${provider.id}`}
+                    className="flex items-start justify-between gap-4 px-6 py-4 hover:bg-gray-50"
+                  >
+                    <div>
+                      <p className="text-sm font-medium text-gray-900">
+                        {provider.displayName}
+                        {provider.label ? ` - ${provider.label}` : ""}
+                      </p>
+                      <p className="text-xs text-gray-500 mt-0.5">{alert.message}</p>
+                    </div>
+                    <span
+                      className={`text-xs font-medium px-2 py-1 rounded-full ${
+                        alert.severity === "critical"
+                          ? "bg-red-50 text-red-700"
+                          : "bg-amber-50 text-amber-700"
+                      }`}
+                    >
+                      {alert.severity}
+                    </span>
+                  </Link>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      </details>
     </div>
   );
 }

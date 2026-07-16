@@ -37,4 +37,47 @@ describe("DashboardSummaryCards", () => {
     expect(html).toContain("$0.00");
     expect(html).not.toContain("provider cost incomplete");
   });
+
+  it("renders a single bordered KPI strip instead of separate cards", () => {
+    const html = renderSummary(0);
+
+    expect(html.match(/divide-x/g)?.length).toBe(1);
+    expect(html).not.toContain("p-6");
+  });
+
+  it("links the Open Alerts cell to the attention anchor", () => {
+    const html = renderSummary(0);
+
+    expect(html).toContain('href="#attention"');
+  });
+
+  it("renders the Total Credits cell only when hasAnyCredits is true", () => {
+    const withoutCredits = renderToStaticMarkup(
+      createElement(DashboardSummaryCards, {
+        totalBalance: 25,
+        totalProjectedMonthlyCost: 20,
+        totalCost: 0,
+        incompleteCostProviderCount: 0,
+        attentionItemsCount: 0,
+        criticalCount: 0,
+        hasAnyCredits: false,
+        totalCredits: 0,
+      })
+    );
+    const withCredits = renderToStaticMarkup(
+      createElement(DashboardSummaryCards, {
+        totalBalance: 25,
+        totalProjectedMonthlyCost: 20,
+        totalCost: 0,
+        incompleteCostProviderCount: 0,
+        attentionItemsCount: 0,
+        criticalCount: 0,
+        hasAnyCredits: true,
+        totalCredits: 42,
+      })
+    );
+
+    expect(withoutCredits).not.toContain("Total Credits");
+    expect(withCredits).toContain("Total Credits");
+  });
 });
