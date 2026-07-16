@@ -41,7 +41,7 @@ describe("DashboardSummaryCards", () => {
   it("renders a single bordered KPI strip instead of separate cards", () => {
     const html = renderSummary(0);
 
-    expect(html.match(/divide-x/g)?.length).toBe(1);
+    expect(html.match(/gap-px/g)?.length).toBe(1);
     expect(html).not.toContain("p-6");
   });
 

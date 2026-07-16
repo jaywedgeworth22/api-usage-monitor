@@ -25,11 +25,11 @@ export default function DashboardSummaryCards({
 }: DashboardSummaryCardsProps) {
   return (
     <div
-      className={`grid grid-cols-2 divide-x divide-y divide-gray-100 overflow-hidden rounded-xl border border-gray-200 bg-white dark:divide-gray-700 dark:border-gray-700 dark:bg-gray-800 ${
-        hasAnyCredits ? "sm:grid-cols-3 lg:grid-cols-5 lg:divide-y-0" : "sm:grid-cols-4 sm:divide-y-0"
+      className={`grid grid-cols-2 gap-px overflow-hidden rounded-xl border border-gray-200 bg-gray-100 dark:border-gray-700 dark:bg-gray-700 ${
+        hasAnyCredits ? "sm:grid-cols-3 lg:grid-cols-5" : "sm:grid-cols-4"
       }`}
     >
-      <div className="p-4">
+      <div className="bg-white p-4 dark:bg-gray-800">
         <p className="text-[11px] font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400">
           Open Alerts
         </p>
@@ -53,7 +53,7 @@ export default function DashboardSummaryCards({
           )}
         </a>
       </div>
-      <div className="p-4">
+      <div className="bg-white p-4 dark:bg-gray-800">
         <p className="text-[11px] font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400">
           {incompleteCostProviderCount > 0
             ? "Known Spend This Month"
@@ -71,7 +71,7 @@ export default function DashboardSummaryCards({
           </p>
         )}
       </div>
-      <div className="p-4">
+      <div className="bg-white p-4 dark:bg-gray-800">
         <p className="text-[11px] font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400">
           {incompleteCostProviderCount > 0
             ? "Known-Cost Projection"
@@ -89,7 +89,7 @@ export default function DashboardSummaryCards({
           </p>
         )}
       </div>
-      <div className="p-4">
+      <div className="bg-white p-4 dark:bg-gray-800">
         <p className="text-[11px] font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400">
           Total Balance
         </p>
@@ -101,7 +101,7 @@ export default function DashboardSummaryCards({
         </p>
       </div>
       {hasAnyCredits && (
-        <div className="p-4">
+        <div className="bg-white p-4 dark:bg-gray-800">
           <p className="text-[11px] font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400">
             Total Credits
           </p>
