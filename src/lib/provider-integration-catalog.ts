@@ -187,6 +187,18 @@ const CATALOG: Record<CatalogProviderName, ProviderIntegrationProfile> = {
     limitations: ["No Mistral admin counter is promoted into provider spend without a documented currency/window contract."],
     source: "src/lib/adapters/mistral.ts",
   }),
+  openrouter: defineProfile({
+    name: "openrouter", displayName: "OpenRouter", category: "LLM/AI", mode: "partial",
+    summary: "Reads this key's own usage and limit from GET /key with any key tier; a Management (Provisioning) API key additionally unlocks account-wide prepaid credit balance, every configured key's individual usage/limit without exposing secrets, and a derived calendar-month-to-date cost estimate from 30-day activity history.",
+    reads: ["This key's own label, limit, limit_remaining, and usage rollups from GET /key.", "With a Management key: account-wide prepaid credit balance from GET /credits, every API key's already-masked label, name, usage, and limit from GET /keys (default workspace only), and per-day per-model USD usage/request counts from GET /activity for the trailing 30 completed UTC days."],
+    stores: ["Selected key and account balance/limit/usage fields plus a minimized per-key breakdown array; full provider responses and unmasked key secrets are never persisted."],
+    credentialInputs: ["OpenRouter API key. A Management (Provisioning) API key is required to read account-wide credits, the per-key breakdown, and activity history; a standard inference key still validates and reports only its own usage/limit."],
+    billing: { visibility: "partial", summary: "Prepaid credit balance is direct with a Management API key. Month-to-date cost is a derived estimate summed from 30-day activity history, not an authoritative invoice, and is intentionally left unknown on the one day per 31-day month when the trailing window cannot be proven to reach the 1st. A standard inference key exposes no account-wide balance or cost." },
+    canAdd: ["Multi-workspace enumeration could complete per-key coverage for accounts with non-default workspaces.", "Per-key activity could be filtered by api_key_hash to attribute cost to individual downstream apps."],
+    cannotAdd: ["OpenRouter has no subscription or invoice-cycle concept; credits are a lifetime-cumulative prepaid balance, not a billing period.", "A standard inference key cannot read account-wide credits, the per-key breakdown, or activity under any configuration."],
+    limitations: ["GET /api/v1/keys returns only the default workspace; accounts with additional workspaces need per-workspace enumeration, not implemented here.", "Derived month-to-date cost trusts activity data being complete for every day since the 1st of the month and is withheld when that cannot be proven."],
+    source: "src/lib/adapters/openrouter.ts",
+  }),
   github: defineProfile({
     name: "github", displayName: "GitHub", category: "Developer Platform", mode: "direct",
     summary: "Reads organization enhanced-billing usage and net amount for the current month.",

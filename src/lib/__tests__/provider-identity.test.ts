@@ -20,6 +20,9 @@ describe("provider identity", () => {
     ["quiver", "quiver-quant"],
     ["QuiverQuant", "quiver-quant"],
     ["Quiver Quantitative", "quiver-quant"],
+    ["OpenRouter", "openrouter"],
+    ["open-router", "openrouter"],
+    ["OpenRouter.ai", "openrouter"],
   ])("maps %s to %s", (input, expected) => {
     expect(canonicalProviderKey(input)).toBe(expected);
   });

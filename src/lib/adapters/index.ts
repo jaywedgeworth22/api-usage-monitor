@@ -32,6 +32,7 @@ async function loadAdapters() {
     import("./deepseek"),
     import("./xai"),
     import("./mistral"),
+    import("./openrouter"),
     import("./llamaindex"),
     import("./fmp"),
     import("./finnhub"),
@@ -66,7 +67,7 @@ async function loadAdapters() {
 
   const [
     openai, anthropic, googleAi, pinecone, cloudflare, custom,
-    deepseek, xai, mistral, llamaindex,
+    deepseek, xai, mistral, openrouter, llamaindex,
     fmp, finnhub, alphavantage, tradier, marketstack, intrinio, tiingo, twelvedata, fintech_studios, massive, fred,
     quiver,
     unusualwhales,
@@ -92,6 +93,7 @@ async function loadAdapters() {
     deepseek: deepseek.fetchUsage,
     xai: xai.fetchUsage,
     mistral: mistral.fetchUsage,
+    openrouter: openrouter.fetchUsage,
     github: github.fetchUsage,
     vercel: vercel.fetchUsage,
     render: render.fetchUsage,
