@@ -98,6 +98,7 @@ const ALLOWLIST: Record<Scope, readonly string[]> = {
     "RESEND_API_KEY",
     "STRIPE_SECRET_KEY",
     "TWELVEDATA_API_KEY",
+    "UNUSUAL_WHALES_API_KEY",
   ],
   shared: [
     "FIRECRAWL_API_KEY",
