@@ -13,6 +13,7 @@ import {
   isReceiptCashEvent,
   receiptCashProviderId,
 } from "@/lib/receipt-cash";
+import { SUBSCRIPTION_SOURCE_APP } from "@/lib/subscription-charge-identity";
 
 export const STATUS_METRIC_TYPES = new Set(["quota_sync", "credit_balance"]);
 
@@ -644,6 +645,17 @@ export const SUBSCRIPTION_METRIC_TYPE = "subscription";
 export interface ProviderPushedCost {
   usagePushed: number;
   subscriptionPushed: number;
+  // The slice of subscriptionPushed contributed by sourceApp !=
+  // SUBSCRIPTION_SOURCE_APP — i.e. manual adjustments (owner-directed
+  // historical corrections, refunds) rather than the internal subscription
+  // materializer. budget-status.ts's fixed-cost dedupe must cancel out only
+  // the materializer-linked portion (subscriptionPushed - this field)
+  // against a provider's fixed-cost-included snapshot; the manual portion is
+  // never represented in that snapshot and must stay additive, positive or
+  // negative, or a manual refund gets silently cancelled by the dedupe (or,
+  // if it drives the pool net-negative, cancelled *and* have spend added
+  // back). See sumMonthToDateExternalCostByProvider's `add` below.
+  subscriptionPushedManualUsd: number;
   estimatedApiEquivalentUsd: number;
   pricedEventCount: number;
   unpricedEventCount: number;
@@ -803,6 +815,7 @@ export async function sumMonthToDateExternalCostByProvider(
     const bucket = totals.get(key) ?? {
       usagePushed: 0,
       subscriptionPushed: 0,
+      subscriptionPushedManualUsd: 0,
       estimatedApiEquivalentUsd: 0,
       pricedEventCount: 0,
       unpricedEventCount: 0,
@@ -815,6 +828,9 @@ export async function sumMonthToDateExternalCostByProvider(
     }
     if (metricType === SUBSCRIPTION_METRIC_TYPE) {
       bucket.subscriptionPushed += cost;
+      if (sourceApp !== SUBSCRIPTION_SOURCE_APP) {
+        bucket.subscriptionPushedManualUsd += cost;
+      }
     } else {
       bucket.usagePushed += cost;
     }

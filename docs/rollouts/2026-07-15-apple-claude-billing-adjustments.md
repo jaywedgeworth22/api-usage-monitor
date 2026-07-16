@@ -119,6 +119,8 @@ charges.
   (`quantity`, `credits`, `limit`, `requests`), remains non-negative. This is
   why the refund events must be `metricType: "subscription"` — the same
   metric type recurring subscription charges already use.
+- A negative subscription `costUsd` is additionally bounded in magnitude —
+  see "Negative-magnitude bound" below.
 - A negative-`costUsd` event cannot be receipt-cash-shaped: the script always
   sets `sourceApp: "manual-billing-adjustment"` and never sets `service:
   "api-prepaid-funding"` or `label: "receipt_cash_paid"` (`src/lib/receipt-cash.ts`'s
@@ -128,6 +130,93 @@ charges.
   is rejected regardless — see the route test
   `"rejects a negative-cost subscription event that is shaped like a
   receipt-cash event"`.
+
+## Review remediation (P3 findings, 2026-07-16)
+
+Two P3 findings from PR review were fixed on top of the original design
+above. Both guards are general (they protect every provider, not just
+Anthropic's June events), but are documented here because this feature is
+what motivated them.
+
+### Fixed-cost dedupe isolation (`src/lib/budget-status.ts`,
+`src/lib/external-usage-events.ts`)
+
+The original design note above states `pushed.subscriptionPushed` is an
+additive sum "over every `metricType: 'subscription'` event for the provider
+regardless of `sourceApp`" and that composition into `fixedAccruedUsd` is a
+plain sum, not `Math.max(...)`. Both statements are still true, but they
+missed a second reconciliation `budget-status.ts` performs for providers that
+*also* have a fixed-cost-included poll snapshot (`UsageCostSnapshot.
+fixedCostIncludedUsd`) linked to a materialized subscription charge (e.g.
+Cloudflare-style `ProviderExternalBilling`-adopted subscriptions): `
+linkedFixedDedupeUsd = Math.min(pushed.subscriptionPushed,
+linkedMaterializedFixedUsd)` cancels out the double-representation of that
+one linked charge between the snapshot and the push channel.
+
+That `Math.min()` was computed against the *total* `pushed.subscriptionPushed`
+pool — which a manual adjustment on the same provider/month also feeds. A
+refund therefore shrank the pool the dedupe was min'd against, and the dedupe
+shrank right along with it, silently cancelling the refund out of
+`fixedAccruedUsd` instead of ever subtracting it. Concretely: snapshot
+`fixedCostIncludedUsd = 124.99`, one linked materialized `$124.99` charge, a
+manual `-50.00` refund → `fixedAccruedUsd` computed to `124.99` (the refund
+vanished) instead of the correct `74.99`. A refund larger than the linked
+charge made it worse: it drove the dedupe itself negative, which *added*
+spend back instead of ever subtracting any.
+
+Fix: `ProviderPushedCost` (`external-usage-events.ts`) now also tracks
+`subscriptionPushedManualUsd` — the slice of `subscriptionPushed` contributed
+by `sourceApp != SUBSCRIPTION_SOURCE_APP` (manual adjustments), accumulated
+alongside the existing additive total in `sumMonthToDateExternalCostByProvider`'s
+`add()`. `budget-status.ts` isolates the materializer-linked-only portion —
+`Math.max(0, pushed.subscriptionPushed - pushed.subscriptionPushedManualUsd)`
+— and dedupes *that* against `linkedMaterializedFixedUsd`, instead of the raw
+manual-inclusive total. The `Math.max(0, ...)` clamp guarantees the dedupe
+itself can never go negative, so it can never add spend back regardless of
+how large a refund is. `subscriptionMonthToDateUsd` (the raw additive total)
+is unchanged. Regression coverage:
+`src/lib/__tests__/external-billing-subscription-adoption.test.ts` —
+`"keeps a manual refund additive instead of letting the fixed-cost dedupe
+cancel it out"` (the `124.99`/`-50.00`/`74.99` scenario above) and `"never
+lets the fixed-cost dedupe add spend back when a manual refund drives the
+subscription pool net-negative"` (a `-200.00` refund against the same
+`124.99` charge, asserting `fixedAccruedUsd` lands at the correct `-75.01`
+net credit and the dedupe stays non-negative); plus a
+`sumMonthToDateExternalCostByProvider`-level unit test in
+`src/lib/__tests__/external-usage-summary.test.ts` asserting the manual/
+materializer split itself.
+
+Anthropic has no `UsageCostSnapshot.fixedCostIncludedUsd` or linked
+materialized billing in this rollout, so `linkedFixedDedupeUsd` is `0` for
+every event here and this bug never affected the four events above — it only
+manifests for providers that combine a fixed-cost snapshot *and* manual
+subscription adjustments in the same month, which does not include Anthropic
+today. The fix is general so it can't affect a future provider either.
+
+### Negative-magnitude bound (`src/lib/usage-telemetry.ts`)
+
+The original design permits any `USAGE_INGEST_TOKEN` holder to post a
+negative-`costUsd` `metricType: "subscription"` event with no magnitude
+limit. This app is single-owner with no per-caller scoping on that token, so
+an unbounded negative amount is unbounded spend-erasure / budget-alert
+suppression from anyone who has (or leaks) the token — proportionate for a
+personal app, but worth bounding per event.
+
+Fix: `MAX_NEGATIVE_SUBSCRIPTION_COST_USD = 1000` (`usage-telemetry.ts`).
+Boundary semantics: this is the maximum magnitude a single negative
+subscription `costUsd` may carry, **inclusive** — exactly `-1000` is
+accepted, anything more negative (e.g. `-1000.01`) is rejected with a
+dedicated error before the event reaches persistence. Positive amounts, and
+every other metric type's already-unconditional non-negative check, are
+unaffected. `$1000` comfortably covers the largest realistic single Apple/App
+Store subscription-tier proration this channel is meant for (the events
+above top out at `-104.16`) while bounding a single ingest call's blast
+radius. Tests: `src/lib/__tests__/usage-telemetry.test.ts` (`-999.99`
+accepted, `-1000` accepted at the inclusive boundary, `-1000.01` rejected,
+and a large negative still rejected outright for every non-subscription
+metric type regardless of magnitude) and an end-to-end pair in
+`src/app/api/ingest/usage/__tests__/route.test.ts` exercising the same
+boundary through `POST /api/ingest/usage`.
 
 ## Operator script usage
 

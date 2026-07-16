@@ -382,6 +382,9 @@ describe("summarizeExternalUsageEvents", () => {
     expect(byProvider.get("anthropic")).toEqual({
       usagePushed: 15,
       subscriptionPushed: 400,
+      // Both subscription rows above use sourceApp "subscription" (the
+      // materializer's reserved sourceApp), so none of the $400 is manual.
+      subscriptionPushedManualUsd: 0,
       estimatedApiEquivalentUsd: 9_000,
       pricedEventCount: 4,
       unpricedEventCount: 0,
@@ -447,6 +450,49 @@ describe("summarizeExternalUsageEvents", () => {
         costUsd: 15,
       }),
     ]);
+  });
+
+  it("splits subscriptionPushed into the materializer-owned and manual-adjustment slices", async () => {
+    prismaMock.externalUsageEvent.groupBy.mockResolvedValueOnce([
+      {
+        provider: "anthropic",
+        sourceApp: "subscription",
+        service: null,
+        metricType: "subscription",
+        _sum: { costUsd: 124.99 },
+        _count: { _all: 1, costUsd: 1 },
+      },
+      {
+        provider: "anthropic",
+        sourceApp: "manual-billing-adjustment",
+        service: null,
+        metricType: "subscription",
+        _sum: { costUsd: -50 },
+        _count: { _all: 1, costUsd: 1 },
+      },
+    ]);
+    // monthStart === rawCutoff below, so the code path never queries rollups
+    // (monthStart < rawCutoff is false) — no mock needed for that call, and
+    // stubbing an unconsumed mockResolvedValueOnce here would otherwise leak
+    // into the next test that shares this same prisma mock.
+
+    const byProvider = await sumMonthToDateExternalCostByProvider(
+      new Date("2026-07-01T00:00:00.000Z"),
+      new Date("2026-07-01T00:00:00.000Z")
+    );
+    expect(byProvider.get("anthropic")).toEqual({
+      usagePushed: 0,
+      // Additive total across BOTH sourceApps, matching the pre-existing
+      // (unchanged) contract for subscriptionMonthToDateUsd.
+      subscriptionPushed: 74.99,
+      // Isolated slice from sourceApp != "subscription" only — this is what
+      // budget-status.ts's fixed-cost dedupe must NOT cancel out.
+      subscriptionPushedManualUsd: -50,
+      estimatedApiEquivalentUsd: 0,
+      pricedEventCount: 2,
+      unpricedEventCount: 0,
+      unclassifiedCostEventCount: 0,
+    });
   });
 
   it("keeps exact receipt cash separate across raw rows and rollups", async () => {

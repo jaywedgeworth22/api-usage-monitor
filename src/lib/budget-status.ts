@@ -406,6 +406,7 @@ export async function computeBudgetStatus(now: Date = new Date()): Promise<Budge
     const bucket = pushedByProviderId.get(owner.id) ?? {
       usagePushed: 0,
       subscriptionPushed: 0,
+      subscriptionPushedManualUsd: 0,
       estimatedApiEquivalentUsd: 0,
       pricedEventCount: 0,
       unpricedEventCount: 0,
@@ -413,6 +414,7 @@ export async function computeBudgetStatus(now: Date = new Date()): Promise<Budge
     };
     bucket.usagePushed += pushed.usagePushed;
     bucket.subscriptionPushed += pushed.subscriptionPushed;
+    bucket.subscriptionPushedManualUsd += pushed.subscriptionPushedManualUsd;
     bucket.estimatedApiEquivalentUsd += pushed.estimatedApiEquivalentUsd;
     bucket.pricedEventCount += pushed.pricedEventCount;
     bucket.unpricedEventCount += pushed.unpricedEventCount;
@@ -461,6 +463,7 @@ export async function computeBudgetStatus(now: Date = new Date()): Promise<Budge
     const pushed = pushedByProviderId.get(p.id) ?? {
       usagePushed: 0,
       subscriptionPushed: 0,
+      subscriptionPushedManualUsd: 0,
       estimatedApiEquivalentUsd: 0,
       pricedEventCount: 0,
       unpricedEventCount: 0,
@@ -618,10 +621,25 @@ export async function computeBudgetStatus(now: Date = new Date()): Promise<Budge
     // makes $5 historical + $4 corrected snapshot resolve to $4 (and $5 + $6
     // to $6), while never deducting more than either the linked event total or
     // the subscription event channel actually contains.
+    //
+    // pushed.subscriptionPushed is additive across BOTH the materializer's own
+    // sourceApp="subscription" charge (the thing linkedMaterializedFixedUsd
+    // proves overlaps the snapshot) AND any manual adjustments (owner-directed
+    // historical corrections/refunds, sourceApp != SUBSCRIPTION_SOURCE_APP)
+    // that are never represented in the snapshot at all. Dedupe against only
+    // the materializer-linked slice — isolated by subtracting the tracked
+    // manual contribution — so a manual refund is never cancelled out by this
+    // dedupe, and clamp it at 0 so a refund that drives the isolated slice
+    // negative can never make the dedupe itself negative and ADD spend back
+    // (see subscriptionPushedManualUsd's doc comment in external-usage-events.ts).
+    const materializerLinkedSubscriptionPushedUsd = Math.max(
+      0,
+      pushed.subscriptionPushed - pushed.subscriptionPushedManualUsd
+    );
     const linkedFixedDedupeUsd =
       snapshotFixedCostIncludedUsd > 0
         ? Math.min(
-            pushed.subscriptionPushed,
+            materializerLinkedSubscriptionPushedUsd,
             linkedMaterializedFixedUsd
           )
         : 0;

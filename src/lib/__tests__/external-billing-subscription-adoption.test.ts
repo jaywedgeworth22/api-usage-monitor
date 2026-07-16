@@ -1095,6 +1095,136 @@ describe("adoptExternalBillingSubscriptions", () => {
     });
   });
 
+  // -------------------------------------------------------------------
+  // Manual subscription adjustment dedupe isolation (review remediation):
+  // linkedFixedDedupeUsd previously deduped against the TOTAL
+  // pushed.subscriptionPushed pool, which mixes the materializer's own
+  // linked charge with any manual (non-"subscription"-sourceApp) adjustment
+  // on the same provider in the same month. A manual refund shrank that pool,
+  // so the min() dedupe shrank with it and cancelled the refund out of
+  // fixedAccruedUsd instead of ever subtracting it. If the refund was large
+  // enough to drive the pool net-negative, the dedupe went negative too and
+  // ADDED spend back. The fix isolates the materializer-linked slice via
+  // ProviderPushedCost.subscriptionPushedManualUsd (external-usage-events.ts)
+  // before deduping, so manual adjustments always stay additive.
+  // -------------------------------------------------------------------
+  it("keeps a manual refund additive instead of letting the fixed-cost dedupe cancel it out", async () => {
+    const provider = await createProvider("manual-dedupe-isolation-provider");
+    await createExternalBilling(provider.id, "manual-dedupe-isolation-plan", {
+      amountUsd: 124.99,
+    });
+    await prisma.usageSnapshot.create({
+      data: {
+        providerId: provider.id,
+        fetchedAt: NOW,
+        totalCost: 124.99,
+        fixedCostIncludedUsd: 124.99,
+      },
+    });
+
+    await adoptExternalBillingSubscriptions(NOW);
+    expect(await materializeDueSubscriptions(NOW)).toMatchObject({
+      charged: 1,
+      eventsWritten: 1,
+    });
+
+    // The owner-directed manual refund: same provider, same month, but a
+    // distinct sourceApp from the materializer's reserved "subscription".
+    await prisma.externalUsageEvent.create({
+      data: {
+        sourceApp: "manual-billing-adjustment",
+        provider: "manual-dedupe-isolation-provider",
+        metricType: "subscription",
+        billingMode: "manual",
+        unit: "usd",
+        confidence: "estimated",
+        costUsd: -50,
+        occurredAt: NOW,
+      },
+    });
+
+    const budget = await computeBudgetStatus(NOW);
+    const row = budget.providers.find((r) => r.id === provider.id);
+    expect(row).toBeDefined();
+    expect(row!.snapshotFixedCostIncludedUsd).toBeCloseTo(124.99, 2);
+    // pushed.subscriptionPushed = 124.99 (materializer) - 50 (manual) = 74.99.
+    expect(row!.subscriptionMonthToDateUsd).toBeCloseTo(74.99, 2);
+    expect(row!.fixedCostConflict).toBe(false);
+    // Bug: dedupe = min(subscriptionPushed=74.99, linkedMaterializedFixedUsd=
+    // 124.99) = 74.99, so fixedAccruedUsd = 0 + 74.99 + 124.99 - 74.99 =
+    // 124.99 -- the $50 refund vanishes entirely.
+    // Fix: dedupe isolates the materializer-linked-only portion (124.99), so
+    // fixedAccruedUsd = 0 + 74.99 + 124.99 - 124.99 = 74.99.
+    expect(row!.linkedFixedDedupeUsd).toBeCloseTo(124.99, 2);
+    expect(row!.fixedAccruedUsd).toBeCloseTo(74.99, 2);
+    expect(row!.spentUsd).toBeCloseTo(74.99, 2);
+    // Sentinel: fail loudly if a future regression reintroduces deduping
+    // against the raw (manual-inclusive) pushed total.
+    expect(row!.fixedAccruedUsd).not.toBeCloseTo(124.99, 2);
+  });
+
+  it("never lets the fixed-cost dedupe add spend back when a manual refund drives the subscription pool net-negative", async () => {
+    const provider = await createProvider(
+      "manual-dedupe-net-negative-provider"
+    );
+    await createExternalBilling(
+      provider.id,
+      "manual-dedupe-net-negative-plan",
+      { amountUsd: 124.99 }
+    );
+    await prisma.usageSnapshot.create({
+      data: {
+        providerId: provider.id,
+        fetchedAt: NOW,
+        totalCost: 124.99,
+        fixedCostIncludedUsd: 124.99,
+      },
+    });
+
+    await adoptExternalBillingSubscriptions(NOW);
+    expect(await materializeDueSubscriptions(NOW)).toMatchObject({
+      charged: 1,
+      eventsWritten: 1,
+    });
+
+    // A manual refund larger than the materializer charge itself, driving the
+    // combined subscriptionPushed pool negative.
+    await prisma.externalUsageEvent.create({
+      data: {
+        sourceApp: "manual-billing-adjustment",
+        provider: "manual-dedupe-net-negative-provider",
+        metricType: "subscription",
+        billingMode: "manual",
+        unit: "usd",
+        confidence: "estimated",
+        costUsd: -200,
+        occurredAt: NOW,
+      },
+    });
+
+    const budget = await computeBudgetStatus(NOW);
+    const row = budget.providers.find((r) => r.id === provider.id);
+    expect(row).toBeDefined();
+    // subscriptionPushed pool = 124.99 - 200 = -75.01 (net negative).
+    expect(row!.subscriptionMonthToDateUsd).toBeCloseTo(-75.01, 2);
+    expect(row!.snapshotFixedCostIncludedUsd).toBeCloseTo(124.99, 2);
+    // Bug: dedupe = min(pool=-75.01, linkedMaterializedFixedUsd=124.99) =
+    // -75.01 (the pool is smaller), so fixedAccruedUsd = 0 + (-75.01) +
+    // 124.99 - (-75.01) = 124.99 -- the dedupe went negative and ADDED the
+    // full $200 of refund back as spend instead of ever subtracting it.
+    // Fix: dedupe isolates the materializer-linked-only portion (max(0,
+    // -75.01 - (-200)) = 124.99), so fixedAccruedUsd = 0 + (-75.01) +
+    // 124.99 - 124.99 = -75.01 (correctly a net credit), and the dedupe
+    // itself never goes negative.
+    expect(row!.linkedFixedDedupeUsd).toBeCloseTo(124.99, 2);
+    expect(row!.linkedFixedDedupeUsd).toBeGreaterThanOrEqual(0);
+    expect(row!.fixedAccruedUsd).toBeCloseTo(-75.01, 2);
+    expect(row!.spentUsd).toBeCloseTo(-75.01, 2);
+    // Sentinel: fail loudly if a future regression reintroduces deduping
+    // against the raw (manual-inclusive, possibly negative) pushed total.
+    expect(row!.fixedAccruedUsd).not.toBeCloseTo(124.99, 2);
+  });
+
   it.each([
     { label: "downward", correctedUsd: 4, expectedSpentUsd: 7 },
     { label: "upward", correctedUsd: 6, expectedSpentUsd: 9 },

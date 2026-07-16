@@ -8,6 +8,18 @@ const MAX_METADATA_STRING_LENGTH = 500;
 // before decoding so the parser's field limits cannot be bypassed with a huge
 // body that is mostly discarded after allocation.
 export const MAX_USAGE_TELEMETRY_BODY_BYTES = 4 * 1024 * 1024;
+// Negative costUsd is scoped to metricType "subscription" (see readNumber's
+// allowNegative use in parseEvent below), but any USAGE_INGEST_TOKEN holder
+// can post that shape, and this monitor is single-owner with no per-caller
+// scoping. An unbounded negative amount is unbounded spend-erasure / budget-
+// alert suppression. Bound the magnitude a single manual/estimated correction
+// event may carry. This is the maximum allowed magnitude, INCLUSIVE: exactly
+// -MAX_NEGATIVE_SUBSCRIPTION_COST_USD is accepted, anything more negative is
+// rejected. $1000 comfortably covers the largest realistic single Apple/App
+// Store subscription-tier proration this owner-directed manual-adjustment
+// channel is meant for, while bounding the blast radius of a leaked or
+// misused token to a single ingest call.
+export const MAX_NEGATIVE_SUBSCRIPTION_COST_USD = 1000;
 
 const metricTypes = new Set(["usage", "cost", "quota", "tier", "health", "balance", "limit", "quota_sync", "credit_balance", "subscription"]);
 const units = new Set([
@@ -241,6 +253,19 @@ function parseEvent(value: unknown): ParsedUsageTelemetryEvent {
   const costUsd = readNumber(record, "costUsd", {
     allowNegative: metricType === "subscription",
   });
+  // Bound the magnitude of a permitted negative subscription costUsd (see
+  // MAX_NEGATIVE_SUBSCRIPTION_COST_USD's doc comment above). Positive amounts,
+  // and every other metricType (already rejected above for any negative
+  // value), are unaffected.
+  if (
+    metricType === "subscription" &&
+    costUsd != null &&
+    costUsd < -MAX_NEGATIVE_SUBSCRIPTION_COST_USD
+  ) {
+    throw new Error(
+      `costUsd must not be more negative than -${MAX_NEGATIVE_SUBSCRIPTION_COST_USD} for metricType "subscription"`
+    );
+  }
   const requests = readInteger(record, "requests");
   const credits = readNumber(record, "credits");
 

@@ -1,5 +1,8 @@
 import { describe, it, expect } from "vitest";
-import { parseUsageTelemetryBatch } from "../usage-telemetry";
+import {
+  MAX_NEGATIVE_SUBSCRIPTION_COST_USD,
+  parseUsageTelemetryBatch,
+} from "../usage-telemetry";
 
 // ---------------------------------------------------------------------------
 // Idempotency key tests — these match the shared test vectors that the
@@ -479,6 +482,82 @@ describe("parseUsageTelemetryBatch negative costUsd scope", () => {
       occurredAt: "2026-06-13T00:00:00.000Z",
     });
     expect(events[0].costUsd).toBe(21.45);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// A negative subscription costUsd is a real refund, but any
+// USAGE_INGEST_TOKEN holder can post one and this monitor is single-owner
+// with no per-caller scoping — an unbounded magnitude is unbounded
+// spend-erasure / budget-alert suppression. Bound it per event.
+//
+// Boundary semantics: MAX_NEGATIVE_SUBSCRIPTION_COST_USD is the maximum
+// magnitude a single negative subscription costUsd may carry, INCLUSIVE.
+// Exactly -MAX_NEGATIVE_SUBSCRIPTION_COST_USD is accepted; anything more
+// negative (further from zero) is rejected. Positive amounts are unaffected.
+// ---------------------------------------------------------------------------
+
+describe("parseUsageTelemetryBatch negative subscription costUsd magnitude bound", () => {
+  it("accepts a negative costUsd comfortably inside the bound", () => {
+    const events = parseUsageTelemetryBatch({
+      sourceApp: "manual-billing-adjustment",
+      provider: "anthropic",
+      metricType: "subscription",
+      costUsd: -999.99,
+      occurredAt: "2026-06-16T00:00:00.000Z",
+    });
+    expect(events[0].costUsd).toBe(-999.99);
+  });
+
+  it("accepts a negative costUsd exactly at the bound (inclusive boundary)", () => {
+    const events = parseUsageTelemetryBatch({
+      sourceApp: "manual-billing-adjustment",
+      provider: "anthropic",
+      metricType: "subscription",
+      costUsd: -MAX_NEGATIVE_SUBSCRIPTION_COST_USD,
+      occurredAt: "2026-06-16T00:00:00.000Z",
+    });
+    expect(events[0].costUsd).toBe(-MAX_NEGATIVE_SUBSCRIPTION_COST_USD);
+  });
+
+  it("rejects a negative costUsd one cent past the bound", () => {
+    expect(() =>
+      parseUsageTelemetryBatch({
+        sourceApp: "manual-billing-adjustment",
+        provider: "anthropic",
+        metricType: "subscription",
+        costUsd: -(MAX_NEGATIVE_SUBSCRIPTION_COST_USD + 0.01),
+        occurredAt: "2026-06-16T00:00:00.000Z",
+      })
+    ).toThrow(
+      `costUsd must not be more negative than -${MAX_NEGATIVE_SUBSCRIPTION_COST_USD}`
+    );
+  });
+
+  it("rejects a large negative costUsd for every non-subscription metricType regardless of magnitude", () => {
+    for (const metricType of [
+      "usage",
+      "cost",
+      "quota",
+      "tier",
+      "health",
+      "balance",
+      "limit",
+      "quota_sync",
+      "credit_balance",
+    ]) {
+      expect(
+        () =>
+          parseUsageTelemetryBatch({
+            sourceApp: "manual-billing-adjustment",
+            provider: "anthropic",
+            metricType,
+            costUsd: -(MAX_NEGATIVE_SUBSCRIPTION_COST_USD * 50),
+            occurredAt: "2026-06-16T00:00:00.000Z",
+          }),
+        `metricType=${metricType}`
+      ).toThrow("costUsd must be a non-negative finite number");
+    }
   });
 });
 
