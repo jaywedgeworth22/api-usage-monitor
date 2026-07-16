@@ -291,6 +291,18 @@ const CATALOG: Record<CatalogProviderName, ProviderIntegrationProfile> = {
   massive: defineBlindProfile({ name: "massive", displayName: "Massive", category: "Market Data", reason: "Account and invoice information are dashboard-only; aggregate-data calls are not used for monitoring.", source: "src/lib/adapters/massive.ts" }),
   fred: defineBlindProfile({ name: "fred", displayName: "FRED", category: "Market Data", reason: "FRED data is free and exposes no account billing state.", source: "src/lib/adapters/fred.ts", cannotAdd: ["There is no paid plan, invoice, or subscription state to synchronize for the public API."] }),
   "quiver-quant": defineBlindProfile({ name: "quiver-quant", displayName: "Quiver Quantitative", category: "Market Data", reason: "Quiver Quantitative does not expose a billing or usage quota API endpoint; usage is tracked via the provider dashboard.", source: "src/lib/adapters/quiver.ts" }),
+  "unusual-whales": defineProfile({
+    name: "unusual-whales", displayName: "Unusual Whales", category: "Market Data", mode: "partial",
+    summary: "Reads the account's cumulative daily request count from a documented response header returned on a minimal, authenticated congress-trades read.",
+    reads: ["The x-uw-daily-req-count header from one minimal (limit=1) /api/congress/recent-trades request; no trade data from that response is read or stored."],
+    stores: ["Only the daily request count and a static, provider-documented note that the reset window is 8:00pm ET; the response body is discarded."],
+    credentialInputs: ["Unusual Whales API key."],
+    billing: { visibility: "metadata", summary: "The account's cumulative daily request count is direct; no documented endpoint exposes a request limit, USD price, plan tier, or renewal date." },
+    canAdd: ["A request-limit or plan endpoint could be added if Unusual Whales documents one."],
+    cannotAdd: ["No documented account, plan, or billing endpoint exists to read price, invoice, or renewal state."],
+    limitations: ["Every poll consumes one request against the same daily counter as any other authenticated call, so new connections default to daily sync.", "The provider does not return a reset timestamp; the monitor never computes or invents one from the documented 8:00pm ET reset time."],
+    source: "src/lib/adapters/unusualwhales.ts",
+  }),
   sentry: defineProfile({
     name: "sentry", displayName: "Sentry", category: "Observability", mode: "partial",
     summary: "Reads exact UTC calendar-month-to-date organization stats_v2 quantities across projects, categories, and outcomes.",

@@ -1,6 +1,6 @@
 # Direct billing and account integrations
 
-Last verified: 2026-07-15. Links below are provider-owned documentation.
+Last verified: 2026-07-16. Links below are provider-owned documentation.
 
 ## Data model and safety boundary
 
@@ -15,7 +15,7 @@ Enabling a direct Cloudflare or Google billing connection does not erase an exis
 
 The one previously owner-entered Congress.Trade Workers Paid row has a separate default-off, exact-UUID handoff. It runs only inside the adoption writer transaction and only after the linked `cloudflare-subscriptions` identity, fresh canonical paid USD term, absence of any positive ProviderPlan fixed fee or collision, current-period watermark, and deterministic historical charge event all agree exactly. A placeholder plan carrying no positive fixed fee is harmless. It updates that same Subscription's management flag, adoption guard, and `autoRenew` only; the UUID, owner display name, project attribution, dates, notes, knobs, materialized event, and history are preserved. Invalid, stale, ambiguous, or owner-edited rows fail closed with a status-only audit result.
 
-Push/manual adapters never send an inference, email, or market-data request merely to validate a credential. Twelve Data is the documented exception: `/api_usage` itself consumes one credit, so new Twelve Data connections default to daily rather than hourly polling. Dynamic endpoints are HTTPS-only, redirect-denied, DNS-pinned, private-address-blocked, and response-size-bounded. Pinecone-discovered data-plane hosts must also match a Pinecone-controlled `*.svc.*.pinecone.io` host before the API key is forwarded.
+Push/manual adapters never send an inference, email, or market-data request merely to validate a credential. Twelve Data and Unusual Whales are the documented exceptions: `/api_usage` itself consumes one Twelve Data credit, and Unusual Whales exposes its usage counter only as a response header on a real, minimal (`limit=1`) `/api/congress/recent-trades` read, so both default new connections to daily rather than hourly polling. Dynamic endpoints are HTTPS-only, redirect-denied, DNS-pinned, private-address-blocked, and response-size-bounded. Pinecone-discovered data-plane hosts must also match a Pinecone-controlled `*.svc.*.pinecone.io` host before the API key is forwarded.
 
 Credential-shaped provider configuration is stored in encrypted `Provider.secretConfig`. `config.adminApiKey`, `managementKey`, `apiKeySid`, `authUsername`, `apiSecret`, `secretKey`, `serviceAccountJson`, tokens, passwords, authorization headers, and `extraHeaders` are decrypted only inside the adapter registry. Legacy browser-sync cookie/localStorage/sessionStorage containers are immediately redacted from API responses and scrubbed by the provider-secret migration because adapters do not need them. Provider API responses return only public config and safe `secretConfigMeta` field names.
 
@@ -50,6 +50,7 @@ These APIs are useful direct replacements for manually typed status/limits, but 
 | Hetzner Cloud | Server type, status, location and provider-published monthly plan run-rate per server in the project owner's actual `/pricing` currency | Resource prices are not accrued invoice cost; non-USD amounts are never relabeled or added to USD spend | [Cloud API](https://docs.hetzner.cloud/reference/cloud) |
 | Twelve Data | Current plan body plus real-time credits used/remaining from documented response headers | No billing price or renewal API; `/api_usage` consumes one credit, so new connections default to daily sync | [API usage endpoint](https://twelvedata.com/docs/advanced/api-usage) |
 | Intrinio | Per-feed current usage, limit, remaining calls and reset window | No subscription price/invoice API | [Current usage](https://docs.intrinio.com/documentation/web_api/get_account_current_usage_v2) |
+| Unusual Whales | Cumulative daily request count from the `x-uw-daily-req-count` header on a minimal (`limit=1`) `/api/congress/recent-trades` read | No account/plan/billing endpoint exists; that poll consumes one request against the same daily counter, so new connections default to daily sync; the documented 8:00pm ET reset time is never used to invent a reset timestamp | [How to check your API usage](https://unusualwhales.com/information/how-to-check-your-api-usage) |
 | Pushover | Pooled account/team monthly message limit, remaining messages and reset | Since May 1, 2026 the allowance is pooled rather than per-application; price/status remain unavailable | [Application limits](https://pushover.net/api) |
 | Tradier | Documented API rate-limit allowed/used/available/reset plus brokerage account status | Portfolio P/L and buying power are not API spend; they remain account metadata | [Rate limiting](https://docs.tradier.com/docs/rate-limiting) |
 | Sentry | Organization event/transaction consumption summary | No documented account billing/subscription endpoint | [Organizations API](https://docs.sentry.io/api/organizations/) |
