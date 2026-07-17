@@ -43,6 +43,40 @@ function log(message) {
   console.log(`[sqlite-pre-migration-backup] ${message}`);
 }
 
+function clampedIntEnv(name, fallback, min, max) {
+  const raw = process.env[name]?.trim();
+  if (!raw) return fallback;
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.min(Math.max(Math.trunc(parsed), min), max);
+}
+
+// Native (non-heap) memory bound on the read-only connections this script
+// opens against the live database. Shares SQLITE_CACHE_SIZE_KIB /
+// SQLITE_MMAP_SIZE_BYTES with src/lib/prisma.ts's applySqliteNativeMemoryPragmas
+// (same rationale: SQLite's own page cache/mmap are native allocations
+// outside any V8 heap cap) so operators tune one pair of knobs for the whole
+// app instead of two. Copying and integrity-checking a 130MB+ database is the
+// heaviest I/O this script does; an unbounded mmap here would let the OS map
+// large chunks of that file into this short-lived process's address space
+// right before migrate-safe and npm start start their own memory ramp.
+function applySqliteMemoryPragmas(database) {
+  const cacheSizeKib = -Math.abs(
+    clampedIntEnv("SQLITE_CACHE_SIZE_KIB", 2_000, 256, 65_536)
+  );
+  const mmapSizeBytes = clampedIntEnv("SQLITE_MMAP_SIZE_BYTES", 0, 0, 268_435_456);
+  database.exec(`PRAGMA cache_size = ${cacheSizeKib}`);
+  database.exec(`PRAGMA mmap_size = ${mmapSizeBytes}`);
+}
+
+// Pages copied per sqlite3_backup_step() call. Node's own default is 100;
+// exposed so a smaller value can be set if the backup's per-step native
+// working set ever needs to shrink further. Node does not await the
+// `progress` callback between steps (verified empirically - it fires steps
+// back-to-back), so this does NOT add pacing/inter-step delays, only bounds
+// how many pages move in a single native step.
+const BACKUP_RATE_PAGES = clampedIntEnv("SQLITE_BACKUP_RATE_PAGES", 100, 1, 1000);
+
 function parseDatabasePath(databaseUrl) {
   if (!databaseUrl?.startsWith("file:")) {
     throw new Error("DATABASE_URL must be a file: SQLite URL");
@@ -126,6 +160,7 @@ function assertIntegrity(path) {
     timeout: 30_000,
   });
   try {
+    applySqliteMemoryPragmas(database);
     const rows = database.prepare("PRAGMA integrity_check").all();
     if (
       rows.length !== 1 ||
@@ -214,8 +249,9 @@ async function main() {
       timeout: 30_000,
     });
     try {
+      applySqliteMemoryPragmas(source);
       log(`creating consistent snapshot of ${databasePath}`);
-      await backup(source, partialPath);
+      await backup(source, partialPath, { rate: BACKUP_RATE_PAGES });
     } finally {
       source.close();
     }

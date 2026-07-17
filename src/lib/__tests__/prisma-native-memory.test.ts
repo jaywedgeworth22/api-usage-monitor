@@ -1,0 +1,149 @@
+import fs from "fs";
+import os from "os";
+import path from "path";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { setupPrismaSqliteTestDb } from "./setup-test-db";
+
+// applySqliteNativeMemoryPragmas bounds native (non-heap) SQLite memory on
+// the shared Prisma singleton - see the rationale comment in
+// src/lib/prisma.ts. These tests exercise it against a real temp SQLite file
+// (not a mock) because the whole point is verifying the PRAGMAs actually take
+// effect on the connection Prisma's query engine uses.
+//
+// Anti-regression note: an earlier version applied the PRAGMAs with
+// $executeRawUnsafe, which SQLite rejects for statements that return a row
+// ("Execute returned results, which is not allowed in SQLite"); the error was
+// swallowed, so the code silently no-op'd and left SQLite's defaults
+// (cache_size=-2000, mmap_size=0) in place. A test that asserted those exact
+// defaults PASSED anyway - a false positive. The tests below therefore drive
+// NON-DEFAULT values through the code path so a silent fallback to defaults
+// would fail the assertion.
+
+let dbPath: string;
+
+beforeAll(() => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "prisma-native-memory-test-"));
+  dbPath = path.join(dir, "test.db");
+  process.env.DATABASE_URL = `file:${dbPath}`;
+  setupPrismaSqliteTestDb(dbPath);
+});
+
+afterAll(async () => {
+  const { prisma } = await import("@/lib/prisma");
+  await prisma.$disconnect();
+  if (dbPath && fs.existsSync(path.dirname(dbPath))) {
+    fs.rmSync(path.dirname(dbPath), { recursive: true, force: true });
+  }
+});
+
+afterEach(async () => {
+  vi.unstubAllEnvs();
+  vi.restoreAllMocks();
+  const { resetSqliteNativeMemoryPragmasForTests } = await import("@/lib/prisma");
+  resetSqliteNativeMemoryPragmasForTests();
+});
+
+describe("resolveSqliteMemoryPragmaValues", () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it("defaults to a 2MB cache and mmap disabled", async () => {
+    const { resolveSqliteMemoryPragmaValues } = await import("@/lib/prisma");
+    expect(resolveSqliteMemoryPragmaValues()).toEqual({
+      cacheSizeKib: -2000,
+      mmapSizeBytes: 0,
+    });
+  });
+
+  it("honors env overrides and always reports cache size as negative KiB", async () => {
+    vi.stubEnv("SQLITE_CACHE_SIZE_KIB", "4000");
+    vi.stubEnv("SQLITE_MMAP_SIZE_BYTES", "8388608");
+    const { resolveSqliteMemoryPragmaValues } = await import("@/lib/prisma");
+    expect(resolveSqliteMemoryPragmaValues()).toEqual({
+      cacheSizeKib: -4000,
+      mmapSizeBytes: 8_388_608,
+    });
+  });
+
+  it("clamps out-of-range or non-numeric overrides back to safe bounds", async () => {
+    vi.stubEnv("SQLITE_CACHE_SIZE_KIB", "not-a-number");
+    vi.stubEnv("SQLITE_MMAP_SIZE_BYTES", "999999999999");
+    const { resolveSqliteMemoryPragmaValues } = await import("@/lib/prisma");
+    const values = resolveSqliteMemoryPragmaValues();
+    expect(values.cacheSizeKib).toBe(-2000); // invalid input falls back to default
+    expect(values.mmapSizeBytes).toBe(268_435_456); // clamped to the 256MB ceiling
+  });
+});
+
+describe("applySqliteNativeMemoryPragmas", () => {
+  it("actually applies NON-DEFAULT bounds to the live connection, with no error logged", async () => {
+    // Deliberately different from SQLite's defaults (-2000 / 0) so the
+    // read-back proves the code drove these values. The no-error assertion is
+    // essential to fully catch the $executeRaw regression: SQLite applies a
+    // PRAGMA's side effect BEFORE returning the row that makes Prisma's
+    // execute-path throw, so the value can leak through even on the broken
+    // path - but that path logs a swallowed error, which this test rejects.
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    vi.stubEnv("SQLITE_CACHE_SIZE_KIB", "1234");
+    vi.stubEnv("SQLITE_MMAP_SIZE_BYTES", "1048576");
+    const { applySqliteNativeMemoryPragmas, readSqliteMemoryPragmas } = await import(
+      "@/lib/prisma"
+    );
+
+    await applySqliteNativeMemoryPragmas();
+
+    const applied = await readSqliteMemoryPragmas();
+    expect(applied).toEqual({ cacheSizeKib: -1234, mmapSizeBytes: 1_048_576 });
+    expect(errorSpy).not.toHaveBeenCalled();
+  });
+
+  it("pins the ~2MB cache and disables mmap by default", async () => {
+    const { applySqliteNativeMemoryPragmas, readSqliteMemoryPragmas } = await import(
+      "@/lib/prisma"
+    );
+
+    await applySqliteNativeMemoryPragmas();
+
+    expect(await readSqliteMemoryPragmas()).toEqual({
+      cacheSizeKib: -2000,
+      mmapSizeBytes: 0,
+    });
+  });
+
+  it("does not log an application-failure error on the happy path", async () => {
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const { applySqliteNativeMemoryPragmas } = await import("@/lib/prisma");
+
+    await applySqliteNativeMemoryPragmas();
+
+    // Neither the swallowed-exception path nor the read-back-mismatch path
+    // should fire when the bounds apply cleanly.
+    expect(errorSpy).not.toHaveBeenCalled();
+  });
+
+  it("uses the query path, not the execute path (which SQLite rejects for PRAGMA)", async () => {
+    const { prisma, applySqliteNativeMemoryPragmas } = await import("@/lib/prisma");
+    const querySpy = vi.spyOn(prisma, "$queryRawUnsafe");
+    const executeSpy = vi.spyOn(prisma, "$executeRawUnsafe");
+
+    await applySqliteNativeMemoryPragmas();
+
+    const setCalls = querySpy.mock.calls
+      .map((call) => String(call[0]))
+      .filter((sql) => /PRAGMA (cache_size|mmap_size)\s*=/.test(sql));
+    expect(setCalls).toHaveLength(2);
+    expect(executeSpy).not.toHaveBeenCalled();
+  });
+
+  it("is idempotent - a second call does not re-issue the PRAGMAs", async () => {
+    const { prisma, applySqliteNativeMemoryPragmas } = await import("@/lib/prisma");
+    const spy = vi.spyOn(prisma, "$queryRawUnsafe");
+
+    await applySqliteNativeMemoryPragmas();
+    const callsAfterFirst = spy.mock.calls.length;
+    await applySqliteNativeMemoryPragmas();
+
+    expect(spy.mock.calls.length).toBe(callsAfterFirst);
+  });
+});

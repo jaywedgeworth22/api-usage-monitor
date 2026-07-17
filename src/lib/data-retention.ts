@@ -6,7 +6,13 @@ const MS_PER_DAY = 24 * 60 * 60 * 1000;
 const DEFAULT_SNAPSHOT_RETENTION_DAYS = 45;
 const DEFAULT_EXTERNAL_EVENT_RETENTION_DAYS = 90;
 const DEFAULT_TOMBSTONE_RETENTION_DAYS = 180;
-const DEFAULT_BATCH_SIZE = 1000;
+// Smaller than the historical 1000: shrinks the peak in-flight row buffer
+// (and the per-batch upsert/delete transaction) that each pruning pass holds
+// at once, on the theory that a scheduler tick already running during boot
+// (see DEFAULT_SCHEDULER_BOOT_DELAY_MS in usage-recorder.ts) should stay as
+// light as possible per batch. Still overridable via DATA_RETENTION_BATCH_SIZE
+// (100-10,000) and still paced by the existing 50ms inter-batch sleep below.
+const DEFAULT_BATCH_SIZE = 250;
 const DEFAULT_RETENTION_INTERVAL_HOURS = 6;
 
 interface UsageSnapshotRow {

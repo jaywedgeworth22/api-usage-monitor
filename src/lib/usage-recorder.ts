@@ -391,6 +391,25 @@ export async function fetchAllDueProviders(): Promise<FetchAllProvidersResult> {
 const POLL_INTERVAL_MS = 15 * 60 * 1000; // matches the old external cron's */15 schedule exactly - don't change the cadence, only where it runs
 let schedulerStarted = false;
 
+// The first tick does real work immediately (provider polling + retention
+// pruning/rollups + subscription/alert maintenance - see runUsageMaintenance)
+// and previously fired synchronously from register(), racing the boot-time
+// pre-migration backup, an optional concurrent Litestream replicate process,
+// and Next.js's own first-request compilation for native (non-heap) memory
+// on a 512MB container. Delaying it lets the HTTP server finish starting and
+// that boot-time I/O settle before the heaviest in-process pass begins.
+// Recurring ticks are unaffected - only this first one is delayed, and never
+// beyond the regular cadence.
+const DEFAULT_SCHEDULER_BOOT_DELAY_MS = 30_000;
+
+export function resolveSchedulerBootDelayMs(): number {
+  const raw = process.env.USAGE_SCHEDULER_BOOT_DELAY_MS;
+  if (raw == null || raw.trim() === "") return DEFAULT_SCHEDULER_BOOT_DELAY_MS;
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed) || parsed < 0) return DEFAULT_SCHEDULER_BOOT_DELAY_MS;
+  return Math.min(parsed, POLL_INTERVAL_MS);
+}
+
 export interface UsagePollingSchedulerTickDependencies {
   fetchProviders?: typeof fetchAllDueProviders;
   runMaintenance?: typeof runUsageMaintenance;
@@ -433,10 +452,18 @@ export async function runUsagePollingSchedulerTick(
   }
 }
 
-export function startUsagePollingScheduler(): void {
+export function startUsagePollingScheduler(
+  tick: () => Promise<void> = runUsagePollingSchedulerTick
+): void {
   if (schedulerStarted) return; // instrumentation.register() can fire more than once in some Next.js scenarios - guard against double-scheduling
   schedulerStarted = true;
   markSchedulerStarted();
-  setInterval(() => void runUsagePollingSchedulerTick(), POLL_INTERVAL_MS);
-  void runUsagePollingSchedulerTick(); // also run once immediately on boot, don't wait a full interval
+  setInterval(() => void tick(), POLL_INTERVAL_MS);
+  // First tick still runs well before the next regular interval, just not
+  // synchronously at boot - see DEFAULT_SCHEDULER_BOOT_DELAY_MS above.
+  const bootDelayMs = resolveSchedulerBootDelayMs();
+  const bootTimer = setTimeout(() => void tick(), bootDelayMs);
+  // Don't let a still-pending boot-delay timer keep a one-shot/test process
+  // alive on its own - mirrors the existing per-provider timeout's unref().
+  bootTimer.unref?.();
 }

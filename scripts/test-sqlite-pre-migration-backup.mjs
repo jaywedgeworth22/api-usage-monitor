@@ -113,6 +113,19 @@ try {
     0o700
   );
 
+  // Native SQLite memory bounds (shared with src/lib/prisma.ts) and the
+  // backup step rate must be tunable without breaking the backup itself -
+  // a custom cache/mmap/rate combination should still produce a verified,
+  // byte-correct backup.
+  const tunedMemory = run(`file:${databasePath}`, {
+    SQLITE_PRE_MIGRATION_BACKUP_RETENTION: "2",
+    SQLITE_CACHE_SIZE_KIB: "512",
+    SQLITE_MMAP_SIZE_BYTES: "1048576",
+    SQLITE_BACKUP_RATE_PAGES: "1",
+  });
+  expectStatus("tuned native-memory backup", tunedMemory, 0);
+  assertBackup(backupFiles(databasePath).at(-1), ["alpha", "beta"]);
+
   source.prepare("INSERT INTO sample (value) VALUES (?)").run("gamma");
   for (let index = 0; index < 3; index += 1) {
     expectStatus(
