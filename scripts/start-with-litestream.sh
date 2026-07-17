@@ -105,9 +105,8 @@ du -sh /data/.* 2>/dev/null || true
 du -sh /data/* 2>/dev/null || true
 
 if [[ -d "/data/.pre-migration-backups" ]]; then
-  log "cleaning up old pre-migration backups to prevent disk full errors."
+  log "cleaning up old partial pre-migration backups to prevent disk full errors."
   rm -f /data/.pre-migration-backups/*.partial 2>/dev/null || true
-  rm -f /data/.pre-migration-backups/*.backup.db 2>/dev/null || true
 fi
 
 log "creating and verifying pre-migration SQLite backup when a database exists."

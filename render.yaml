@@ -60,6 +60,8 @@ services:
       # This value has higher precedence than .node-version on Render.
       - key: NODE_VERSION
         value: 24.14.1
+      - key: NODE_OPTIONS
+        value: --max-old-space-size=350
       - key: DATABASE_URL
         value: file:/data/prod.db
       # Keep the newest verified transaction-consistent snapshots beside the
