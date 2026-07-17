@@ -81,6 +81,7 @@ const ALLOWLIST: Record<Scope, readonly string[]> = {
     "DEEPSEEK_API_KEY",
     "GEMINI_API_KEY",
     "HETZNER_API_TOKEN",
+    "OPENROUTER_API_KEY",
     "PINECONE_API_KEY",
     "RESEND_API_KEY",
     "SENTRY_AUTH_TOKEN",
@@ -93,6 +94,7 @@ const ALLOWLIST: Record<Scope, readonly string[]> = {
     "LLAMAPARSE_API_KEY",
     "MISTRAL_API_KEY",
     "OPENAI_API_KEY",
+    "OPENROUTER_API_KEY",
     "RESEND_API_KEY",
     "STRIPE_SECRET_KEY",
     "TWELVEDATA_API_KEY",
@@ -948,7 +950,7 @@ describe("Infisical provider credential sync", () => {
     expect(result).toMatchObject({
       enabled: true,
       configured: true,
-      created: 18,
+      created: 20,
       updated: 0,
       unchanged: 0,
       missing: 0,
@@ -959,7 +961,7 @@ describe("Infisical provider credential sync", () => {
     const providers = await prisma.provider.findMany({
       include: { allocations: { include: { project: true } } },
     });
-    expect(providers).toHaveLength(18);
+    expect(providers).toHaveLength(20);
     const deepseek = providers.filter((provider) => provider.name === "deepseek");
     expect(deepseek).toHaveLength(2);
     expect(
@@ -984,6 +986,17 @@ describe("Infisical provider credential sync", () => {
     ).toEqual([
       secrets.ct.GEMINI_API_KEY,
       secrets.st.GEMINI_API_KEY,
+    ].sort());
+    const openrouter = providers.filter((provider) => provider.name === "openrouter");
+    expect(openrouter).toHaveLength(2);
+    expect(
+      openrouter.map((provider) => provider.allocations[0]?.project.name).sort()
+    ).toEqual(["Congress.Trade", "SocraticTrade.com"]);
+    expect(
+      openrouter.map((provider) => decrypt(provider.apiKey!)).sort()
+    ).toEqual([
+      secrets.ct.OPENROUTER_API_KEY,
+      secrets.st.OPENROUTER_API_KEY,
     ].sort());
     expect(
       providers.filter((provider) => provider.name === "twelvedata")
@@ -1046,7 +1059,7 @@ describe("Infisical provider credential sync", () => {
     const second = await syncProviderCredentialsFromInfisical();
 
     expect(second.updated).toBe(1);
-    expect(second.unchanged).toBe(17);
+    expect(second.unchanged).toBe(19);
     const updated = await prisma.provider.findUniqueOrThrow({
       where: { id: stResend.id },
     });
@@ -1419,7 +1432,7 @@ describe("Infisical provider credential sync", () => {
 
     const result = await syncProviderCredentialsFromInfisical();
 
-    expect(result.failed).toBe(18);
+    expect(result.failed).toBe(20);
     expect(result.sources[0]).toMatchObject({
       source: "st",
       status: "error",

@@ -241,11 +241,10 @@ export async function GET() {
   );
 }
 
-export function resetReadinessStateForTests(): void {
-  if (process.env.NODE_ENV !== "test") {
-    throw new Error("Readiness state can only be reset in tests");
-  }
-  databaseProbeInFlight = null;
-  databaseProbeHasSucceeded = false;
-  databaseFailureCache = null;
+if (process.env.NODE_ENV === "test") {
+  (globalThis as any).resetReadinessStateForTests = () => {
+    databaseProbeInFlight = null;
+    databaseProbeHasSucceeded = false;
+    databaseFailureCache = null;
+  };
 }

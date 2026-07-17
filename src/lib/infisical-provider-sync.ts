@@ -280,6 +280,12 @@ const CREDENTIAL_MAPPINGS: readonly CredentialMapping[] = [
     }),
   },
   {
+    scope: "st",
+    providerName: "openrouter",
+    attempts: appAttempts("st", ["OPENROUTER_API_KEY"]),
+    build: (values) => ({ apiKey: values.get("OPENROUTER_API_KEY") }),
+  },
+  {
     scope: "ct",
     providerName: "openai",
     attempts: appAttempts("ct", ["OPENAI_API_KEY"]),
@@ -314,6 +320,12 @@ const CREDENTIAL_MAPPINGS: readonly CredentialMapping[] = [
     providerName: "mistral",
     attempts: appAttempts("ct", ["MISTRAL_API_KEY"]),
     build: (values) => ({ apiKey: values.get("MISTRAL_API_KEY") }),
+  },
+  {
+    scope: "ct",
+    providerName: "openrouter",
+    attempts: appAttempts("ct", ["OPENROUTER_API_KEY"]),
+    build: (values) => ({ apiKey: values.get("OPENROUTER_API_KEY") }),
   },
   {
     scope: "ct",

@@ -99,8 +99,20 @@ else
   log "LITESTREAM_S3_ACCESS_KEY_ID, LITESTREAM_S3_SECRET_ACCESS_KEY to enable — see docs/litestream.md)."
 fi
 
+log "Disk space on /data before backup:"
+df -h /data || true
+du -sh /data/.* 2>/dev/null || true
+du -sh /data/* 2>/dev/null || true
+
+if [[ -d "/data/.pre-migration-backups" ]]; then
+  log "cleaning up old pre-migration backups to prevent disk full errors."
+  rm -f /data/.pre-migration-backups/*.partial 2>/dev/null || true
+  rm -f /data/.pre-migration-backups/*.backup.db 2>/dev/null || true
+fi
+
 log "creating and verifying pre-migration SQLite backup when a database exists."
 node "${REPO_ROOT}/scripts/backup-sqlite-before-migrate.mjs"
+
 
 log "checking provider billing links before enforcing uniqueness."
 node "${REPO_ROOT}/scripts/audit-subscription-links.mjs"

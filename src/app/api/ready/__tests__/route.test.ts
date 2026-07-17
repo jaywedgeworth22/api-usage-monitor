@@ -13,7 +13,9 @@ vi.mock("@/lib/prisma", () => ({
   prisma: { $queryRawUnsafe: mocks.queryRawUnsafe },
 }));
 
-import { GET, resetReadinessStateForTests } from "../route";
+import { GET } from "../route";
+
+const resetReadinessStateForTests = (globalThis as any).resetReadinessStateForTests;
 
 describe("GET /api/ready", () => {
   beforeEach(() => {
