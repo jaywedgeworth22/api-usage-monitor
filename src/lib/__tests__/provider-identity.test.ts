@@ -23,6 +23,8 @@ describe("provider identity", () => {
     ["OpenRouter", "openrouter"],
     ["open-router", "openrouter"],
     ["OpenRouter.ai", "openrouter"],
+    ["Render.com", "render"],
+    ["render", "render"],
   ])("maps %s to %s", (input, expected) => {
     expect(canonicalProviderKey(input)).toBe(expected);
   });
