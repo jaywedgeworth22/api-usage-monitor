@@ -219,4 +219,37 @@ describe("ProviderTable cost coverage", () => {
 
     expect(html).toContain("Usage configuration changed");
   });
+
+  it("shows a cost coverage gap warning when the adapter flags one", () => {
+    const html = renderTable([
+      provider({
+        id: "cloudflare",
+        name: "cloudflare",
+        displayName: "Cloudflare",
+        spentUsd: 5,
+        spendCoverage: "complete",
+        costCoverageCaveat: {
+          code: "cloudflare_paygo_usage_unavailable",
+          message: "Usage-based costs (D1, R2, Workers, Queues overage) are not visible for this account — only the fixed subscription fee is shown. Cost may be understated.",
+        },
+      }),
+    ]);
+
+    expect(html).toContain("Cost coverage gap:");
+    expect(html).toContain("Usage-based costs (D1, R2, Workers, Queues overage) are not visible");
+  });
+
+  it("omits the cost coverage gap warning when the adapter did not flag one", () => {
+    const html = renderTable([
+      provider({
+        id: "cloudflare",
+        name: "cloudflare",
+        displayName: "Cloudflare",
+        spentUsd: 5,
+        spendCoverage: "complete",
+      }),
+    ]);
+
+    expect(html).not.toContain("Cost coverage gap");
+  });
 });

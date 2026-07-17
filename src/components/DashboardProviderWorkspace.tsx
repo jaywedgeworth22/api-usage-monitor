@@ -12,7 +12,10 @@ import {
   Settings,
 } from "lucide-react";
 import type { ExternalBillingRecord } from "@/components/ExternalBillingDetails";
-import type { ProviderCostCoverage } from "@/components/ProviderCard";
+import type {
+  ProviderCostCoverage,
+  ProviderCostCoverageCaveat,
+} from "@/components/ProviderCard";
 import type { SubscriptionRow } from "@/components/SubscriptionsPanel";
 import SortHeader, { type SortDirection } from "@/components/table/SortHeader";
 
@@ -54,6 +57,7 @@ interface WorkspaceProvider {
   observedVariableUsageUsd?: number;
   estimatedApiEquivalentUsd?: number;
   spendCoverage: ProviderCostCoverage;
+  costCoverageCaveat?: ProviderCostCoverageCaveat | null;
   pushedCostCoverage: ProviderCostCoverage;
   pushedPricedEventCount: number;
   pushedUnpricedEventCount: number;
@@ -101,6 +105,15 @@ interface ProviderFamily {
   criticalCount: number;
   activeCount: number;
   incompleteCostCount: number;
+  // Count of member providers with a costCoverageCaveat set. Kept separate
+  // from incompleteCostCount above (spendCoverage) - a caveat is a distinct
+  // "totalCost is known-incomplete for a specific reason" signal that must
+  // stay visible on its own even if spendCoverage reads "complete".
+  costCoverageCaveatCount: number;
+  // First member's caveat message, shown as the family-level warning's
+  // tooltip/detail text. Families are almost always a single account per
+  // provider today, so "first" is effectively "the" caveat in practice.
+  costCoverageCaveatMessage: string | null;
   nextRenewalAt: string | null;
   latestFetchedAt: string | null;
 }
@@ -605,6 +618,15 @@ function CompactFamilyCells({
             <span className="block text-xs text-gray-500 dark:text-gray-400">See exact account values below</span>
           </span>
         )}
+        {family.costCoverageCaveatCount > 0 && (
+          <p
+            className="mt-0.5 flex items-center gap-1 text-[11px] font-medium text-orange-700 dark:text-orange-300"
+            title={family.costCoverageCaveatMessage ?? "Usage-based costs are not fully visible for this provider."}
+          >
+            <AlertTriangle className="h-3 w-3 shrink-0" aria-hidden="true" />
+            Cost coverage gap
+          </p>
+        )}
       </td>
       <td data-label="Credits / balance" className="px-4 py-2">
         {family.financialsAggregated ? (
@@ -741,6 +763,15 @@ function ComfortableFamilyCells({
         }`}>
           {costCoverageLabel(family)}
         </span>
+        {family.costCoverageCaveatCount > 0 && (
+          <span
+            className="mt-1 flex items-center gap-1 text-[11px] font-medium text-orange-700 dark:text-orange-300"
+            title={family.costCoverageCaveatMessage ?? "Usage-based costs are not fully visible for this provider."}
+          >
+            <AlertTriangle className="h-3 w-3 shrink-0" aria-hidden="true" />
+            Cost coverage gap
+          </span>
+        )}
       </td>
       <td data-label="Credits / balance" className="px-4 py-4">
         {family.financialsAggregated ? (
@@ -967,6 +998,10 @@ export default function DashboardProviderWorkspace({
         ),
         activeCount: groupProviders.filter((provider) => provider.isActive).length,
         incompleteCostCount: groupProviders.filter((provider) => provider.isActive && provider.spendCoverage !== "complete").length,
+        costCoverageCaveatCount: groupProviders.filter((provider) => provider.costCoverageCaveat != null).length,
+        costCoverageCaveatMessage:
+          groupProviders.find((provider) => provider.costCoverageCaveat != null)
+            ?.costCoverageCaveat?.message ?? null,
         nextRenewalAt: earliestFutureDate(
           [...subscriptionRenewals, ...externalRenewals],
           referenceNow
@@ -1222,6 +1257,11 @@ export default function DashboardProviderWorkspace({
                                 {(provider.estimatedApiEquivalentUsd ?? 0) > 0 && (
                                   <span className="block text-xs text-amber-700 dark:text-amber-300">
                                     {formatCurrency(provider.estimatedApiEquivalentUsd ?? 0)} Claude estimate excluded
+                                  </span>
+                                )}
+                                {provider.costCoverageCaveat && (
+                                  <span className="block text-xs font-medium text-orange-700 dark:text-orange-300">
+                                    {provider.costCoverageCaveat.message}
                                   </span>
                                 )}
                                 <span className="block text-xs text-gray-500 dark:text-gray-400">

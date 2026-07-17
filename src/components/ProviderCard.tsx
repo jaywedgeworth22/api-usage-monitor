@@ -11,6 +11,18 @@ export type ProviderCostCoverage =
   | "unknown"
   | "legacy_unknown";
 
+/**
+ * A specific, adapter-named reason totalCost may be understated (e.g. a
+ * provider's usage-based billing endpoint is unreachable while its fixed
+ * subscription cost is still known). Distinct from ProviderCostCoverage
+ * above - that describes pushed-telemetry pricing completeness - so this
+ * gets its own badge rather than being folded into that one.
+ */
+export interface ProviderCostCoverageCaveat {
+  code: string;
+  message: string;
+}
+
 interface ProviderCardProps {
   id: string;
   name: string;
@@ -41,6 +53,7 @@ interface ProviderCardProps {
   spentUsd?: number;
   snapshotCostFetchedAt?: string | null;
   spendCoverage?: ProviderCostCoverage;
+  costCoverageCaveat?: ProviderCostCoverageCaveat | null;
   pushedCostCoverage?: ProviderCostCoverage;
   pushedPricedEventCount?: number;
   pushedUnpricedEventCount?: number;
@@ -111,6 +124,7 @@ export default function ProviderCard({
   spentUsd,
   snapshotCostFetchedAt,
   spendCoverage,
+  costCoverageCaveat,
   pushedUnpricedEventCount = 0,
   pushedUnclassifiedCostEventCount = 0,
   externalBilling = [],
@@ -347,6 +361,13 @@ export default function ProviderCard({
           {externalBilling.length} record{externalBilling.length === 1 ? "" : "s"} · {connectedBilling.serviceName || connectedBilling.planName || connectedBilling.kind}
           {connectedBilling.status ? ` · ${connectedBilling.status}` : ""}
           {staleBillingCount > 0 ? ` · ${staleBillingCount} stale` : ""}
+        </div>
+      )}
+
+      {costCoverageCaveat && (
+        <div className="mt-3 rounded-lg border border-orange-200 bg-orange-50 px-3 py-2 text-xs text-orange-800 dark:border-orange-900 dark:bg-orange-950/40 dark:text-orange-200">
+          <span className="font-semibold">Cost coverage gap:</span>{" "}
+          {costCoverageCaveat.message}
         </div>
       )}
 

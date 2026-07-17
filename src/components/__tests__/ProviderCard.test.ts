@@ -91,6 +91,59 @@ describe("ProviderCard", () => {
     expect(html).toContain("3 unpriced events");
   });
 
+  it("shows a cost coverage gap warning when the adapter flags one", () => {
+    const html = renderToStaticMarkup(
+      createElement(ProviderCard, {
+        id: "cloudflare",
+        name: "cloudflare",
+        displayName: "Cloudflare",
+        type: "builtin",
+        isActive: true,
+        spentUsd: 5,
+        projectedEomUsd: 5,
+        spendCoverage: "complete",
+        costCoverageCaveat: {
+          code: "cloudflare_paygo_usage_unavailable",
+          message: "Usage-based costs (D1, R2, Workers, Queues overage) are not visible for this account — only the fixed subscription fee is shown. Cost may be understated.",
+        },
+        latestSnapshot: {
+          balance: null,
+          totalCost: 5,
+          totalRequests: null,
+          credits: null,
+          fetchedAt: "2026-07-17T00:00:00.000Z",
+        },
+      })
+    );
+
+    expect(html).toContain("Cost coverage gap:");
+    expect(html).toContain("Usage-based costs (D1, R2, Workers, Queues overage) are not visible");
+  });
+
+  it("omits the cost coverage gap warning when the adapter did not flag one", () => {
+    const html = renderToStaticMarkup(
+      createElement(ProviderCard, {
+        id: "cloudflare",
+        name: "cloudflare",
+        displayName: "Cloudflare",
+        type: "builtin",
+        isActive: true,
+        spentUsd: 5,
+        projectedEomUsd: 5,
+        spendCoverage: "complete",
+        latestSnapshot: {
+          balance: null,
+          totalCost: 5,
+          totalRequests: null,
+          credits: null,
+          fetchedAt: "2026-07-17T00:00:00.000Z",
+        },
+      })
+    );
+
+    expect(html).not.toContain("Cost coverage gap");
+  });
+
   it("separates Gemini billing freshness from the latest connection update", () => {
     const html = renderToStaticMarkup(
       createElement(ProviderCard, {

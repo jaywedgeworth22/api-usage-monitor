@@ -37,6 +37,8 @@ function family(overrides: Partial<Family> = {}): Family {
     criticalCount: 0,
     activeCount: 0,
     incompleteCostCount: 0,
+    costCoverageCaveatCount: 0,
+    costCoverageCaveatMessage: null,
     nextRenewalAt: null,
     latestFetchedAt: null,
     ...overrides,
@@ -379,6 +381,41 @@ describe("DashboardProviderWorkspace", () => {
     ]) {
       expect(html).toContain(`href="/providers/${id}"`);
     }
+  });
+
+  it("surfaces a cost coverage gap on the family row without requiring expansion", () => {
+    const html = renderWorkspace([
+      provider("cloudflare-account", {
+        name: "cloudflare",
+        displayName: "Cloudflare",
+        groupId: null,
+        spentUsd: 5,
+        spendCoverage: "complete",
+        costCoverageCaveat: {
+          code: "cloudflare_paygo_usage_unavailable",
+          message: "Usage-based costs (D1, R2, Workers, Queues overage) are not visible for this account — only the fixed subscription fee is shown. Cost may be understated.",
+        },
+      }),
+    ]);
+
+    // Single-account family: collapsed by default (PR #296).
+    expect(html).toContain('aria-expanded="false"');
+    const spendCell = extractTdInner(html, "Spend");
+    expect(spendCell).toContain("Cost coverage gap");
+  });
+
+  it("does not show a cost coverage gap badge when no member provider has one", () => {
+    const html = renderWorkspace([
+      provider("cloudflare-account", {
+        name: "cloudflare",
+        displayName: "Cloudflare",
+        groupId: null,
+        spentUsd: 5,
+        spendCoverage: "complete",
+      }),
+    ]);
+
+    expect(html).not.toContain("Cost coverage gap");
   });
 });
 

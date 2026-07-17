@@ -524,6 +524,11 @@ export default function ProviderTable({
                           {unpricedCount} usage event{unpricedCount === 1 ? "" : "s"} without cost
                         </p>
                       )}
+                    {provider.costCoverageCaveat && (
+                      <p className="mt-1 font-medium text-orange-700 dark:text-orange-300">
+                        Cost coverage gap: {provider.costCoverageCaveat.message}
+                      </p>
+                    )}
                     <p className="text-gray-600 dark:text-gray-300">
                       Budget {formatUsd(provider.plan?.monthlyBudgetUsd)}
                     </p>

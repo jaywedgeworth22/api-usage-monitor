@@ -5,6 +5,7 @@ import {
   fetchJson,
   parseNumber,
   type AdapterExternalBillingSync,
+  type CostCoverageCaveat,
   type UsageResult,
   type AdapterExternalBillingRecord,
 } from "./helpers";
@@ -403,7 +404,9 @@ export async function fetchUsage(
   // 4. PayGo billable usage is Cloudflare's billing-grade alpha endpoint.
   // It is restricted to select self-serve accounts; a 403/404 or Cloudflare
   // error 10000 is a capability miss, not a reason to discard otherwise valid
-  // subscription/analytics data.
+  // subscription/analytics data. Tracked separately from rawData so the
+  // costCoverageCaveat below doesn't have to re-parse rawData's shape.
+  let paygoCapabilityAvailable = false;
   try {
     const paygoParams = new URLSearchParams({
       from: new Date(monthStartMs).toISOString().slice(0, 10),
@@ -449,6 +452,7 @@ export async function fetchUsage(
         });
       }
       successfulCalls++;
+      paygoCapabilityAvailable = true;
       const rows = paygo.result.filter((row) => {
         const chargePeriodStart = row.ChargePeriodStart
           ? Date.parse(row.ChargePeriodStart)
@@ -649,6 +653,22 @@ export async function fetchUsage(
     });
   }
 
+  // PayGo is where D1/R2/Queues/Workers-CPU overage billing actually lives.
+  // When it's unreachable but a fixed subscription cost WAS found, totalCost
+  // is real but known-incomplete - flag it rather than let it read as
+  // "you're only paying the flat subscription fee". Not set when PayGo
+  // itself succeeded (even with $0 usage, since that's a real reading), and
+  // not set when there's no subscription data either (totalCost stays null,
+  // which is the separate already-handled "unconfigured" state).
+  const costCoverageCaveat: CostCoverageCaveat | null =
+    !paygoCapabilityAvailable && totalCost != null
+      ? {
+          code: "cloudflare_paygo_usage_unavailable",
+          message:
+            "Usage-based costs (D1, R2, Workers, Queues overage) are not visible for this account — only the fixed subscription fee is shown. Cost may be understated.",
+        }
+      : null;
+
   return {
     balance: null,
     totalCost,
@@ -657,6 +677,7 @@ export async function fetchUsage(
       totalCost != null ? new Date(monthStartMs) : null,
     costWindowEnd: totalCost != null ? now : null,
     costScope: totalCost != null ? "calendar_month_to_date" : "unknown",
+    costCoverageCaveat,
     totalRequests,
     credits: null,
     rawData,
