@@ -181,7 +181,7 @@ function SettingsPageContent() {
   }, []);
 
   useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- data fetching on mount
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- data fetching on mount
     fetchProviders();
     fetchProjects();
     fetchSubscriptions();

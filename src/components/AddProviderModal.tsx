@@ -276,7 +276,7 @@ export default function AddProviderModal({
     const config = editProvider?.config || {};
     const stringConfig = stringFieldsFromConfig(config);
     const nextTab: Tab = editProvider?.type === "custom" ? "custom" : editProvider?.type === "generic" ? "generic" : "builtin";
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- reset form state when modal opens
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- reset form state when modal opens
     setTab(nextTab);
     setError("");
     setSelectedBuiltin(editProvider?.name || "");

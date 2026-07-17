@@ -815,7 +815,7 @@ export default function DashboardProviderWorkspace({
           const field = (parsed as { field?: unknown }).field;
           const direction = (parsed as { direction?: unknown }).direction;
           if (isWorkspaceSortField(field) && isSortDirection(direction)) {
-            // eslint-disable-next-line react-hooks/set-state-in-effect
+            // eslint-disable-next-line react-hooks/exhaustive-deps
             setSortField(field);
             setSortDirection(direction);
           }
@@ -1049,7 +1049,7 @@ export default function DashboardProviderWorkspace({
   // SSRs the loading skeleton, so there is no hydration mismatch), and a
   // fresh `Date.now()` per render keeps "Last sync"/renewal labels current
   // across the 60s background refresh (see §3.3 of the density-redesign spec).
-  // eslint-disable-next-line react-hooks/purity
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   const nowMs = Date.now();
   const resetFilters = () => {
     setQuery("");
