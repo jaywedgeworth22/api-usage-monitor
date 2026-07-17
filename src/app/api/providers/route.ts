@@ -30,7 +30,7 @@ import {
   isReservedStPrimaryManagedLabel,
   providerCredentialManagementForClient,
 } from "@/lib/managed-provider-credential";
-import { snapshotCostCoverageCaveat } from "@/lib/snapshot-sync-status";
+import type { CostCoverageCaveat } from "@/lib/adapters/helpers";
 
 function decryptKey(encryptedKey: string | null): string | null {
   if (!encryptedKey) return null;
@@ -50,6 +50,51 @@ function serverConfig(
   } catch {
     return null;
   }
+}
+
+/**
+ * Batched, DB-side equivalent of snapshot-sync-status.ts's
+ * snapshotCostCoverageCaveat for many snapshot ids at once. Uses SQLite's
+ * json_extract so only the tiny __apiUsageMonitor.costCoverageCaveat
+ * sub-object is pulled out of each row - never the full rawData blob. That
+ * blob is a full adapter raw-API-response payload that can be large; reading
+ * and JSON-parsing it for all 39 providers' latest snapshot on every list
+ * call was the dominant cost of this endpoint and a major contributor to
+ * OOM-crashing the 512MB instance (see #392).
+ */
+async function batchSnapshotCostCoverageCaveats(
+  snapshotIds: string[]
+): Promise<Map<string, CostCoverageCaveat>> {
+  const result = new Map<string, CostCoverageCaveat>();
+  const ids = [...new Set(snapshotIds)];
+  if (ids.length === 0) return result;
+
+  const rows = await prisma.$queryRaw<
+    Array<{ id: string; version: unknown; code: unknown; message: unknown }>
+  >(Prisma.sql`
+    SELECT
+      "id" AS "id",
+      json_extract("rawData", '$.__apiUsageMonitor.version') AS "version",
+      json_extract("rawData", '$.__apiUsageMonitor.costCoverageCaveat.code') AS "code",
+      json_extract("rawData", '$.__apiUsageMonitor.costCoverageCaveat.message') AS "message"
+    FROM "UsageSnapshot"
+    WHERE "id" IN (${Prisma.join(ids)})
+  `);
+
+  for (const row of rows) {
+    // json_extract's INTEGER result comes back through $queryRaw as a
+    // BigInt (Prisma doesn't know the static type of a computed raw-SQL
+    // column, so it plays safe against precision loss) - Number(...) it
+    // before comparing, a strict `row.version === 1` silently never matches.
+    if (
+      Number(row.version) === 1 &&
+      typeof row.code === "string" &&
+      typeof row.message === "string"
+    ) {
+      result.set(row.id, { code: row.code, message: row.message });
+    }
+  }
+  return result;
 }
 
 export async function GET() {
@@ -120,6 +165,7 @@ export async function GET() {
         orderBy: { fetchedAt: "desc" },
         take: 1,
         select: {
+          id: true,
           balance: true,
           totalCost: true,
           fixedCostIncludedUsd: true,
@@ -129,7 +175,15 @@ export async function GET() {
           costIncludesUnknownFixed: true,
           totalRequests: true,
           credits: true,
-          rawData: true,
+          // rawData is deliberately NOT selected: it's a full adapter raw
+          // API-response blob that can be large, and selecting it for every
+          // provider's latest snapshot (39x) was the dominant cost of this
+          // endpoint's DB read/serialization and a major OOM contributor on
+          // the 512MB instance (see #392). The only thing this endpoint
+          // derives from rawData is costCoverageCaveat, which is fetched
+          // separately below via batchSnapshotCostCoverageCaveats - a
+          // SQLite json_extract query that pulls out just that tiny nested
+          // field instead of the whole blob.
           fetchedAt: true,
         },
       },
@@ -140,21 +194,40 @@ export async function GET() {
       provider.type.trim().toLowerCase() === "builtin" &&
       canonicalProviderKey(provider.name) === "google-ai"
   );
-  const geminiStatusSnapshots = new Map(
-    await Promise.all(
-      geminiProviders.map(async (provider) => [
-        provider.id,
-        await prisma.usageSnapshot.findFirst({
-          where: {
-            providerId: provider.id,
-            rawData: { not: Prisma.DbNull },
-          },
-          orderBy: { fetchedAt: "desc" },
-          select: { rawData: true, fetchedAt: true },
-        }),
-      ] as const)
-    )
-  );
+  // Batched (not per-provider N+1): under the app's single SQLite connection
+  // (connection_limit=1, see prisma.ts), N per-provider findFirst calls
+  // serialize into N round trips even though they're all issued via
+  // Promise.all. One findMany ordered by fetchedAt desc, deduped to the
+  // first (=latest) row per providerId in JS, gets the same "latest
+  // non-null-rawData snapshot per provider" result in a single query. This
+  // is also run alongside the costCoverageCaveat batch query below.
+  const geminiProviderIds = geminiProviders.map((provider) => provider.id);
+  const latestSnapshotIds = providers
+    .map((provider) => provider.snapshots[0]?.id)
+    .filter((id): id is string => typeof id === "string");
+  const [geminiRawSnapshots, costCoverageCaveatBySnapshotId] =
+    await Promise.all([
+      geminiProviderIds.length
+        ? prisma.usageSnapshot.findMany({
+            where: {
+              providerId: { in: geminiProviderIds },
+              rawData: { not: Prisma.DbNull },
+            },
+            orderBy: { fetchedAt: "desc" },
+            select: { providerId: true, rawData: true, fetchedAt: true },
+          })
+        : Promise.resolve([]),
+      batchSnapshotCostCoverageCaveats(latestSnapshotIds),
+    ]);
+  const geminiStatusSnapshots = new Map<
+    string,
+    { rawData: unknown; fetchedAt: Date }
+  >();
+  for (const snapshot of geminiRawSnapshots) {
+    if (!geminiStatusSnapshots.has(snapshot.providerId)) {
+      geminiStatusSnapshots.set(snapshot.providerId, snapshot);
+    }
+  }
   const budgetByProviderId = new Map(
     budget.providers.map((entry) => [entry.id, entry])
   );
@@ -179,27 +252,28 @@ export async function GET() {
       secretConfig,
       p.label
     );
-    const latestSnapshotWithRawData = snapshots[0] ?? null;
-    const latestSnapshot = latestSnapshotWithRawData
+    const latestSnapshotRow = snapshots[0] ?? null;
+    const latestSnapshot = latestSnapshotRow
       ? {
-          balance: latestSnapshotWithRawData.balance,
-          totalCost: latestSnapshotWithRawData.totalCost,
-          fixedCostIncludedUsd: latestSnapshotWithRawData.fixedCostIncludedUsd,
-          costWindowStart: latestSnapshotWithRawData.costWindowStart,
-          costWindowEnd: latestSnapshotWithRawData.costWindowEnd,
-          costScope: latestSnapshotWithRawData.costScope,
-          costIncludesUnknownFixed:
-            latestSnapshotWithRawData.costIncludesUnknownFixed,
-          totalRequests: latestSnapshotWithRawData.totalRequests,
-          credits: latestSnapshotWithRawData.credits,
-          fetchedAt: latestSnapshotWithRawData.fetchedAt,
+          balance: latestSnapshotRow.balance,
+          totalCost: latestSnapshotRow.totalCost,
+          fixedCostIncludedUsd: latestSnapshotRow.fixedCostIncludedUsd,
+          costWindowStart: latestSnapshotRow.costWindowStart,
+          costWindowEnd: latestSnapshotRow.costWindowEnd,
+          costScope: latestSnapshotRow.costScope,
+          costIncludesUnknownFixed: latestSnapshotRow.costIncludesUnknownFixed,
+          totalRequests: latestSnapshotRow.totalRequests,
+          credits: latestSnapshotRow.credits,
+          fetchedAt: latestSnapshotRow.fetchedAt,
         }
       : null;
     // Derived from the existing rawData JSON blob rather than a new DB
     // column - see snapshot-sync-status.ts's __apiUsageMonitor metadata bag.
-    const costCoverageCaveat = snapshotCostCoverageCaveat(
-      latestSnapshotWithRawData?.rawData ?? null
-    );
+    // Looked up from the batched json_extract query above (keyed by
+    // snapshot id) instead of holding the full rawData blob in memory here.
+    const costCoverageCaveat = latestSnapshotRow
+      ? costCoverageCaveatBySnapshotId.get(latestSnapshotRow.id) ?? null
+      : null;
     const decryptedKey = decryptKey(apiKey);
     const adapterConfig = serverConfig(config, secretConfig);
     const geminiStatusSnapshot = geminiStatusSnapshots.get(p.id) ?? null;
