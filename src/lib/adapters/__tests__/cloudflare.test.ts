@@ -598,6 +598,103 @@ describe("cloudflare adapter", () => {
     ).rejects.toMatchObject({ code: "INVALID_RESPONSE" });
   });
 
+  it("flags a cost coverage caveat when PayGo is unavailable but a subscription cost is known", async () => {
+    const now = new Date();
+    const periodStart = new Date(
+      Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1)
+    ).toISOString();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn()
+        .mockResolvedValueOnce(json({ result: { totals: { requests: 10 } } }))
+        .mockResolvedValueOnce(json({}, 403))
+        .mockResolvedValueOnce(
+          json({
+            result: [
+              {
+                id: "sub_1",
+                currency: "USD",
+                current_period_start: periodStart,
+                current_period_end: new Date(now.getTime() + 86_400_000).toISOString(),
+                frequency: "monthly",
+                price: 5,
+                rate_plan: { public_name: "Workers Paid" },
+                state: "Paid",
+              },
+            ],
+            result_info: { count: 1, page: 1, per_page: 50, total_count: 1 },
+          })
+        )
+        .mockResolvedValueOnce(json({}, 403))
+    );
+
+    const result = await fetchUsage("token", { accountId: "account-id" });
+
+    expect(result.totalCost).toBe(5);
+    expect(result.costCoverageCaveat).toEqual({
+      code: "cloudflare_paygo_usage_unavailable",
+      message:
+        "Usage-based costs (D1, R2, Workers, Queues overage) are not visible for this account — only the fixed subscription fee is shown. Cost may be understated.",
+    });
+  });
+
+  it("does not flag a cost coverage caveat when PayGo succeeds, even with zero usage", async () => {
+    const now = new Date();
+    const periodStart = new Date(
+      Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1)
+    ).toISOString();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn()
+        .mockResolvedValueOnce(json({ result: { totals: { requests: 10 } } }))
+        .mockResolvedValueOnce(json({}, 403))
+        .mockResolvedValueOnce(
+          json({
+            result: [
+              {
+                id: "sub_1",
+                currency: "USD",
+                current_period_start: periodStart,
+                current_period_end: new Date(now.getTime() + 86_400_000).toISOString(),
+                frequency: "monthly",
+                price: 5,
+                rate_plan: { public_name: "Workers Paid" },
+                state: "Paid",
+              },
+            ],
+            result_info: { count: 1, page: 1, per_page: 50, total_count: 1 },
+          })
+        )
+        .mockResolvedValueOnce(json({ result: [] }))
+    );
+
+    const result = await fetchUsage("token", { accountId: "account-id" });
+
+    expect(result.totalCost).toBe(5);
+    expect(result.costCoverageCaveat).toBeNull();
+  });
+
+  it("does not flag a cost coverage caveat when there is no subscription cost either", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn()
+        .mockResolvedValueOnce(json({ result: { totals: { requests: 10 } } }))
+        .mockResolvedValueOnce(json({}, 403))
+        .mockResolvedValueOnce(
+          json({
+            result: [],
+            result_info: { count: 0, page: 1, per_page: 50, total_count: 0 },
+          })
+        )
+        .mockResolvedValueOnce(json({}, 403))
+    );
+
+    const result = await fetchUsage("token", { accountId: "account-id" });
+
+    expect(result.totalCost).toBeNull();
+    expect(result.costCoverageCaveat).toBeNull();
+  });
+
   it("rejects a successful response that omits the subscription result", async () => {
     vi.stubGlobal(
       "fetch",

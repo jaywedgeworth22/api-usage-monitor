@@ -2,6 +2,30 @@ import { lookup } from "node:dns/promises";
 import https from "node:https";
 import net from "node:net";
 
+/**
+ * Generic, adapter-agnostic signal that totalCost is known-incomplete for a
+ * specific, nameable reason - for example a provider's usage-based billing
+ * endpoint being unreachable while fixed subscription cost is still known.
+ * Any adapter may set this on UsageResult when it can name the exact missing
+ * cost surface; do not set it merely because totalCost is null (that already
+ * has its own "unconfigured"/"no data" handling elsewhere).
+ *
+ * This is intentionally distinct from two other signals and must never be
+ * conflated with or silently overwrite either:
+ *  - costIncludesUnknownFixed: flags totalCost may be an OVER-count (contains
+ *    fixed charges the adapter can't classify exactly).
+ *  - spendCoverage/pushedCostCoverage: describe pushed-telemetry pricing
+ *    completeness, computed downstream in budget-status.ts.
+ * costCoverageCaveat instead flags a possible UNDER-count in the adapter's
+ * own poll-time totalCost.
+ */
+export interface CostCoverageCaveat {
+  /** Stable machine-readable identifier, e.g. "cloudflare_paygo_usage_unavailable". */
+  code: string;
+  /** User-facing explanation of what's missing and why totalCost may be understated. */
+  message: string;
+}
+
 export interface UsageResult {
   balance: number | null;
   totalCost: number | null;
@@ -11,6 +35,8 @@ export interface UsageResult {
   costWindowEnd?: Date | string | null;
   costScope?: "calendar_month_to_date" | "billing_cycle_to_date" | "daily" | "unknown";
   costIncludesUnknownFixed?: boolean;
+  /** See CostCoverageCaveat. Only set when a specific cost surface is known-missing. */
+  costCoverageCaveat?: CostCoverageCaveat | null;
   totalRequests: number | null;
   credits: number | null;
   rawData: unknown;

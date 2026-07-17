@@ -13,7 +13,10 @@ import ProviderTable from "@/components/ProviderTable";
 import ProjectTable from "@/components/ProjectTable";
 import type { ExternalBillingRecord } from "@/components/ExternalBillingDetails";
 import PaidServicesPanel from "@/components/PaidServicesPanel";
-import type { ProviderCostCoverage } from "@/components/ProviderCard";
+import type {
+  ProviderCostCoverage,
+  ProviderCostCoverageCaveat,
+} from "@/components/ProviderCard";
 
 export type BillingMode = "actual" | "estimated" | "manual";
 type SettingsTab = "connections" | "services" | "projects";
@@ -87,6 +90,7 @@ export interface Provider {
   snapshotCostFetchedAt?: string | null;
   projectedEomUsd?: number;
   spendCoverage: ProviderCostCoverage;
+  costCoverageCaveat?: ProviderCostCoverageCaveat | null;
   pushedCostCoverage: ProviderCostCoverage;
   pushedPricedEventCount: number;
   pushedUnpricedEventCount: number;

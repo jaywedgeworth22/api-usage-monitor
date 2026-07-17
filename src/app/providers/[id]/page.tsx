@@ -9,7 +9,11 @@ import type { ExternalBillingRecord } from "@/components/ExternalBillingDetails"
 import ProviderIntegrationInfo, { publicConfigFieldNames } from "@/components/ProviderIntegrationInfo";
 import PaidServicesPanel from "@/components/PaidServicesPanel";
 import type { SubscriptionRow } from "@/components/SubscriptionsPanel";
-import type { ProviderCostCoverage } from "@/components/ProviderCard";
+import type {
+  ProviderCostCoverage,
+  ProviderCostCoverageCaveat,
+} from "@/components/ProviderCard";
+import { CostCoverageCaveatBanner, spendCoverageNoteText } from "./cost-coverage-caveat";
 
 interface Provider {
   id: string;
@@ -60,6 +64,7 @@ interface Provider {
   pushedUnpricedEventCount: number;
   pushedUnclassifiedCostEventCount: number;
   spendCoverage: ProviderCostCoverage;
+  costCoverageCaveat?: ProviderCostCoverageCaveat | null;
   subscriptionMonthToDateUsd?: number;
   fixedAccruedUsd?: number;
   linkedFixedDedupeUsd?: number;
@@ -294,6 +299,8 @@ export default function ProviderDetailPage() {
         </span>
       </div>
 
+      <CostCoverageCaveatBanner caveat={provider.costCoverageCaveat} />
+
       {snapshotWarning && (
         <p role="status" className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800 dark:border-amber-900 dark:bg-amber-950/40 dark:text-amber-200">
           {snapshotWarning}
@@ -366,10 +373,14 @@ export default function ProviderDetailPage() {
               {unpricedEventCount} usage event{unpricedEventCount === 1 ? "" : "s"} without cost
             </p>
           ) : (
-            <p className="text-[10px] text-gray-500 dark:text-gray-400">
-              {spendCoverage === "complete"
-                ? "complete cost coverage"
-                : "cost coverage unknown"}
+            <p
+              className={`text-[10px] ${
+                provider.costCoverageCaveat
+                  ? "text-orange-600 dark:text-orange-300"
+                  : "text-gray-500 dark:text-gray-400"
+              }`}
+            >
+              {spendCoverageNoteText(spendCoverage, provider.costCoverageCaveat)}
             </p>
           )}
         </div>

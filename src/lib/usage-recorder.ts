@@ -21,6 +21,7 @@ import { reconcileProviderExternalBilling } from "@/lib/provider-external-billin
 import { Prisma, type Provider, type UsageSnapshot } from "@prisma/client";
 import {
   isRetryablePartialSnapshot,
+  withCostCoverageCaveat,
   withSnapshotSyncFailure,
 } from "@/lib/snapshot-sync-status";
 import { withInternalUsageWriteAdmission } from "@/lib/ingest-admission";
@@ -90,8 +91,10 @@ export async function recordProviderUsage(
             totalRequests: usage.totalRequests,
             credits: usage.credits,
             rawData:
-              withSnapshotSyncFailure(usage.rawData, usage.postPersistError) ??
-              undefined,
+              withCostCoverageCaveat(
+                withSnapshotSyncFailure(usage.rawData, usage.postPersistError),
+                usage.costCoverageCaveat
+              ) ?? undefined,
           },
         });
         // A newer attempt may have started while SQLite was awaiting the INSERT.

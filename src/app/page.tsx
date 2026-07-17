@@ -3,7 +3,10 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import Link from "next/link";
 import { ChevronRight } from "lucide-react";
-import { type ProviderCostCoverage } from "@/components/ProviderCard";
+import {
+  type ProviderCostCoverage,
+  type ProviderCostCoverageCaveat,
+} from "@/components/ProviderCard";
 import SentryHealthCard from "@/components/SentryHealthCard";
 import DashboardSummaryCards from "@/components/DashboardSummaryCards";
 import DashboardCharts from "@/components/DashboardCharts";
@@ -57,6 +60,7 @@ interface Provider {
   estimatedApiEquivalentUsd?: number;
   snapshotCostFetchedAt?: string | null;
   spendCoverage: ProviderCostCoverage;
+  costCoverageCaveat?: ProviderCostCoverageCaveat | null;
   pushedCostCoverage: ProviderCostCoverage;
   pushedPricedEventCount: number;
   pushedUnpricedEventCount: number;

@@ -37,6 +37,8 @@ function family(overrides: Partial<Family> = {}): Family {
     criticalCount: 0,
     activeCount: 0,
     incompleteCostCount: 0,
+    costCoverageCaveatCount: 0,
+    costCoverageCaveatMessage: null,
     nextRenewalAt: null,
     latestFetchedAt: null,
     ...overrides,
@@ -379,6 +381,65 @@ describe("DashboardProviderWorkspace", () => {
     ]) {
       expect(html).toContain(`href="/providers/${id}"`);
     }
+  });
+
+  it("surfaces a cost coverage gap on the family row without requiring expansion", () => {
+    const html = renderWorkspace([
+      provider("cloudflare-account", {
+        name: "cloudflare",
+        displayName: "Cloudflare",
+        groupId: null,
+        spentUsd: 5,
+        spendCoverage: "complete",
+        costCoverageCaveat: {
+          code: "cloudflare_paygo_usage_unavailable",
+          message: "Usage-based costs (D1, R2, Workers, Queues overage) are not visible for this account — only the fixed subscription fee is shown. Cost may be understated.",
+        },
+      }),
+    ]);
+
+    // Single-account family: collapsed by default (PR #296).
+    expect(html).toContain('aria-expanded="false"');
+    const spendCell = extractTdInner(html, "Spend");
+    expect(spendCell).toContain("Cost coverage gap");
+  });
+
+  it("does not show a cost coverage gap badge when no member provider has one", () => {
+    const html = renderWorkspace([
+      provider("cloudflare-account", {
+        name: "cloudflare",
+        displayName: "Cloudflare",
+        groupId: null,
+        spentUsd: 5,
+        spendCoverage: "complete",
+      }),
+    ]);
+
+    expect(html).not.toContain("Cost coverage gap");
+  });
+
+  it("does not show a stale cost coverage gap badge on the family row for a deactivated provider", () => {
+    // A deactivated provider is no longer polled (fetchAllDueProviders only
+    // covers isActive:true), so its last-recorded caveat can never be
+    // cleared by a fresh snapshot. The family-row badge must not keep
+    // displaying it indefinitely for an account that isn't even monitored.
+    const html = renderWorkspace([
+      provider("cloudflare-account", {
+        name: "cloudflare",
+        displayName: "Cloudflare",
+        groupId: null,
+        isActive: false,
+        spentUsd: 5,
+        spendCoverage: "complete",
+        costCoverageCaveat: {
+          code: "cloudflare_paygo_usage_unavailable",
+          message: "Usage-based costs (D1, R2, Workers, Queues overage) are not visible for this account — only the fixed subscription fee is shown. Cost may be understated.",
+        },
+      }),
+    ]);
+
+    const spendCell = extractTdInner(html, "Spend");
+    expect(spendCell).not.toContain("Cost coverage gap");
   });
 });
 

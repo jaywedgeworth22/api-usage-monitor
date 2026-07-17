@@ -32,6 +32,7 @@ import {
   isReservedStPrimaryManagedLabel,
   providerCredentialManagementForClient,
 } from "@/lib/managed-provider-credential";
+import { snapshotCostCoverageCaveat } from "@/lib/snapshot-sync-status";
 
 function decryptKey(encryptedKey: string | null): string | null {
   if (!encryptedKey) return null;
@@ -174,6 +175,11 @@ export async function GET(
         fetchedAt: latestSnapshotWithRawData.fetchedAt,
       }
     : null;
+  // Derived from the existing rawData JSON blob rather than a new DB
+  // column - see snapshot-sync-status.ts's __apiUsageMonitor metadata bag.
+  const costCoverageCaveat = snapshotCostCoverageCaveat(
+    latestSnapshotWithRawData?.rawData ?? null
+  );
   const decryptedKey = decryptKey(apiKey);
   const adapterConfig = serverConfig(config, secretConfig);
   const geminiBillingStatus = deriveGeminiBillingStatus({
@@ -246,6 +252,10 @@ export async function GET(
       secretConfig,
     }),
     latestSnapshot,
+    // Distinct from spendCoverage/pushedCostCoverage below - see
+    // CostCoverageCaveat in adapters/helpers.ts for why these must not be
+    // conflated.
+    costCoverageCaveat,
     alerts,
     estimatedMonthlyCostUsd: alertState.estimatedMonthlyCostUsd,
     spentUsd: canonicalBudget?.spentUsd ?? latestSnapshot?.totalCost ?? 0,
