@@ -491,6 +491,7 @@ async function pruneUsageSnapshots(
     result.pruned += rows.length;
     result.rollupsTouched += groups.length;
     if (rows.length < batchSize) break;
+    await new Promise((resolve) => setTimeout(resolve, 50));
   }
   return result;
 }
@@ -617,6 +618,7 @@ async function pruneExternalUsageEvents(
     result.rollupsTouched += batch.rollupsTouched;
     result.tombstonesWritten += batch.tombstonesWritten;
     if (batch.scanned < batchSize) break;
+    await new Promise((resolve) => setTimeout(resolve, 50));
   }
   return result;
 }
