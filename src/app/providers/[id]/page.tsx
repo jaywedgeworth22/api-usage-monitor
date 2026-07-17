@@ -13,6 +13,7 @@ import type {
   ProviderCostCoverage,
   ProviderCostCoverageCaveat,
 } from "@/components/ProviderCard";
+import { usageUnitLabelForProvider } from "@/lib/provider-definitions";
 import { CostCoverageCaveatBanner, spendCoverageNoteText } from "./cost-coverage-caveat";
 
 interface Provider {
@@ -227,6 +228,7 @@ export default function ProviderDetailPage() {
 
   const latest = snapshots[snapshots.length - 1];
   const latestReading = latest ?? provider.latestSnapshot ?? null;
+  const usageUnitLabel = usageUnitLabelForProvider(provider.name);
   const newestSnapshots = [...snapshots].reverse();
   const totalSnapshotPages = Math.max(1, Math.ceil(newestSnapshots.length / SNAPSHOT_PAGE_SIZE));
   const currentSnapshotPage = Math.min(snapshotPage, totalSnapshotPages);
@@ -410,7 +412,7 @@ export default function ProviderDetailPage() {
           </div>
         )}
         <div className="rounded-xl border border-gray-200 bg-white p-4 dark:border-gray-700 dark:bg-gray-800">
-          <p className="mb-1 text-xs text-gray-500 dark:text-gray-400">Latest reported requests</p>
+          <p className="mb-1 text-xs text-gray-500 dark:text-gray-400">Latest reported {usageUnitLabel}</p>
           <p className="text-lg font-semibold text-gray-900 dark:text-gray-100">
             {latestReading?.totalRequests != null
               ? new Intl.NumberFormat("en-US").format(latestReading.totalRequests)
@@ -598,7 +600,7 @@ export default function ProviderDetailPage() {
                     </th>
                   )}
                   <th className="px-6 py-3 text-right font-medium text-gray-500 dark:text-gray-400">
-                    Reported Requests
+                    Reported {usageUnitLabel}
                   </th>
                 </tr>
               </thead>
@@ -629,7 +631,7 @@ export default function ProviderDetailPage() {
                           : "--"}
                       </td>
                     )}
-                    <td data-label="Reported requests" className="px-6 py-3 text-right text-gray-600 dark:text-gray-300">
+                    <td data-label={`Reported ${usageUnitLabel}`} className="px-6 py-3 text-right text-gray-600 dark:text-gray-300">
                       {s.totalRequests != null
                         ? new Intl.NumberFormat("en-US").format(s.totalRequests)
                         : "--"}

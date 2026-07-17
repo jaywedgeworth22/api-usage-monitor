@@ -688,16 +688,12 @@ export async function fetchUsage(
     // capped service subset, or a window that could not reach the 1st of the
     // month - either would understate the calendar-month total).
     //
-    // KNOWN UI LIMITATION (follow-up): the shared dashboard renderer labels
-    // this field "Requests"/"Reported Requests" for every provider, so a
-    // Render row shows e.g. "3500" MB under a "Requests" heading. This is a
-    // pre-existing generic-label issue (langfuse shows billable units and
-    // sentry shows events under the same heading); a correct per-provider unit
-    // label needs a usage-unit concept plumbed through the providers API and
-    // that shared component - cross-provider UI work beyond this adapter lane.
-    // The functional path (request_limit alerting) is correct on the MB scalar,
-    // and the unit is documented in the provider helpNote and integration
-    // catalog.
+    // The shared dashboard no longer labels this scalar "Requests" for Render:
+    // the provider definition's usageUnitLabel ("Bandwidth (MB)") is honored by
+    // ProviderCard and the provider detail page (see usageUnitLabelForProvider
+    // in provider-definitions.ts), the same mechanism that relabels langfuse
+    // (billable units) and sentry (events). The functional path (request_limit
+    // alerting) remains correct on the MB scalar.
     totalRequests:
       bandwidth.status === "ready" ? bandwidth.totalMegabytes : null,
     credits: null,

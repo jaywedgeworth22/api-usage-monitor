@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
   BUILT_IN_PROVIDERS,
+  DEFAULT_USAGE_UNIT_LABEL,
   hasConfiguredProviderField,
+  usageUnitLabelForProvider,
 } from "@/lib/provider-definitions";
 
 describe("hasConfiguredProviderField", () => {
@@ -32,6 +34,41 @@ describe("Cloudflare provider definition", () => {
     expect(cloudflare?.helpNote).toMatch(
       /do not affect billing, subscriptions, spend, usage, quotas, or PayGo eligibility/i
     );
+  });
+});
+
+describe("usageUnitLabelForProvider", () => {
+  it("defaults to Requests for providers that report request counts", () => {
+    // google-ai/Cloud Monitoring, and anything without an explicit label.
+    expect(usageUnitLabelForProvider("google-ai")).toBe(DEFAULT_USAGE_UNIT_LABEL);
+    expect(usageUnitLabelForProvider("openai")).toBe("Requests");
+    expect(DEFAULT_USAGE_UNIT_LABEL).toBe("Requests");
+  });
+
+  it("labels providers that repurpose totalRequests with their true unit", () => {
+    expect(usageUnitLabelForProvider("render")).toBe("Bandwidth (MB)");
+    expect(usageUnitLabelForProvider("langfuse")).toBe("Billable units");
+    expect(usageUnitLabelForProvider("sentry")).toBe("Events");
+    expect(usageUnitLabelForProvider("pushover")).toBe("Messages");
+    expect(usageUnitLabelForProvider("twelvedata")).toBe("API credits");
+  });
+
+  it("resolves by canonical provider key, not raw casing", () => {
+    expect(usageUnitLabelForProvider("Render")).toBe("Bandwidth (MB)");
+    expect(usageUnitLabelForProvider("  Langfuse  ")).toBe("Billable units");
+  });
+
+  it("falls back to Requests for unknown or custom providers", () => {
+    expect(usageUnitLabelForProvider("some-custom-provider")).toBe("Requests");
+    expect(usageUnitLabelForProvider("")).toBe("Requests");
+  });
+
+  it("keeps every declared usageUnitLabel non-empty", () => {
+    for (const provider of BUILT_IN_PROVIDERS) {
+      if (provider.usageUnitLabel !== undefined) {
+        expect(provider.usageUnitLabel.trim().length).toBeGreaterThan(0);
+      }
+    }
   });
 });
 

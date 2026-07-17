@@ -144,6 +144,74 @@ describe("ProviderCard", () => {
     expect(html).not.toContain("Cost coverage gap");
   });
 
+  it("labels the usage stat with the default Requests heading for request-count providers", () => {
+    const html = renderToStaticMarkup(
+      createElement(ProviderCard, {
+        id: "openai",
+        name: "openai",
+        displayName: "OpenAI",
+        type: "builtin",
+        isActive: true,
+        latestSnapshot: {
+          balance: null,
+          totalCost: null,
+          totalRequests: 1200,
+          credits: null,
+          fetchedAt: "2026-07-17T00:00:00.000Z",
+        },
+      })
+    );
+
+    expect(html).toContain(">Requests<");
+    expect(html).toContain("1,200");
+  });
+
+  it("relabels the usage stat to the provider's real unit (Render bandwidth in MB)", () => {
+    const html = renderToStaticMarkup(
+      createElement(ProviderCard, {
+        id: "render",
+        name: "render",
+        displayName: "Render",
+        type: "builtin",
+        isActive: true,
+        latestSnapshot: {
+          balance: null,
+          totalCost: null,
+          totalRequests: 3500,
+          credits: null,
+          fetchedAt: "2026-07-17T00:00:00.000Z",
+        },
+      })
+    );
+
+    // 3,500 means 3,500 MB of bandwidth, so it must not sit under "Requests".
+    expect(html).toContain("Bandwidth (MB)");
+    expect(html).toContain("3,500");
+    expect(html).not.toContain(">Requests<");
+  });
+
+  it("relabels Langfuse totalRequests as billable units", () => {
+    const html = renderToStaticMarkup(
+      createElement(ProviderCard, {
+        id: "langfuse",
+        name: "langfuse",
+        displayName: "Langfuse",
+        type: "builtin",
+        isActive: true,
+        latestSnapshot: {
+          balance: null,
+          totalCost: null,
+          totalRequests: 42,
+          credits: null,
+          fetchedAt: "2026-07-17T00:00:00.000Z",
+        },
+      })
+    );
+
+    expect(html).toContain("Billable units");
+    expect(html).not.toContain(">Requests<");
+  });
+
   it("separates Gemini billing freshness from the latest connection update", () => {
     const html = renderToStaticMarkup(
       createElement(ProviderCard, {

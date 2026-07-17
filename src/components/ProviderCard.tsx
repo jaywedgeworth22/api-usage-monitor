@@ -4,6 +4,7 @@ import Link from "next/link";
 import BalanceBadge from "./BalanceBadge";
 import { isExternalBillingStale, type ExternalBillingRecord } from "./ExternalBillingDetails";
 import ProviderIntegrationInfo, { publicConfigFieldNames } from "./ProviderIntegrationInfo";
+import { usageUnitLabelForProvider } from "@/lib/provider-definitions";
 
 export type ProviderCostCoverage =
   | "complete"
@@ -134,6 +135,7 @@ export default function ProviderCard({
 }: ProviderCardProps) {
   const dotColor =
     typeColors[name.toLowerCase()] ?? "bg-purple-500";
+  const usageUnitLabel = usageUnitLabelForProvider(name);
 
   const isCreditBased = creditBasedProviders.has(name.toLowerCase());
   const hasCredits = latestSnapshot?.credits != null;
@@ -303,7 +305,7 @@ export default function ProviderCard({
           </div>
         )}
         <div>
-          <p className="mb-1 text-xs text-gray-500 dark:text-gray-400">Requests</p>
+          <p className="mb-1 text-xs text-gray-500 dark:text-gray-400">{usageUnitLabel}</p>
           <p className="text-sm font-medium text-gray-900 dark:text-gray-100">
             {formatNumber(latestSnapshot?.totalRequests ?? null)}
           </p>
