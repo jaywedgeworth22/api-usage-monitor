@@ -48,31 +48,36 @@ describe("resolveSqliteMemoryPragmaValues", () => {
     vi.unstubAllEnvs();
   });
 
-  it("defaults to a 2MB cache and mmap disabled", async () => {
+  it("defaults to a 2MB cache, mmap disabled, and disk-backed temp B-trees", async () => {
     const { resolveSqliteMemoryPragmaValues } = await import("@/lib/prisma");
     expect(resolveSqliteMemoryPragmaValues()).toEqual({
       cacheSizeKib: -2000,
       mmapSizeBytes: 0,
+      tempStore: "file",
     });
   });
 
   it("honors env overrides and always reports cache size as negative KiB", async () => {
     vi.stubEnv("SQLITE_CACHE_SIZE_KIB", "4000");
     vi.stubEnv("SQLITE_MMAP_SIZE_BYTES", "8388608");
+    vi.stubEnv("SQLITE_TEMP_STORE", "memory");
     const { resolveSqliteMemoryPragmaValues } = await import("@/lib/prisma");
     expect(resolveSqliteMemoryPragmaValues()).toEqual({
       cacheSizeKib: -4000,
       mmapSizeBytes: 8_388_608,
+      tempStore: "memory",
     });
   });
 
   it("clamps out-of-range or non-numeric overrides back to safe bounds", async () => {
     vi.stubEnv("SQLITE_CACHE_SIZE_KIB", "not-a-number");
     vi.stubEnv("SQLITE_MMAP_SIZE_BYTES", "999999999999");
+    vi.stubEnv("SQLITE_TEMP_STORE", "not-a-mode");
     const { resolveSqliteMemoryPragmaValues } = await import("@/lib/prisma");
     const values = resolveSqliteMemoryPragmaValues();
     expect(values.cacheSizeKib).toBe(-2000); // invalid input falls back to default
     expect(values.mmapSizeBytes).toBe(268_435_456); // clamped to the 256MB ceiling
+    expect(values.tempStore).toBe("file"); // invalid input fails closed to the RSS-safe mode
   });
 });
 
@@ -87,6 +92,7 @@ describe("applySqliteNativeMemoryPragmas", () => {
     const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
     vi.stubEnv("SQLITE_CACHE_SIZE_KIB", "1234");
     vi.stubEnv("SQLITE_MMAP_SIZE_BYTES", "1048576");
+    vi.stubEnv("SQLITE_TEMP_STORE", "memory");
     const { applySqliteNativeMemoryPragmas, readSqliteMemoryPragmas } = await import(
       "@/lib/prisma"
     );
@@ -94,11 +100,15 @@ describe("applySqliteNativeMemoryPragmas", () => {
     await applySqliteNativeMemoryPragmas();
 
     const applied = await readSqliteMemoryPragmas();
-    expect(applied).toEqual({ cacheSizeKib: -1234, mmapSizeBytes: 1_048_576 });
+    expect(applied).toEqual({
+      cacheSizeKib: -1234,
+      mmapSizeBytes: 1_048_576,
+      tempStore: "memory",
+    });
     expect(errorSpy).not.toHaveBeenCalled();
   });
 
-  it("pins the ~2MB cache and disables mmap by default", async () => {
+  it("pins the ~2MB cache, disables mmap, and uses disk-backed temp storage by default", async () => {
     const { applySqliteNativeMemoryPragmas, readSqliteMemoryPragmas } = await import(
       "@/lib/prisma"
     );
@@ -108,6 +118,7 @@ describe("applySqliteNativeMemoryPragmas", () => {
     expect(await readSqliteMemoryPragmas()).toEqual({
       cacheSizeKib: -2000,
       mmapSizeBytes: 0,
+      tempStore: "file",
     });
   });
 
@@ -122,6 +133,19 @@ describe("applySqliteNativeMemoryPragmas", () => {
     expect(errorSpy).not.toHaveBeenCalled();
   });
 
+  it("logs and continues when a SQLite memory PRAGMA is rejected at startup", async () => {
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const { prisma, applySqliteNativeMemoryPragmas } = await import("@/lib/prisma");
+    vi.spyOn(prisma, "$queryRawUnsafe").mockRejectedValueOnce(new Error("pragma unavailable"));
+
+    await expect(applySqliteNativeMemoryPragmas()).resolves.toBeUndefined();
+
+    expect(errorSpy).toHaveBeenCalledWith(
+      "[prisma] failed to apply native SQLite memory bounds; continuing with SQLite defaults",
+      expect.any(Error)
+    );
+  });
+
   it("uses the query path, not the execute path (which SQLite rejects for PRAGMA)", async () => {
     const { prisma, applySqliteNativeMemoryPragmas } = await import("@/lib/prisma");
     const querySpy = vi.spyOn(prisma, "$queryRawUnsafe");
@@ -131,8 +155,8 @@ describe("applySqliteNativeMemoryPragmas", () => {
 
     const setCalls = querySpy.mock.calls
       .map((call) => String(call[0]))
-      .filter((sql) => /PRAGMA (cache_size|mmap_size)\s*=/.test(sql));
-    expect(setCalls).toHaveLength(2);
+      .filter((sql) => /PRAGMA (cache_size|mmap_size|temp_store)\s*=/.test(sql));
+    expect(setCalls).toHaveLength(3);
     expect(executeSpy).not.toHaveBeenCalled();
   });
 
