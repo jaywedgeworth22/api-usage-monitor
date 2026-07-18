@@ -253,14 +253,17 @@ export async function fetchAllDueProviders(): Promise<FetchAllProvidersResult> {
       const startedAt = Date.now();
       const latestSnapshot = snapshots[0];
       const intervalMs = provider.refreshIntervalMin * 60 * 1000;
+      const groupIds = provider.groupId
+        ? providers.filter((p) => p.groupId === provider.groupId).map((p) => p.id)
+        : [provider.id];
       // Pushed quota/credit events intentionally create rawData-less
       // snapshots. They may be newer than the last poll snapshot, but must not
       // hide its retry marker or make an old/missing poll look fresh.
       const latestPollSnapshot =
-        latestSnapshot?.rawData == null
+        latestSnapshot?.rawData == null || provider.groupId
           ? await prisma.usageSnapshot.findFirst({
               where: {
-                providerId: provider.id,
+                providerId: { in: groupIds },
                 rawData: { not: Prisma.DbNull },
               },
               orderBy: { fetchedAt: "desc" },
