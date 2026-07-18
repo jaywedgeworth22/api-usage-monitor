@@ -63,6 +63,7 @@ async function loadAdapters() {
     import("./github"),
     import("./vercel"),
     import("./render"),
+    import("./oracle"),
   ]);
 
   const [
@@ -83,6 +84,7 @@ async function loadAdapters() {
     github,
     vercel,
     render,
+    oracle,
   ] = modules;
 
   // Keep the Add Provider catalog and poll registry compile-time exhaustive.
@@ -125,6 +127,7 @@ async function loadAdapters() {
     stripe: stripe.fetchUsage,
     robinhood: robinhood.fetchUsage,
     alpaca: alpaca.fetchUsage,
+    oracle: oracle.fetchUsage,
   };
   Object.assign(adapters, builtInAdapters);
 
