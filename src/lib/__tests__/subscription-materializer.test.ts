@@ -15,6 +15,7 @@ let planSubscriptionCharges: typeof import("../subscription-materializer").planS
 let materializeDueSubscriptions: typeof import("../subscription-materializer").materializeDueSubscriptions;
 let computeProjectBudgetStatus: typeof import("../budget-status").computeProjectBudgetStatus;
 let computeBudgetStatus: typeof import("../budget-status").computeBudgetStatus;
+let quarantineLegacyMistralSpendLimitSnapshots: typeof import("../mistral-snapshot-quarantine").quarantineLegacyMistralSpendLimitSnapshots;
 let putSubscription: typeof import("@/app/api/subscriptions/[id]/route").PUT;
 let geminiBillingConfigFingerprint: typeof import("../gemini-key-status").geminiBillingConfigFingerprint;
 
@@ -75,6 +76,9 @@ beforeAll(async () => {
     "../subscription-materializer"
   ));
   ({ computeProjectBudgetStatus, computeBudgetStatus } = await import("../budget-status"));
+  ({ quarantineLegacyMistralSpendLimitSnapshots } = await import(
+    "../mistral-snapshot-quarantine"
+  ));
   ({ geminiBillingConfigFingerprint } = await import("../gemini-key-status"));
   ({ PUT: putSubscription } = await import("@/app/api/subscriptions/[id]/route"));
 }, 60_000);
@@ -477,6 +481,39 @@ describe("materializeDueSubscriptions + project attribution (integration)", () =
     });
   });
 
+  it("keeps priced pushed-only Mistral cash spend explicitly incomplete", async () => {
+    const provider = await prisma.provider.create({
+      data: {
+        name: "mistral",
+        displayName: "Mistral pushed usage",
+        type: "builtin",
+        refreshIntervalMin: 60,
+      },
+    });
+    await prisma.externalUsageEvent.create({
+      data: {
+        idempotencyKey: "mistral-priced-request-without-authoritative-total",
+        sourceApp: "congress-trade",
+        provider: "mistral",
+        service: "mistral-api",
+        billingMode: "actual",
+        metricType: "cost",
+        costUsd: 6.25,
+        occurredAt: NOW,
+      },
+    });
+
+    const status = await computeBudgetStatus(NOW);
+    const mistral = status.providers.find((row) => row.id === provider.id)!;
+    expect(mistral).toMatchObject({
+      snapshotCostUsd: null,
+      pushedMonthToDateUsd: 6.25,
+      pushedCostCoverage: "complete",
+      spendCoverage: "partial",
+      spentUsd: 6.25,
+    });
+  });
+
   it("dedupes a provider-reported fixed fee against its local manual subscription", async () => {
     const provider = await prisma.provider.create({
       data: {
@@ -637,6 +674,221 @@ describe("materializeDueSubscriptions + project attribution (integration)", () =
     expect(result.snapshotCostUsd).toBe(50);
     expect(result.snapshotCostFetchedAt).toBe("2026-07-10T00:00:00.000Z");
     expect(result.spentUsd).toBe(50);
+  });
+
+  it("quarantines only legacy Mistral spend-limit-derived cash without needing a successful poll", async () => {
+    const provider = await prisma.provider.create({
+      data: { name: "mistral", displayName: "Mistral", type: "builtin" },
+    });
+    const currentlyUnauthorizedProvider = await prisma.provider.create({
+      data: { name: "mistral", displayName: "Mistral 401", type: "builtin" },
+    });
+    const unrelatedBuiltinProvider = await prisma.provider.create({
+      data: { name: "mistral", displayName: "Other Mistral Cost", type: "builtin" },
+    });
+    const customProvider = await prisma.provider.create({
+      data: { name: "mistral", displayName: "Custom Mistral", type: "custom" },
+    });
+    const windowStart = new Date("2026-07-01T00:00:00Z");
+    const windowEnd = new Date("2026-07-10T00:00:00Z");
+    const legacyRawData = {
+      usage: {
+        start_date: windowStart.toISOString(),
+        end_date: windowEnd.toISOString(),
+        currency: "USD",
+      },
+      spendLimit: {
+        limits: { completion: { total_usage: 12, usage: 11 } },
+      },
+      capabilities: { actualCost: true },
+    };
+    const legacySnapshot = await prisma.usageSnapshot.create({
+      data: {
+        providerId: provider.id,
+        fetchedAt: new Date("2026-07-10T00:01:00Z"),
+        balance: 88,
+        totalCost: 12,
+        costWindowStart: windowStart,
+        costWindowEnd: windowEnd,
+        costScope: "calendar_month_to_date",
+        credits: 88,
+        rawData: legacyRawData,
+      },
+    });
+    await prisma.usageSnapshot.create({
+      data: {
+        providerId: provider.id,
+        fetchedAt: NOW,
+        totalCost: null,
+        rawData: {
+          usage: {
+            start_date: windowStart.toISOString(),
+            end_date: NOW.toISOString(),
+            currency: "USD",
+          },
+          capabilities: { actualCost: false },
+        },
+      },
+    });
+    const unauthorizedLegacySnapshot = await prisma.usageSnapshot.create({
+      data: {
+        providerId: currentlyUnauthorizedProvider.id,
+        fetchedAt: new Date("2026-07-10T00:01:00Z"),
+        balance: 88,
+        totalCost: 12,
+        costWindowStart: windowStart,
+        costWindowEnd: windowEnd,
+        costScope: "calendar_month_to_date",
+        credits: 88,
+        rawData: legacyRawData,
+      },
+    });
+    const customSnapshot = await prisma.usageSnapshot.create({
+      data: {
+        providerId: customProvider.id,
+        fetchedAt: new Date("2026-07-10T00:01:00Z"),
+        balance: 88,
+        totalCost: 12,
+        costWindowStart: windowStart,
+        costWindowEnd: windowEnd,
+        costScope: "calendar_month_to_date",
+        credits: 88,
+        rawData: legacyRawData,
+      },
+    });
+    const unrelatedBuiltinSnapshot = await prisma.usageSnapshot.create({
+      data: {
+        providerId: unrelatedBuiltinProvider.id,
+        fetchedAt: new Date("2026-07-10T00:01:00Z"),
+        totalCost: 12,
+        costWindowStart: windowStart,
+        costWindowEnd: windowEnd,
+        costScope: "calendar_month_to_date",
+        rawData: {
+          ...legacyRawData,
+          capabilities: { actualCost: false },
+        },
+      },
+    });
+    const legacyExternalBilling = await prisma.providerExternalBilling.create({
+      data: {
+        providerId: currentlyUnauthorizedProvider.id,
+        source: "mistral-usage-billing",
+        externalId: "2026-07",
+        kind: "billing_period",
+        planName: "Mistral organization usage",
+        status: "active",
+        amountUsd: 12,
+        currency: "USD",
+        currentPeriodStart: windowStart,
+        currentPeriodEnd: windowEnd,
+        syncedAt: new Date("2026-07-10T00:01:00Z"),
+      },
+    });
+    const unrelatedExternalBilling = await prisma.providerExternalBilling.create({
+      data: {
+        providerId: currentlyUnauthorizedProvider.id,
+        source: "mistral-usage-billing",
+        externalId: "other",
+        kind: "billing_period",
+        planName: "Owner-entered Mistral billing evidence",
+        status: "active",
+        amountUsd: 12,
+        currency: "USD",
+        currentPeriodStart: windowStart,
+        currentPeriodEnd: windowEnd,
+        syncedAt: new Date("2026-07-10T00:01:00Z"),
+      },
+    });
+
+    // Read-time defense is immediate: the newer safe null wins even before a
+    // scheduler maintenance pass can correct historical storage.
+    const beforeMaintenance = await computeBudgetStatus(NOW);
+    expect(
+      beforeMaintenance.providers.find((item) => item.id === provider.id)
+        ?.snapshotCostUsd
+    ).toBeNull();
+    expect(
+      beforeMaintenance.providers.find(
+        (item) => item.id === currentlyUnauthorizedProvider.id
+      )?.snapshotCostUsd
+    ).toBeNull();
+
+    const first = await quarantineLegacyMistralSpendLimitSnapshots();
+    const second = await quarantineLegacyMistralSpendLimitSnapshots();
+    expect(first).toMatchObject({
+      quarantined: 2,
+      externalBillingQuarantined: 1,
+      truncated: false,
+    });
+    expect(second).toMatchObject({
+      quarantined: 0,
+      externalBillingQuarantined: 0,
+      truncated: false,
+    });
+    expect(
+      await prisma.usageSnapshot.findUniqueOrThrow({
+        where: { id: legacySnapshot.id },
+        select: {
+          balance: true,
+          totalCost: true,
+          costWindowStart: true,
+          costScope: true,
+          credits: true,
+        },
+      })
+    ).toEqual({
+      balance: null,
+      totalCost: null,
+      costWindowStart: null,
+      costScope: "unknown",
+      credits: null,
+    });
+    expect(
+      await prisma.usageSnapshot.findUniqueOrThrow({
+        where: { id: unauthorizedLegacySnapshot.id },
+        select: { balance: true, totalCost: true, credits: true },
+      })
+    ).toEqual({ balance: null, totalCost: null, credits: null });
+    expect(
+      await prisma.usageSnapshot.findUniqueOrThrow({
+        where: { id: customSnapshot.id },
+        select: { balance: true, totalCost: true, credits: true },
+      })
+    ).toEqual({ balance: 88, totalCost: 12, credits: 88 });
+    expect(
+      await prisma.usageSnapshot.findUniqueOrThrow({
+        where: { id: unrelatedBuiltinSnapshot.id },
+        select: { totalCost: true },
+      })
+    ).toEqual({ totalCost: 12 });
+    expect(
+      await prisma.providerExternalBilling.findUniqueOrThrow({
+        where: { id: legacyExternalBilling.id },
+        select: { amountUsd: true, status: true, rollupRole: true },
+      })
+    ).toEqual({
+      amountUsd: null,
+      status: "cost_unavailable",
+      rollupRole: "canonical",
+    });
+    expect(
+      await prisma.providerExternalBilling.findUniqueOrThrow({
+        where: { id: unrelatedExternalBilling.id },
+        select: { amountUsd: true, status: true, rollupRole: true },
+      })
+    ).toEqual({ amountUsd: 12, status: "active", rollupRole: null });
+
+    const afterMaintenance = await computeBudgetStatus(NOW);
+    expect(
+      afterMaintenance.providers.find((item) => item.id === provider.id)
+        ?.snapshotCostUsd
+    ).toBeNull();
+    expect(
+      afterMaintenance.providers.find(
+        (item) => item.id === currentlyUnauthorizedProvider.id
+      )?.snapshotCostUsd
+    ).toBeNull();
   });
 
   it("marks last-known Gemini cost partial after a newer billing failure", async () => {

@@ -23,6 +23,7 @@ import {
   type AdoptExternalBillingSubscriptionsResult,
   type CloudflareLegacyHandoffStatus,
 } from "@/lib/external-billing-subscription-adoption";
+import { quarantineLegacyMistralSpendLimitSnapshots } from "@/lib/mistral-snapshot-quarantine";
 
 export interface UsageMaintenanceResult {
   subscriptionAdoption: SubscriptionAdoptionMaintenanceResult;
@@ -55,6 +56,7 @@ export interface AlertMaintenanceResult extends AlertDeliveryResult {
 }
 
 export interface UsageMaintenanceDependencies {
+  quarantineMistralSnapshots?: typeof quarantineLegacyMistralSpendLimitSnapshots;
   adoptSubscriptions?: typeof adoptExternalBillingSubscriptions;
   materializeSubscriptions?: typeof materializeDueSubscriptions;
   rollForwardRenewals?: typeof rollForwardProviderRenewals;
@@ -102,6 +104,22 @@ export async function runUsageMaintenance(
     // discovered current period is charged exactly once in this same pass.
     const { subscriptionAdoption, subscriptions } =
       await withInternalUsageWriteAdmission(async () => {
+        // This correction is independent of the current provider poll: even a
+        // Mistral 401 must not keep the retired spend-limit-as-cash snapshots
+        // eligible for budget math. The helper is bounded and idempotent.
+        const mistralQuarantine = await (
+          dependencies.quarantineMistralSnapshots ??
+          quarantineLegacyMistralSpendLimitSnapshots
+        )();
+        if (
+          mistralQuarantine.quarantined > 0 ||
+          mistralQuarantine.externalBillingQuarantined > 0 ||
+          mistralQuarantine.truncated
+        ) {
+          console.warn(
+            `[mistral-snapshot-quarantine] snapshotsExamined=${mistralQuarantine.examined} snapshotsQuarantined=${mistralQuarantine.quarantined} externalBillingExamined=${mistralQuarantine.externalBillingExamined} externalBillingQuarantined=${mistralQuarantine.externalBillingQuarantined} truncated=${mistralQuarantine.truncated}`
+          );
+        }
         let subscriptionAdoption: SubscriptionAdoptionMaintenanceResult;
         try {
           subscriptionAdoption = {

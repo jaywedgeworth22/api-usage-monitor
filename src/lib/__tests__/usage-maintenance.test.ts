@@ -53,6 +53,13 @@ function dependencies(
   deliverAlerts: UsageMaintenanceDependencies["deliverAlerts"]
 ): UsageMaintenanceDependencies {
   return {
+    quarantineMistralSnapshots: vi.fn(async () => ({
+      examined: 0,
+      quarantined: 0,
+      externalBillingExamined: 0,
+      externalBillingQuarantined: 0,
+      truncated: false,
+    })),
     adoptSubscriptions: vi.fn(async () => subscriptionAdoption),
     materializeSubscriptions: vi.fn(async () => subscriptions),
     rollForwardRenewals: vi.fn(async () => providerRenewals),
@@ -79,7 +86,18 @@ beforeEach(() => {
 describe("runUsageMaintenance", () => {
   it("adopts authoritative billing before materializing its current period", async () => {
     const calls: string[] = [];
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
     const deps = dependencies(vi.fn(async () => deliveredAlerts));
+    deps.quarantineMistralSnapshots = vi.fn(async () => {
+      calls.push("quarantine-mistral");
+      return {
+        examined: 1,
+        quarantined: 1,
+        externalBillingExamined: 1,
+        externalBillingQuarantined: 1,
+        truncated: false,
+      };
+    });
     deps.adoptSubscriptions = vi.fn(async () => {
       calls.push("adopt");
       return subscriptionAdoption;
@@ -91,7 +109,7 @@ describe("runUsageMaintenance", () => {
 
     await runUsageMaintenance(deps);
 
-    expect(calls).toEqual(["adopt", "materialize"]);
+    expect(calls).toEqual(["quarantine-mistral", "adopt", "materialize"]);
   });
 
   it("queues scheduler money-path writes behind an external ingest admission lease", async () => {

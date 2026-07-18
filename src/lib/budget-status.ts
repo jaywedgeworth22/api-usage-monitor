@@ -27,6 +27,7 @@ import {
 import { deriveGeminiBillingStatus } from "@/lib/gemini-key-status";
 import { providerConfigForServer } from "@/lib/provider-secret-config";
 import { subscriptionChargeIdempotencyKey } from "@/lib/subscription-charge-identity";
+import { isLegacyMistralSpendLimitCostSnapshot } from "@/lib/mistral-snapshot-quarantine";
 
 // Budget-status computation for the read endpoint (GET /api/budget-status).
 //
@@ -396,13 +397,16 @@ async function computeBudgetStatusUncached(now: Date): Promise<BudgetStatusRespo
           fetchedAt: true,
           totalCost: true,
           fixedCostIncludedUsd: true,
+          costWindowStart: true,
+          costWindowEnd: true,
+          costScope: true,
           costIncludesUnknownFixed: true,
-          // rawData is NOT selected here (see geminiCostRawDataById below) -
+          // rawData is NOT selected here (see costRawDataById below) -
           // this query runs for every provider with a cost snapshot this
           // month (typically close to all 39), and rawData is only ever
-          // consulted for the google-ai provider's billing-config identity
-          // check. Pulling the full blob for every provider just to read it
-          // for one was the other half of this endpoint's OOM (see #392).
+          // consulted for the bounded Google billing-identity and Mistral
+          // legacy-provenance checks. Pulling the full blob for every provider
+          // was the other half of this endpoint's OOM (see #392).
         },
       })
     : [];
@@ -415,21 +419,31 @@ async function computeBudgetStatusUncached(now: Date): Promise<BudgetStatusRespo
       latestCostByProviderId.set(snapshot.providerId, snapshot);
     }
   }
-  // Fetch rawData for only the Gemini provider(s)' picked cost snapshot -
-  // the sole consumer is geminiCostIdentityStatus below, which itself
-  // short-circuits to null for every non-google-ai provider before touching
-  // rawData at all.
-  const geminiCostSnapshotIds = geminiProviders
-    .map((provider) => latestCostByProviderId.get(provider.id)?.id)
+  // Fetch rawData only for the selected Gemini and Mistral cost candidates.
+  // Gemini needs its billing-config identity check. Mistral needs a bounded
+  // read-time defense so the known retired spend-limit-as-cash provenance is
+  // quarantined even before the idempotent maintenance correction gets its
+  // first post-deploy pass (or when the current Mistral credential 401s).
+  const costRawDataProviderIds = providers
+    .filter((provider) => {
+      const key = canonicalProviderKey(provider.name);
+      return (
+        provider.type.trim().toLowerCase() === "builtin" &&
+        (key === "google-ai" || key === "mistral")
+      );
+    })
+    .map((provider) => provider.id);
+  const selectedCostSnapshotIds = costRawDataProviderIds
+    .map((providerId) => latestCostByProviderId.get(providerId)?.id)
     .filter((id): id is string => typeof id === "string");
-  const geminiCostRawDataRows = geminiCostSnapshotIds.length
+  const costRawDataRows = selectedCostSnapshotIds.length
     ? await prisma.usageSnapshot.findMany({
-        where: { id: { in: geminiCostSnapshotIds } },
+        where: { id: { in: selectedCostSnapshotIds } },
         select: { id: true, rawData: true },
       })
     : [];
-  const geminiCostRawDataById = new Map(
-    geminiCostRawDataRows.map((row) => [row.id, row.rawData])
+  const costRawDataById = new Map(
+    costRawDataRows.map((row) => [row.id, row.rawData])
   );
 
   const providerIdentityCandidates = providers.map((provider) => ({
@@ -479,7 +493,7 @@ async function computeBudgetStatusUncached(now: Date): Promise<BudgetStatusRespo
       billingConfig: currentBillingConfig,
       latestSnapshot: latestCostSnapshot
         ? {
-            rawData: geminiCostRawDataById.get(latestCostSnapshot.id) ?? null,
+            rawData: costRawDataById.get(latestCostSnapshot.id) ?? null,
             fetchedAt: latestCostSnapshot.fetchedAt,
           }
         : null,
@@ -488,10 +502,19 @@ async function computeBudgetStatusUncached(now: Date): Promise<BudgetStatusRespo
     const billingConfigurationChanged =
       geminiBillingStatus?.state === "configuration_changed" ||
       geminiCostIdentityStatus?.state === "configuration_changed";
+    const legacyMistralSnapshotQuarantined =
+      p.type.trim().toLowerCase() === "builtin" &&
+      canonicalProviderKey(p.name) === "mistral" &&
+      latestCostSnapshot != null &&
+      isLegacyMistralSpendLimitCostSnapshot({
+        ...latestCostSnapshot,
+        rawData: costRawDataById.get(latestCostSnapshot.id) ?? null,
+      });
     const billingSnapshotQuarantined =
       billingConfigurationChanged ||
       geminiBillingStatus?.state === "not_configured" ||
-      geminiCostIdentityStatus?.state === "not_configured";
+      geminiCostIdentityStatus?.state === "not_configured" ||
+      legacyMistralSnapshotQuarantined;
     // A fingerprint mismatch or removed billing configuration means the prior
     // snapshot belongs to an identity that is no longer current. Quarantine it
     // instead of charging old-project dollars to this provider row.
@@ -735,13 +758,13 @@ async function computeBudgetStatusUncached(now: Date): Promise<BudgetStatusRespo
         : fixedAccruedUsd > 0 || receiptCash.paidUsd > 0
           ? "partial"
           : "unknown";
-    // Anthropic individual accounts have no authoritative billing API. A
-    // fully priced producer stream is complete for the events received, but
-    // cannot prove that every account request reached the monitor. Keep the
-    // provider-level cash total explicitly partial until an authoritative
-    // organization cost snapshot exists.
+    // Anthropic individual accounts and Mistral's currently published Admin
+    // Usage schema have no authoritative cash-total API. A fully priced
+    // producer stream is complete for the events received, but cannot prove
+    // that every account request reached the monitor. Keep provider-level
+    // cash explicitly partial until an authoritative cost snapshot exists.
     if (
-      canonicalProviderKey(p.name) === "anthropic" &&
+      ["anthropic", "mistral"].includes(canonicalProviderKey(p.name)) &&
       snapshotCostUsd == null &&
       hasPushedEvents &&
       spendCoverage === "complete"
