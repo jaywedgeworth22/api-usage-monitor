@@ -5,7 +5,12 @@
  * duplicate-link audit, avoiding Prisma's generic --accept-data-loss flag.
  */
 import { existsSync } from "node:fs";
-import { PrismaClient } from "@prisma/client";
+// @prisma/client is CommonJS in the Node 24 subprocess used by this startup
+// guard. Default-import its module object so Node never relies on synthetic
+// named-export detection for PrismaClient.
+import prismaClientModule from "@prisma/client";
+
+const { PrismaClient } = prismaClientModule;
 
 const databaseUrl = process.env.DATABASE_URL ?? "";
 const sqlitePath = databaseUrl.match(/^file:(.+)$/)?.[1];
