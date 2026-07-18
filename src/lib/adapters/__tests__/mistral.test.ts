@@ -69,6 +69,66 @@ describe("Mistral billing adapter", () => {
     expect(fetchMock.mock.calls[0][1].headers["x-api-key"]).toBe("admin-key");
   });
 
+  it("treats no_monthly_limit as unlimited even when the response includes a numeric usage_limit", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn()
+        .mockResolvedValueOnce(json(currentUsage()))
+        .mockResolvedValueOnce(json({
+          limits: {
+            completion: {
+              no_monthly_limit: true,
+              usage_limit: 100,
+              monthly_limit_reached: false,
+            },
+            currency: "USD",
+            last_payment_failure: false,
+          },
+        }))
+        .mockResolvedValueOnce(json({ requests_per_second: 5 }))
+        .mockResolvedValueOnce(json(workspacePage([])))
+    );
+
+    const result = await fetchUsage("admin-key");
+    const spendSync = result.externalBillingSyncs?.find(
+      (sync) => sync.source === "mistral-spend-limits"
+    );
+
+    expect(spendSync?.records[0]).toMatchObject({
+      status: "unlimited",
+      spendLimitUsd: null,
+      spendLimitWindow: null,
+      rollupRole: "metadata",
+    });
+    expect(result.rawData).toMatchObject({
+      capabilities: { spendLimit: false },
+      spendLimit: {
+        limits: { completion: { no_monthly_limit: true, usage_limit: 100 } },
+      },
+    });
+  });
+
+  it("does not reconcile a malformed successful spend-limit response over prior good metadata", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn()
+        .mockResolvedValueOnce(json(currentUsage()))
+        .mockResolvedValueOnce(json({}))
+        .mockResolvedValueOnce(json({ requests_per_second: 5 }))
+        .mockResolvedValueOnce(json(workspacePage([])))
+    );
+
+    const result = await fetchUsage("admin-key");
+
+    expect(result.externalBillingSyncs?.map((sync) => sync.source)).not.toContain(
+      "mistral-spend-limits"
+    );
+    expect(result.rawData).toMatchObject({
+      spendLimit: {},
+      capabilities: { spendLimit: false },
+    });
+  });
+
   it("paginates workspace inventory and emits bounded, non-additive workspace components", async () => {
     const firstPage = Array.from({ length: 100 }, (_, index) => ({
       uuid: index === 0 ? "one" : `workspace-${index + 1}`,

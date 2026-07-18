@@ -68,6 +68,43 @@ function parseCurrency(value: unknown): string | null {
   return /^[A-Z]{3}$/.test(currency) ? currency : null;
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value != null && typeof value === "object" && !Array.isArray(value);
+}
+
+function parseSpendLimitMetadata(report: MistralSpendLimits): {
+  completion: NonNullable<NonNullable<MistralSpendLimits["limits"]>["completion"]>;
+  currency: string;
+  unlimited: boolean;
+  spendLimitUsd: number | null;
+} | null {
+  const limits = report.limits;
+  const completion = limits?.completion;
+  if (!isRecord(limits) || !isRecord(completion)) return null;
+
+  const currency = parseCurrency(limits.currency);
+  if (!currency) return null;
+
+  const unlimited = completion.no_monthly_limit === true;
+  const parsedLimit =
+    parseNumber(completion.usage_limit) ??
+    parseNumber(completion.usage_limit_organization);
+  const validLimit = parsedLimit != null && parsedLimit >= 0 ? parsedLimit : null;
+
+  // A successful HTTP response is not enough to reconcile stored metadata.
+  // Require either the provider's explicit unlimited marker or a valid
+  // numeric cap. Otherwise a malformed/partial `{}` response would upsert a
+  // null cap over a previously known-good value.
+  if (!unlimited && validLimit == null) return null;
+
+  return {
+    completion,
+    currency,
+    unlimited,
+    spendLimitUsd: !unlimited && currency === "USD" ? validLimit : null,
+  };
+}
+
 /**
  * The usage endpoint is documented as billing usage, but its published schema
  * currently leaves per-category payloads open-ended and does not define a
@@ -335,20 +372,22 @@ export async function fetchUsage(
   const usage = (usageResponse?.data ?? {}) as MistralUsageReport;
   const limits = (limitsResponse?.data ?? {}) as MistralSpendLimits;
   const rate = (rateResponse?.data ?? {}) as MistralRateLimits;
-  const completion = limits.limits?.completion;
+  const spendLimitMetadata = limitsResponse?.ok
+    ? parseSpendLimitMetadata(limits)
+    : null;
+  const completion = spendLimitMetadata?.completion;
   const usageWindow = usageResponse?.ok
     ? validateCurrentUtcUsageWindow(usage, now)
     : null;
-  const limitsCurrency = parseCurrency(limits.limits?.currency);
-  const spendLimitUsd = limitsCurrency === "USD"
-    ? parseNumber(completion?.usage_limit) ?? parseNumber(completion?.usage_limit_organization)
-    : null;
+  const spendLimitUsd = spendLimitMetadata?.spendLimitUsd ?? null;
   const requestLimit = rateResponse?.ok ? parseNumber(rate.requests_per_second) : null;
-  const status = limits.limits?.last_payment_failure === true
-    ? "payment_failed"
-    : completion?.monthly_limit_reached === true
-      ? "limit_reached"
-      : "active";
+  const status = spendLimitMetadata?.unlimited
+    ? "unlimited"
+    : limits.limits?.last_payment_failure === true
+      ? "payment_failed"
+      : completion?.monthly_limit_reached === true
+        ? "limit_reached"
+        : "active";
   const billingSyncs: AdapterExternalBillingSync[] = [];
 
   // This stable source identity intentionally clears the old false cash value.
@@ -374,7 +413,7 @@ export async function fetchUsage(
       ],
     });
   }
-  if (limitsResponse?.ok) {
+  if (spendLimitMetadata) {
     billingSyncs.push({
       source: "mistral-spend-limits",
       authoritative: true,
@@ -383,9 +422,9 @@ export async function fetchUsage(
           externalId: "organization",
           kind: "account",
           planName: "Mistral organization spend limit",
-          status: spendLimitUsd == null ? "metadata_unavailable" : status,
+          status,
           spendLimitUsd,
-          spendLimitWindow: completion?.no_monthly_limit === true ? null : "month",
+          spendLimitWindow: spendLimitMetadata.unlimited ? null : "month",
           rollupRole: "metadata",
         },
       ],
