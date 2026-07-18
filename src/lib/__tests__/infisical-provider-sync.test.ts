@@ -951,7 +951,7 @@ describe("Infisical provider credential sync", () => {
     expect(result).toMatchObject({
       enabled: true,
       configured: true,
-      created: 20,
+      created: 21,
       updated: 0,
       unchanged: 0,
       missing: 0,
@@ -962,7 +962,7 @@ describe("Infisical provider credential sync", () => {
     const providers = await prisma.provider.findMany({
       include: { allocations: { include: { project: true } } },
     });
-    expect(providers).toHaveLength(20);
+    expect(providers).toHaveLength(21);
     const deepseek = providers.filter((provider) => provider.name === "deepseek");
     expect(deepseek).toHaveLength(2);
     expect(
@@ -1060,7 +1060,7 @@ describe("Infisical provider credential sync", () => {
     const second = await syncProviderCredentialsFromInfisical();
 
     expect(second.updated).toBe(1);
-    expect(second.unchanged).toBe(19);
+    expect(second.unchanged).toBe(20);
     const updated = await prisma.provider.findUniqueOrThrow({
       where: { id: stResend.id },
     });
@@ -1433,7 +1433,7 @@ describe("Infisical provider credential sync", () => {
 
     const result = await syncProviderCredentialsFromInfisical();
 
-    expect(result.failed).toBe(20);
+    expect(result.failed).toBe(21);
     expect(result.sources[0]).toMatchObject({
       source: "st",
       status: "error",
