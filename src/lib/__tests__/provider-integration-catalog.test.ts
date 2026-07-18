@@ -85,6 +85,17 @@ describe("provider integration catalog", () => {
     );
   });
 
+  it("documents Firecrawl history as private, non-money metadata", () => {
+    const firecrawl = getProviderIntegrationProfile("firecrawl");
+
+    expect(firecrawl.billing.visibility).toBe("metadata");
+    expect(firecrawl.reads.join(" ")).toMatch(/byApiKey explicitly disabled/i);
+    expect(firecrawl.stores.join(" ")).toMatch(/non-money metadata/i);
+    expect(firecrawl.stores.join(" ")).toMatch(/no .*API-key identifier/i);
+    expect(firecrawl.limitations.join(" ")).toMatch(/not pruned/i);
+    expect(firecrawl.cannotAdd.join(" ")).toMatch(/cannot be converted to USD/i);
+  });
+
   it("exposes required adapter config and does not solicit unused blind-adapter keys", () => {
     const byName = new Map(BUILT_IN_PROVIDERS.map((provider) => [provider.name, provider]));
     expect(byName.get("langfuse")?.needsConfig?.fields.map((field) => field.key)).toEqual([

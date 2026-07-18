@@ -1,5 +1,7 @@
 import {
   AdapterError,
+  type AdapterExternalBillingRecord,
+  type AdapterExternalBillingSync,
   configurationError,
   errorResult,
   fetchJson,
@@ -8,6 +10,16 @@ import {
 } from "./helpers";
 
 const CREDIT_USAGE_URL = "https://api.firecrawl.dev/v2/team/credit-usage";
+const HISTORICAL_CREDIT_USAGE_URL =
+  "https://api.firecrawl.dev/v2/team/credit-usage/historical?byApiKey=false";
+const MAX_HISTORICAL_PERIODS = 240;
+
+type HistoricalCreditStatus = "complete" | "invalid" | "unavailable";
+
+interface HistoricalCreditResult {
+  status: HistoricalCreditStatus;
+  sync?: AdapterExternalBillingSync;
+}
 
 function responseObject(value: unknown): Record<string, unknown> | null {
   return value && typeof value === "object" && !Array.isArray(value)
@@ -20,6 +32,15 @@ function nonNegativeNumber(value: unknown): number | null {
   return parsed != null && parsed >= 0 ? parsed : null;
 }
 
+function historicalCreditTotal(value: unknown): number | null {
+  return typeof value === "number" &&
+    Number.isFinite(value) &&
+    value >= 0 &&
+    value <= Number.MAX_SAFE_INTEGER
+    ? value
+    : null;
+}
+
 function nullableIsoTimestamp(value: unknown): string | null | undefined {
   if (value == null) return null;
   if (typeof value !== "string" || !value.trim()) return undefined;
@@ -27,6 +48,84 @@ function nullableIsoTimestamp(value: unknown): string | null | undefined {
   return Number.isFinite(milliseconds)
     ? new Date(milliseconds).toISOString()
     : undefined;
+}
+
+async function fetchHistoricalCredits(
+  token: string
+): Promise<HistoricalCreditResult> {
+  let response;
+  try {
+    response = await fetchJson(HISTORICAL_CREDIT_USAGE_URL, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+  } catch {
+    return { status: "unavailable" };
+  }
+
+  if (!response.ok) return { status: "unavailable" };
+
+  const body = responseObject(response.data);
+  if (
+    body?.success !== true ||
+    !Array.isArray(body.periods) ||
+    body.periods.length > MAX_HISTORICAL_PERIODS
+  ) {
+    return { status: "invalid" };
+  }
+
+  const periods: Array<{
+    start: string;
+    end: string;
+    totalCredits: number;
+  }> = [];
+  for (const value of body.periods) {
+    const period = responseObject(value);
+    const start = nullableIsoTimestamp(period?.startDate);
+    const end = nullableIsoTimestamp(period?.endDate);
+    const totalCredits = historicalCreditTotal(period?.totalCredits);
+    if (
+      !period ||
+      start == null ||
+      end == null ||
+      totalCredits == null ||
+      Date.parse(end) <= Date.parse(start)
+    ) {
+      return { status: "invalid" };
+    }
+    periods.push({ start, end, totalCredits });
+  }
+
+  periods.sort(
+    (left, right) =>
+      Date.parse(left.start) - Date.parse(right.start) ||
+      Date.parse(left.end) - Date.parse(right.end)
+  );
+  for (let index = 1; index < periods.length; index += 1) {
+    if (Date.parse(periods[index].start) < Date.parse(periods[index - 1].end)) {
+      return { status: "invalid" };
+    }
+  }
+
+  const records: AdapterExternalBillingRecord[] = periods.map((period) => ({
+    externalId: `credit-history:${period.start}:${period.end}`,
+    kind: "billing_period",
+    serviceName: "Firecrawl API credit usage",
+    currentPeriodStart: period.start,
+    currentPeriodEnd: period.end,
+    usageQuantity: period.totalCredits,
+    usageUnit: "credits",
+    rollupRole: "metadata",
+    dateKind: "report_through",
+  }));
+
+  return {
+    status: "complete",
+    sync: {
+      source: "firecrawl-team-credit-history",
+      authoritative: true,
+      records,
+    },
+  };
 }
 
 export async function fetchUsage(apiKey: string): Promise<UsageResult> {
@@ -75,6 +174,8 @@ export async function fetchUsage(apiKey: string): Promise<UsageResult> {
     );
   }
 
+  const historicalCredits = await fetchHistoricalCredits(token);
+
   return {
     balance: null,
     totalCost: null,
@@ -90,8 +191,14 @@ export async function fetchUsage(apiKey: string): Promise<UsageResult> {
         start: billingPeriodStart,
         end: billingPeriodEnd,
       },
+      creditHistory: {
+        status: historicalCredits.status,
+        periodCount:
+          historicalCredits.sync?.records.length ?? null,
+      },
       capabilities: {
         currentCreditQuota: true,
+        historicalCreditUsage: historicalCredits.status === "complete",
         billingPeriod:
           billingPeriodStart != null || billingPeriodEnd != null,
         providerReportedUsage: false,
@@ -119,5 +226,8 @@ export async function fetchUsage(apiKey: string): Promise<UsageResult> {
         },
       ],
     },
+    externalBillingSyncs: historicalCredits.sync
+      ? [historicalCredits.sync]
+      : undefined,
   };
 }

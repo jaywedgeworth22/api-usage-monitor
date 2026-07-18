@@ -3,6 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { setupPrismaSqliteTestDb } from "./setup-test-db";
+import { fetchUsage as fetchFirecrawlUsage } from "../adapters/firecrawl";
 import { fetchUsage as fetchOpenAiUsage } from "../adapters/openai";
 
 let dbPath: string;
@@ -338,6 +339,72 @@ describe("reconcileProviderExternalBilling", () => {
       usageQuantity: 19,
       currentPeriodEnd: new Date("2026-07-13T20:05:00.000Z"),
     });
+  });
+
+  it("does not prune persisted Firecrawl history when the optional response is invalid", async () => {
+    await reconcileProviderExternalBilling(providerId, {
+      source: "firecrawl-team-credit-history",
+      authoritative: true,
+      records: [
+        {
+          externalId:
+            "credit-history:2026-06-01T00:00:00.000Z:2026-07-01T00:00:00.000Z",
+          kind: "billing_period",
+          serviceName: "Firecrawl API credit usage",
+          currentPeriodStart: "2026-06-01T00:00:00.000Z",
+          currentPeriodEnd: "2026-07-01T00:00:00.000Z",
+          usageQuantity: 321,
+          usageUnit: "credits",
+          rollupRole: "metadata",
+          dateKind: "report_through",
+        },
+      ],
+    });
+
+    vi.stubGlobal(
+      "fetch",
+      vi
+        .fn()
+        .mockResolvedValueOnce(
+          jsonResponse({
+            success: true,
+            data: {
+              remainingCredits: 700,
+              planCredits: 1_000,
+              billingPeriodStart: "2026-07-01T00:00:00Z",
+              billingPeriodEnd: "2026-08-01T00:00:00Z",
+            },
+          })
+        )
+        .mockResolvedValueOnce(
+          jsonResponse({
+            success: true,
+            periods: [
+              {
+                startDate: "2026-07-01T00:00:00Z",
+                endDate: "invalid",
+                totalCredits: 100,
+              },
+            ],
+          })
+        )
+    );
+
+    const result = await fetchFirecrawlUsage("test-key");
+    expect(result.externalBillingSyncs).toBeUndefined();
+    await reconcileProviderExternalBilling(providerId, result.externalBilling!);
+
+    expect(
+      await prisma.providerExternalBilling.findMany({
+        where: { source: "firecrawl-team-credit-history" },
+      })
+    ).toEqual([
+      expect.objectContaining({
+        externalId:
+          "credit-history:2026-06-01T00:00:00.000Z:2026-07-01T00:00:00.000Z",
+        usageQuantity: 321,
+      }),
+    ]);
   });
 
   it("does not prune persisted OpenAI project components when a malformed detail page is not authoritative", async () => {

@@ -1,6 +1,6 @@
 # Direct billing and account integrations
 
-Last verified: 2026-07-16. Links below are provider-owned documentation.
+Last verified: 2026-07-18. Links below are provider-owned documentation.
 
 ## Data model and safety boundary
 
@@ -19,7 +19,7 @@ Push/manual adapters never send an inference, email, or market-data request mere
 
 Credential-shaped provider configuration is stored in encrypted `Provider.secretConfig`. `config.adminApiKey`, `managementKey`, `apiKeySid`, `authUsername`, `apiSecret`, `secretKey`, `serviceAccountJson`, tokens, passwords, authorization headers, and `extraHeaders` are decrypted only inside the adapter registry. Legacy browser-sync cookie/localStorage/sessionStorage containers are immediately redacted from API responses and scrubbed by the provider-secret migration because adapters do not need them. Provider API responses return only public config and safe `secretConfigMeta` field names.
 
-Authoritative feeds reconcile only after their complete response has been validated. Stripe and Anthropic reject missing/repeated cursors and malformed successful responses; Cloudflare requires consistent `result_info` totals across the complete subscription list; GitHub budgets require a nonnegative safe-integer `total_count` that remains stable across pages and exactly matches the final collection; GitHub, Vercel, and Cloudflare PayGo reject malformed HTTP 200 shapes. A partial or ambiguous response books no partial cost and cannot delete previously reconciled state. OpenAI retains only aggregate/page-count diagnostics for Costs API pages, never the full cost payload.
+Authoritative feeds reconcile only after their complete response has been validated. Stripe and Anthropic reject missing/repeated cursors and malformed successful responses; Cloudflare requires consistent `result_info` totals across the complete subscription list; GitHub budgets require a nonnegative safe-integer `total_count` that remains stable across pages and exactly matches the final collection; GitHub, Vercel, and Cloudflare PayGo reject malformed HTTP 200 shapes. Firecrawl historical periods are capped, validated as one non-overlapping collection, requested with `byApiKey=false`, and discarded as a whole on optional failure; no API-key identifier is stored, and an omitted sync cannot prune prior valid history. A partial or ambiguous response books no partial cost and cannot delete previously reconciled state. OpenAI retains only aggregate/page-count diagnostics for Costs API pages, never the full cost payload.
 
 ## Direct cost and billing connections implemented
 
@@ -46,6 +46,7 @@ These APIs are useful direct replacements for manually typed status/limits, but 
 
 | Provider | Direct state | Boundary | Official source |
 |---|---|---|---|
+| Firecrawl | Current plan-credit allowance, remaining credits and billing-period boundaries plus bounded month-by-month historical credits consumed | Historical credits are non-money metadata only. The adapter disables per-key breakdown, drops any returned key identifier, never infers used credits from allowance minus remaining, and emits no historical sync on an optional failure | [Current credit usage](https://docs.firecrawl.dev/api-reference/endpoint/credit-usage) and [historical credit usage](https://docs.firecrawl.dev/api-reference/endpoint/credit-usage-historical) |
 | Render | Service plan and suspended/active status (`serviceId`) | Service API has no invoice amount/cadence, so no cost is invented | [Retrieve service](https://api-docs.render.com/reference/retrieve-service) and [service fields](https://api-docs.render.com/reference/service-fields) |
 | Hetzner Cloud | Server type, status, location and provider-published monthly plan run-rate per server in the project owner's actual `/pricing` currency | Resource prices are not accrued invoice cost; non-USD amounts are never relabeled or added to USD spend | [Cloud API](https://docs.hetzner.cloud/reference/cloud) |
 | Twelve Data | Current plan body plus real-time credits used/remaining from documented response headers | No billing price or renewal API; `/api_usage` consumes one credit, so new connections default to daily sync | [API usage endpoint](https://twelvedata.com/docs/advanced/api-usage) |
