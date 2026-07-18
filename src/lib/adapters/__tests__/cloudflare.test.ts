@@ -9,7 +9,10 @@ function json(body: unknown, status = 200): Response {
 }
 
 describe("cloudflare adapter", () => {
-  afterEach(() => vi.unstubAllGlobals());
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+  });
 
   it("reads billing subscriptions and uses global-key auth correctly", async () => {
     const now = new Date();
@@ -109,11 +112,12 @@ describe("cloudflare adapter", () => {
   });
 
   it("uses a current paid billing term when Cloudflare reports an inconsistent Expired state", async () => {
-    const now = new Date();
-    const currentPeriodStart = new Date(now.getTime() - 86_400_000).toISOString();
-    const currentPeriodEnd = new Date(now.getTime() + 86_400_000).toISOString();
-    const priorPeriodStart = new Date(now.getTime() - 3 * 86_400_000).toISOString();
-    const priorPeriodEnd = new Date(now.getTime() - 2 * 86_400_000).toISOString();
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-17T12:00:00.000Z"));
+    const currentPeriodStart = "2026-07-16T19:02:36.000Z";
+    const currentPeriodEnd = "2026-08-16T00:00:00.000Z";
+    const priorPeriodStart = "2026-06-16T19:02:36.000Z";
+    const priorPeriodEnd = "2026-07-16T00:00:00.000Z";
     vi.stubGlobal(
       "fetch",
       vi.fn()
@@ -186,6 +190,56 @@ describe("cloudflare adapter", () => {
         expect.objectContaining({ externalId: "cancelled-current", status: "cancelled", rollupRole: "metadata" }),
       ])
     );
+  });
+
+  it("keeps an Expired term terminal when subscription fetching crosses current_period_end", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-17T11:59:59.999Z"));
+    const currentPeriodStart = "2026-06-17T12:00:00.000Z";
+    const currentPeriodEnd = "2026-07-17T12:00:00.000Z";
+    vi.stubGlobal(
+      "fetch",
+      vi.fn()
+        .mockResolvedValueOnce(json({ result: { totals: { requests: 10 } } }))
+        .mockResolvedValueOnce(json({}, 403))
+        .mockImplementationOnce(async () => {
+          vi.setSystemTime(new Date(currentPeriodEnd));
+          return json({
+            result: [
+              {
+                id: "expired-at-boundary",
+                currency: "USD",
+                current_period_start: currentPeriodStart,
+                current_period_end: currentPeriodEnd,
+                frequency: "monthly",
+                price: 5,
+                rate_plan: { public_name: "Workers Paid" },
+                state: "Expired",
+              },
+            ],
+            result_info: { count: 1, page: 1, per_page: 50, total_count: 1 },
+          });
+        })
+        .mockResolvedValueOnce(json({}, 403))
+    );
+
+    const result = await fetchUsage("token", {
+      accountId: "account-id",
+      authMode: "api_token",
+    });
+    const record = result.externalBillingSyncs?.find(
+      (sync) => sync.source === "cloudflare-subscriptions"
+    )?.records[0];
+
+    expect(result.totalCost).toBeNull();
+    expect(result.fixedCostIncludedUsd).toBeNull();
+    expect(record).toMatchObject({
+      externalId: "expired-at-boundary",
+      status: "expired",
+      paidRecurringAuthoritative: false,
+      rollupRole: "metadata",
+      nextRenewalAt: null,
+    });
   });
 
   it("uses explicit API-token auth even when a legacy account email remains", async () => {

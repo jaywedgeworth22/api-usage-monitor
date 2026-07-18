@@ -336,15 +336,25 @@ export async function fetchUsage(
   // that analytics datasets are not billing-grade).
   try {
     const { rows, pages } = await fetchAllSubscriptions(baseUrl, headers);
+    // Classify the response against a clock captured after all subscription
+    // pages arrive. The earlier request timestamp is used only to bound the
+    // analytics query; using it here could keep an Expired term live when the
+    // network request crosses current_period_end.
+    const subscriptionClassificationTime = new Date();
+    const subscriptionNowMs = subscriptionClassificationTime.getTime();
+    const subscriptionMonthStartMs = Date.UTC(
+      subscriptionClassificationTime.getUTCFullYear(),
+      subscriptionClassificationTime.getUTCMonth(),
+      1
+    );
     successfulCalls++;
     // Keep only the small set of fields needed to explain plan entitlements.
     // Cloudflare's full response can contain zone names and component payloads,
     // neither of which is needed for billing reconciliation.
     rawData.subscriptions = rows.map((subscription) =>
-      sanitizeSubscription(subscription, now)
+      sanitizeSubscription(subscription, subscriptionClassificationTime)
     );
 
-    const nowMs = now.getTime();
     let billedThisMonthUsd = 0;
     let foundBilledSubscription = false;
     let freeOrBaseEntitlementCount = 0;
@@ -355,14 +365,17 @@ export async function fetchUsage(
       const periodStart = subscription.current_period_start
         ? Date.parse(subscription.current_period_start)
         : Number.NaN;
-      const normalizedState = normalizedSubscriptionState(subscription, now);
+      const normalizedState = normalizedSubscriptionState(
+        subscription,
+        subscriptionClassificationTime
+      );
       const isPaid = normalizedState === "paid";
       if (
         price != null && price > 0 &&
         currency === "USD" &&
         normalizedState === "paid" &&
-        periodStart >= monthStartMs &&
-        periodStart <= nowMs
+        periodStart >= subscriptionMonthStartMs &&
+        periodStart <= subscriptionNowMs
       ) {
         billedThisMonthUsd += price;
         foundBilledSubscription = true;
