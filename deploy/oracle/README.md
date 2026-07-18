@@ -15,6 +15,13 @@ USAGE_MONITOR_HOSTNAME=usage-oracle.132.226.90.164.sslip.io
 USAGE_MONITOR_REVISION=<exact-main-sha>
 ```
 
+Oracle and the Coolify backup host are also Tailscale peers. Keep the Garage
+endpoint as its HTTPS hostname so certificate validation remains enabled, and
+pin that hostname to the Coolify Tailscale address in Oracle's `/etc/hosts`.
+Verify both `tailscale ping <coolify-ip>` and `curl --resolve` against the
+Garage endpoint before relying on the private route. Public port 9443 is only a
+source-IP-restricted break-glass path; do not expose Garage broadly.
+
 The candidate starts with `USAGE_SCHEDULER_ENABLED=false` and a separate
 Litestream target. Keep Render live until the candidate passes:
 

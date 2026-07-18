@@ -22,6 +22,17 @@
 - Coolify backup endpoint: the Garage S3 hostname managed by the
   `usage-monitor-backups` service; credentials remain only in protected runtime
   configuration.
+- Large backup requests use the dedicated Traefik `garage` TLS entrypoint on
+  port 9443 with five-minute read/write deadlines. Hetzner firewall 11282050
+  permits that port only from the Oracle VM public address; the shared Coolify
+  HTTPS entrypoint keeps its default timeout. The proxy compose change is
+  retained under `/data/coolify/proxy/docker-compose.yml` and a timestamped
+  pre-change copy under `/data/coolify/proxy/backups/`.
+- Oracle (`100.97.154.2`) and Coolify (`100.86.49.101`) are peers on the
+  existing Tailscale network. Oracle pins the Garage TLS hostname to the
+  Coolify Tailscale address in `/etc/hosts`, so normal backup traffic stays on
+  that private path while retaining hostname-based certificate validation.
+  The public-IP firewall rule is a source-IP-restricted break-glass fallback.
 - Production `usage.jays.services` and its Render service remain the rollback
   source until the sole-writer cutover and restore drill are complete.
 
@@ -38,6 +49,27 @@
    `PRAGMA integrity_check`, and compare representative row counts.
 6. During cutover, stop the incumbent writer before the final restore and
    enable exactly one scheduler. Confirm one healthy scheduler tick before DNS.
+
+## Completed pre-cutover receipts
+
+- Local `npm run verify`: 106 test files / 1,176 tests, TypeScript, lint,
+  migration safety, SQLite backup/startup checks, and the production build all
+  passed. GitHub CI, CodeQL, and gitleaks also passed on PR 420.
+- The Render replica restored into Oracle with `PRAGMA integrity_check = ok`
+  and counts of 41 providers, 6,122 usage snapshots, 374,399 external usage
+  events, and 3 subscriptions.
+- Coolify Garage was seeded from that database. Independent restores through
+  Litestream at TXID 1 and again after Oracle's TXID 2 both passed Litestream's
+  full integrity check, SQLite integrity check, the same representative row
+  counts, and the expected 313,257,984-byte database size.
+- The exposed bootstrap S3 key was retired after a newly generated key was
+  installed in Coolify and Oracle. The retired key is denied, the replacement
+  key can read the existing replica, and protected handoff files were removed.
+- The Oracle candidate returns HTTP 200 from strict readiness with database,
+  required Litestream backup, and startup checks healthy; its scheduler remains
+  intentionally disabled until the sole-writer cutover.
+- Free UptimeRobot checks cover production liveness and strict readiness at a
+  five-minute interval.
 
 ## Follow-ups
 
