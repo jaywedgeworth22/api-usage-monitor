@@ -159,8 +159,32 @@ function forecastSubscriptionRenewals(
 }
 
 export async function computeBudgetStatus(now: Date = new Date()): Promise<BudgetStatusResponse> {
+  // TEMPORARY DIAGNOSTIC INSTRUMENTATION (see #397 investigation, mirrors
+  // route.ts's [providers-timing]) - this function is one of the two
+  // top-level branches GET /api/providers awaits concurrently, so its own
+  // internal per-query timing is what tells us whether IT is the ~11.5s
+  // dominant step, and if so, which query inside it. Wrap each awaited query
+  // with Date.now() deltas and emit ONE structured [budget-timing] log line
+  // at the end. Remove once the slow step is identified and fixed.
+  const fnStart = Date.now();
+  let q_providersMs = -1;
+  let q_pushedByProviderMs = -1;
+  let q_receiptCashMs = -1;
+  let q_snapshotGroupByMs = -1;
+  let q_externalFindManyMs = -1;
+  let q_geminiFindFirstMs = -1;
+  let q_latestCostMs = -1;
+  let q_geminiCostRawDataMs = -1;
+  let q_providerStatusMapMs = -1;
+
   const monthStart = monthStartUtc(now);
   const rawCutoff = getExternalEventRawCutoff(now);
+
+  const providersStart = Date.now();
+  const pushedByProviderStart = Date.now();
+  const receiptCashStart = Date.now();
+  const snapshotGroupByStart = Date.now();
+  const externalFindManyStart = Date.now();
 
   const [
     providers,
@@ -273,9 +297,20 @@ export async function computeBudgetStatus(now: Date = new Date()): Promise<Budge
           },
         },
       },
+    }).then((r) => {
+      q_providersMs = Date.now() - providersStart;
+      return r;
     }),
-    sumMonthToDateExternalCostByProvider(monthStart, rawCutoff),
-    sumMonthToDateReceiptCashByProviderId(monthStart, rawCutoff, now),
+    sumMonthToDateExternalCostByProvider(monthStart, rawCutoff).then((r) => {
+      q_pushedByProviderMs = Date.now() - pushedByProviderStart;
+      return r;
+    }),
+    sumMonthToDateReceiptCashByProviderId(monthStart, rawCutoff, now).then(
+      (r) => {
+        q_receiptCashMs = Date.now() - receiptCashStart;
+        return r;
+      }
+    ),
     prisma.usageSnapshot.groupBy({
       by: ["providerId"],
       where: {
@@ -297,6 +332,9 @@ export async function computeBudgetStatus(now: Date = new Date()): Promise<Budge
         ],
       },
       _max: { fetchedAt: true },
+    }).then((r) => {
+      q_snapshotGroupByMs = Date.now() - snapshotGroupByStart;
+      return r;
     }),
     prisma.externalUsageEvent.findMany({
       where: {
@@ -312,6 +350,9 @@ export async function computeBudgetStatus(now: Date = new Date()): Promise<Budge
         windowStart: true,
         windowEnd: true,
       },
+    }).then((r) => {
+      q_externalFindManyMs = Date.now() - externalFindManyStart;
+      return r;
     }),
   ]);
 
@@ -335,6 +376,7 @@ export async function computeBudgetStatus(now: Date = new Date()): Promise<Budge
     string,
     { rawData: unknown; fetchedAt: Date }
   >();
+  const geminiFindFirstStart = Date.now();
   for (const provider of geminiProviders) {
     const snapshot = await prisma.usageSnapshot.findFirst({
       where: {
@@ -346,6 +388,7 @@ export async function computeBudgetStatus(now: Date = new Date()): Promise<Budge
     });
     if (snapshot) geminiStatusSnapshots.set(provider.id, snapshot);
   }
+  q_geminiFindFirstMs = Date.now() - geminiFindFirstStart;
 
   const materializedChargeByIdempotencyKey = new Map<
     string,
@@ -380,6 +423,7 @@ export async function computeBudgetStatus(now: Date = new Date()): Promise<Budge
     });
   }
 
+  const latestCostStart = Date.now();
   const latestCostSnapshots = latestCostTimes.length
     ? await prisma.usageSnapshot.findMany({
         where: {
@@ -406,6 +450,7 @@ export async function computeBudgetStatus(now: Date = new Date()): Promise<Budge
         },
       })
     : [];
+  q_latestCostMs = Date.now() - latestCostStart;
   const latestCostByProviderId = new Map<
     string,
     (typeof latestCostSnapshots)[number]
@@ -422,12 +467,14 @@ export async function computeBudgetStatus(now: Date = new Date()): Promise<Budge
   const geminiCostSnapshotIds = geminiProviders
     .map((provider) => latestCostByProviderId.get(provider.id)?.id)
     .filter((id): id is string => typeof id === "string");
+  const geminiCostRawDataStart = Date.now();
   const geminiCostRawDataRows = geminiCostSnapshotIds.length
     ? await prisma.usageSnapshot.findMany({
         where: { id: { in: geminiCostSnapshotIds } },
         select: { id: true, rawData: true },
       })
     : [];
+  q_geminiCostRawDataMs = Date.now() - geminiCostRawDataStart;
   const geminiCostRawDataById = new Map(
     geminiCostRawDataRows.map((row) => [row.id, row.rawData])
   );
@@ -462,6 +509,7 @@ export async function computeBudgetStatus(now: Date = new Date()): Promise<Budge
     pushedByProviderId.set(owner.id, bucket);
   }
 
+  const providerStatusMapStart = Date.now();
   const providerStatuses: ProviderBudgetStatus[] = providers.map((p) => {
     const plan = p.plan;
     const latestSnapshot = p.snapshots[0] ?? null;
@@ -879,6 +927,7 @@ export async function computeBudgetStatus(now: Date = new Date()): Promise<Budge
       alerts: budgetAlerts,
     };
   });
+  q_providerStatusMapMs = Date.now() - providerStatusMapStart;
 
   const budgeted = providerStatuses.filter((p) => p.monthlyBudgetUsd != null && p.monthlyBudgetUsd > 0);
   const totalBudgetUsd = budgeted.reduce((s, p) => s + (p.monthlyBudgetUsd ?? 0), 0);
@@ -887,6 +936,24 @@ export async function computeBudgetStatus(now: Date = new Date()): Promise<Budge
   const estimatedApiEquivalentUsd = providerStatuses.reduce(
     (sum, provider) => sum + provider.estimatedApiEquivalentUsd,
     0
+  );
+
+  const totalMs = Date.now() - fnStart;
+  // eslint-disable-next-line no-console -- temporary diagnostic instrumentation, see comment above computeBudgetStatus()
+  console.info(
+    "[budget-timing]",
+    JSON.stringify({
+      total: totalMs,
+      q_providers: q_providersMs,
+      q_pushedByProvider: q_pushedByProviderMs,
+      q_receiptCash: q_receiptCashMs,
+      q_snapshotGroupBy: q_snapshotGroupByMs,
+      q_externalFindMany: q_externalFindManyMs,
+      q_geminiFindFirst: q_geminiFindFirstMs,
+      q_latestCost: q_latestCostMs,
+      q_geminiCostRawData: q_geminiCostRawDataMs,
+      q_providerStatusMap: q_providerStatusMapMs,
+    })
   );
 
   return {
@@ -953,6 +1020,14 @@ export interface ProjectBudgetStatusResponse {
 }
 
 export async function computeProjectBudgetStatus(now: Date = new Date()): Promise<ProjectBudgetStatusResponse> {
+  // TEMPORARY DIAGNOSTIC INSTRUMENTATION (see #397 investigation). Note this
+  // function is NOT in the GET /api/providers call path (that route calls
+  // computeBudgetStatus() directly, not this wrapper) - it's instrumented
+  // here for completeness/coverage of budget-status.ts's other Promise.all,
+  // reusing the [budget-timing] tag with an "fn" discriminator so a grep for
+  // [budget-timing] surfaces both without conflating their shapes. Remove
+  // alongside the rest of this diagnostic pass.
+  const projectFnStart = Date.now();
   const [providerStatus, projects, attribution, identityProviders] = await Promise.all([
     computeBudgetStatus(now),
     prisma.project.findMany({
@@ -970,6 +1045,7 @@ export async function computeProjectBudgetStatus(now: Date = new Date()): Promis
       },
     }),
   ]);
+  const q_projectBudgetPromiseAllMs = Date.now() - projectFnStart;
 
   // Use the same oldest-row canonical resolver as ingest for the legacy
   // sourceApp-name fallback. Existing alias duplicates are therefore stable
@@ -1090,6 +1166,7 @@ export async function computeProjectBudgetStatus(now: Date = new Date()): Promis
     }
   }
 
+  const projectStatusMapStart = Date.now();
   const projectStatuses: ProjectBudgetStatus[] = projects.map((proj) => {
     // 1. Direct per-event attribution (projectId, plus legacy name match).
     const directUsd = directByProjectId.get(proj.id) ?? 0;
@@ -1216,6 +1293,7 @@ export async function computeProjectBudgetStatus(now: Date = new Date()): Promis
       status,
     };
   });
+  const q_projectStatusMapMs = Date.now() - projectStatusMapStart;
 
   const budgeted = projectStatuses.filter((p) => p.monthlyBudgetUsd != null && p.monthlyBudgetUsd > 0);
   const totalBudgetUsd = budgeted.reduce((s, p) => s + (p.monthlyBudgetUsd ?? 0), 0);
@@ -1227,6 +1305,17 @@ export async function computeProjectBudgetStatus(now: Date = new Date()): Promis
   // derive the app-wide total from only the visible project rows.
   const totalSpentUsd = providerStatus.summary.totalSpentUsd;
   const unassignedSpentUsd = Math.max(0, totalSpentUsd - attributedProjectSpentUsd);
+
+  // eslint-disable-next-line no-console -- temporary diagnostic instrumentation, see comment above computeProjectBudgetStatus()
+  console.info(
+    "[budget-timing]",
+    JSON.stringify({
+      fn: "computeProjectBudgetStatus",
+      total: Date.now() - projectFnStart,
+      q_projectBudgetPromiseAll: q_projectBudgetPromiseAllMs,
+      q_projectStatusMap: q_projectStatusMapMs,
+    })
+  );
 
   return {
     ok: true,
