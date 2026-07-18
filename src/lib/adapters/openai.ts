@@ -16,7 +16,7 @@ const MAX_COST_COMPONENT_PAGES = 20;
 const MAX_COST_COMPONENTS_PER_DIMENSION = 100;
 const MAX_COMPONENT_LABEL_LENGTH = 160;
 
-type CostComponentDimension = "project_id" | "line_item";
+type CostComponentDimension = "project_id" | "line_item" | "api_key_id";
 
 interface OrganizationCostsResult {
   ok: boolean;
@@ -32,6 +32,22 @@ interface OrganizationCostComponentsResult {
   pageCount: number;
   components: AdapterExternalBillingRecord[];
   error?: string;
+}
+
+function parseCostsPagination(
+  page: Record<string, unknown>
+): { hasMore: boolean; nextPage: string | null } | null {
+  if (typeof page.has_more !== "boolean") return null;
+  if (page.has_more) {
+    const nextPage =
+      typeof page.next_page === "string" && page.next_page.trim()
+        ? page.next_page.trim()
+        : null;
+    return nextPage ? { hasMore: true, nextPage } : null;
+  }
+  // A cursor on a final page is contradictory; accepting it could silently
+  // turn an incomplete Costs response into an authoritative total or sync.
+  return page.next_page == null ? { hasMore: false, nextPage: null } : null;
 }
 
 function parseCostsPage(data: unknown): {
@@ -61,13 +77,8 @@ function parseCostsPage(data: unknown): {
       costUsd += value;
     }
   }
-  const hasMore = page.has_more === true;
-  const nextPage =
-    typeof page.next_page === "string" && page.next_page.trim()
-      ? page.next_page.trim()
-      : null;
-  if (hasMore && !nextPage) return null;
-  return { costUsd, hasMore, nextPage };
+  const pagination = parseCostsPagination(page);
+  return pagination ? { costUsd, ...pagination } : null;
 }
 
 function componentLabel(value: unknown): string | null {
@@ -112,8 +123,8 @@ function parseCostComponentPage(
       const existing = components.get(label);
       components.set(label, {
         amountUsd: (existing?.amountUsd ?? 0) + amountUsd,
-        // Quantity is meaningful for the line-item view. Keep it only when it
-        // is present for every bucket that contributes to the component.
+        // Quantity is meaningful only for the line-item view. Keep it only
+        // when it is present for every bucket that contributes to a component.
         quantity: existing
           ? existing.quantity == null || quantity == null
             ? null
@@ -122,13 +133,10 @@ function parseCostComponentPage(
       });
     }
   }
-  const hasMore = page.has_more === true;
-  const nextPage =
-    typeof page.next_page === "string" && page.next_page.trim()
-      ? page.next_page.trim()
-      : null;
-  if (hasMore && !nextPage) return null;
-  return { components, hasMore, nextPage };
+  const pagination = parseCostsPagination(page);
+  // Never mark a component collection authoritative unless its pagination
+  // contract is complete enough to safely prune prior component rows.
+  return pagination ? { components, ...pagination } : null;
 }
 
 async function fetchOrganizationCosts(
@@ -283,7 +291,9 @@ async function fetchOrganizationCostComponents(
           serviceName:
             dimension === "project_id"
               ? `OpenAI project: ${label}`
-              : `OpenAI line item: ${label}`,
+              : dimension === "line_item"
+                ? `OpenAI line item: ${label}`
+                : `OpenAI API key ID: ${label}`,
           planName: "Organization Costs breakdown",
           status: "open",
           amountUsd: component.amountUsd,
@@ -336,7 +346,16 @@ export async function fetchUsage(
     typeof config.adminApiKey === "string" ? config.adminApiKey.trim() : "";
   const costsApiKey = configuredAdminKey || apiKey;
 
-  const [costsRes, usageRes, billingRes, grantsRes, usageRangeRes, projectCostsRes, lineItemCostsRes] = await Promise.all([
+  const [
+    costsRes,
+    usageRes,
+    billingRes,
+    grantsRes,
+    usageRangeRes,
+    projectCostsRes,
+    lineItemCostsRes,
+    apiKeyCostsRes,
+  ] = await Promise.all([
     fetchOrganizationCosts(costsApiKey, monthStartUnix, endTimeUnix),
     fetchJson(`https://api.openai.com/v1/usage?date=${today}`, { headers }),
     fetchJson("https://api.openai.com/dashboard/billing/subscription", { headers }),
@@ -358,6 +377,14 @@ export async function fetchUsage(
       monthStartUnix,
       endTimeUnix,
       "line_item",
+      monthStartDate,
+      now
+    ),
+    fetchOrganizationCostComponents(
+      costsApiKey,
+      monthStartUnix,
+      endTimeUnix,
+      "api_key_id",
       monthStartDate,
       now
     ),
@@ -383,6 +410,12 @@ export async function fetchUsage(
         pageCount: lineItemCostsRes.pageCount,
         componentCount: lineItemCostsRes.components.length,
       },
+      api_key_id: {
+        available: apiKeyCostsRes.ok,
+        status: apiKeyCostsRes.status,
+        pageCount: apiKeyCostsRes.pageCount,
+        componentCount: apiKeyCostsRes.components.length,
+      },
     },
     ...(costsRes.error ? { organizationCostsError: costsRes.error } : {}),
     ...(projectCostsRes.error
@@ -390,6 +423,9 @@ export async function fetchUsage(
       : {}),
     ...(lineItemCostsRes.error
       ? { organizationCostLineItemBreakdownError: lineItemCostsRes.error }
+      : {}),
+    ...(apiKeyCostsRes.error
+      ? { organizationCostApiKeyBreakdownError: apiKeyCostsRes.error }
       : {}),
     costsApiKeyRequirement: COSTS_API_KEY_REQUIREMENT,
     costsCredentialSource: configuredAdminKey
@@ -495,6 +531,13 @@ export async function fetchUsage(
           source: "openai-organization-costs-line-items",
           authoritative: true,
           records: lineItemCostsRes.components,
+        }]
+      : []),
+    ...(apiKeyCostsRes.ok
+      ? [{
+          source: "openai-organization-costs-api-keys",
+          authoritative: true,
+          records: apiKeyCostsRes.components,
         }]
       : []),
   ];

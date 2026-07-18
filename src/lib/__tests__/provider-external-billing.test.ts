@@ -1,13 +1,39 @@
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { setupPrismaSqliteTestDb } from "./setup-test-db";
+import { fetchUsage as fetchOpenAiUsage } from "../adapters/openai";
 
 let dbPath: string;
 let prisma: typeof import("@/lib/prisma").prisma;
 let reconcileProviderExternalBilling: typeof import("../provider-external-billing").reconcileProviderExternalBilling;
 let providerId: string;
+
+function jsonResponse(body: unknown, status = 200): Response {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { "content-type": "application/json" },
+  });
+}
+
+function openAiCostsPage(value: number, fields: Record<string, unknown> = {}) {
+  return {
+    object: "page",
+    data: [{
+      object: "bucket",
+      start_time: 1782864000,
+      end_time: 1782950400,
+      results: [{
+        object: "organization.costs.result",
+        amount: { value, currency: "usd" },
+        ...fields,
+      }],
+    }],
+    has_more: false,
+    next_page: null,
+  };
+}
 
 beforeAll(async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "external-billing-test-"));
@@ -22,6 +48,10 @@ beforeAll(async () => {
 afterAll(async () => {
   await prisma?.$disconnect();
   if (dbPath && fs.existsSync(dbPath)) fs.rmSync(dbPath, { force: true });
+});
+
+afterEach(() => {
+  vi.unstubAllGlobals();
 });
 
 beforeEach(async () => {
@@ -308,5 +338,123 @@ describe("reconcileProviderExternalBilling", () => {
       usageQuantity: 19,
       currentPeriodEnd: new Date("2026-07-13T20:05:00.000Z"),
     });
+  });
+
+  it("does not prune persisted OpenAI project components when a malformed detail page is not authoritative", async () => {
+    await reconcileProviderExternalBilling(providerId, {
+      source: "openai-organization-costs-projects",
+      authoritative: true,
+      records: [{
+        externalId: "2026-07:project_id:proj_existing",
+        kind: "billing_period",
+        serviceName: "OpenAI project: proj_existing",
+        amountUsd: 4,
+        currency: "USD",
+        rollupRole: "component",
+      }],
+    });
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((input: string | URL | Request) => {
+        const url = new URL(String(input));
+        if (url.pathname === "/v1/organization/costs") {
+          if (url.searchParams.get("group_by") === "project_id") {
+            const malformed = openAiCostsPage(8, { project_id: "proj_new" }) as Record<string, unknown>;
+            delete malformed.has_more;
+            return Promise.resolve(jsonResponse(malformed));
+          }
+          if (url.searchParams.get("group_by") === "line_item") {
+            return Promise.resolve(
+              jsonResponse(openAiCostsPage(8, { line_item: "completions", quantity: 12 }))
+            );
+          }
+          if (url.searchParams.get("group_by") === "api_key_id") {
+            return Promise.resolve(jsonResponse(openAiCostsPage(8, { api_key_id: "key_new" })));
+          }
+          return Promise.resolve(jsonResponse(openAiCostsPage(8)));
+        }
+        return Promise.resolve(jsonResponse({}));
+      })
+    );
+
+    const result = await fetchOpenAiUsage("test-key", { adminApiKey: "admin-key" });
+    expect(result.externalBillingSyncs?.map((sync) => sync.source)).toEqual([
+      "openai-organization-costs-line-items",
+      "openai-organization-costs-api-keys",
+    ]);
+    for (const sync of result.externalBillingSyncs ?? []) {
+      await reconcileProviderExternalBilling(providerId, sync);
+    }
+
+    expect(
+      await prisma.providerExternalBilling.findMany({
+        where: { source: "openai-organization-costs-projects" },
+      })
+    ).toEqual([
+      expect.objectContaining({
+        externalId: "2026-07:project_id:proj_existing",
+        amountUsd: 4,
+      }),
+    ]);
+  });
+
+  it("does not prune persisted OpenAI API-key-ID components when a malformed detail page is not authoritative", async () => {
+    await reconcileProviderExternalBilling(providerId, {
+      source: "openai-organization-costs-api-keys",
+      authoritative: true,
+      records: [{
+        externalId: "2026-07:api_key_id:key_existing",
+        kind: "billing_period",
+        serviceName: "OpenAI API key ID: key_existing",
+        amountUsd: 4,
+        currency: "USD",
+        rollupRole: "component",
+      }],
+    });
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((input: string | URL | Request) => {
+        const url = new URL(String(input));
+        if (url.pathname === "/v1/organization/costs") {
+          if (url.searchParams.get("group_by") === "project_id") {
+            return Promise.resolve(jsonResponse(openAiCostsPage(8, { project_id: "proj_new" })));
+          }
+          if (url.searchParams.get("group_by") === "line_item") {
+            return Promise.resolve(
+              jsonResponse(openAiCostsPage(8, { line_item: "completions", quantity: 12 }))
+            );
+          }
+          if (url.searchParams.get("group_by") === "api_key_id") {
+            const malformed = openAiCostsPage(8, { api_key_id: "key_new" }) as Record<string, unknown>;
+            malformed.has_more = "false";
+            return Promise.resolve(jsonResponse(malformed));
+          }
+          return Promise.resolve(jsonResponse(openAiCostsPage(8)));
+        }
+        return Promise.resolve(jsonResponse({}));
+      })
+    );
+
+    const result = await fetchOpenAiUsage("test-key", { adminApiKey: "admin-key" });
+    expect(result.externalBillingSyncs?.map((sync) => sync.source)).toEqual([
+      "openai-organization-costs-projects",
+      "openai-organization-costs-line-items",
+    ]);
+    for (const sync of result.externalBillingSyncs ?? []) {
+      await reconcileProviderExternalBilling(providerId, sync);
+    }
+
+    expect(
+      await prisma.providerExternalBilling.findMany({
+        where: { source: "openai-organization-costs-api-keys" },
+      })
+    ).toEqual([
+      expect.objectContaining({
+        externalId: "2026-07:api_key_id:key_existing",
+        amountUsd: 4,
+      }),
+    ]);
   });
 });

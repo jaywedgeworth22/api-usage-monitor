@@ -69,6 +69,11 @@ describe("openai adapter", () => {
             )
           );
         }
+        if (parsed.searchParams.get("group_by") === "api_key_id") {
+          return Promise.resolve(
+            jsonResponse(costsPage(123.45, false, null, "usd", { api_key_id: "key_ct" }))
+          );
+        }
         if (parsed.searchParams.get("page") === "cost-page-2") {
           return Promise.resolve(jsonResponse(costsPage(23.45)));
         }
@@ -113,6 +118,7 @@ describe("openai adapter", () => {
       organizationCostBreakdowns: {
         project_id: { available: true, componentCount: 1 },
         line_item: { available: true, componentCount: 1 },
+        api_key_id: { available: true, componentCount: 1 },
       },
       dailyUsage: { costUsd: 1.25, requests: 9 },
       costsApiKeyRequirement: expect.stringContaining("Admin API key"),
@@ -143,6 +149,15 @@ describe("openai adapter", () => {
             rollupRole: "component",
           })],
         }),
+        expect.objectContaining({
+          source: "openai-organization-costs-api-keys",
+          records: [expect.objectContaining({
+            serviceName: "OpenAI API key ID: key_ct",
+            amountUsd: 123.45,
+            usageQuantity: null,
+            rollupRole: "component",
+          })],
+        }),
       ])
     );
     expect(JSON.stringify(result.rawData)).not.toContain("organization.costs.result");
@@ -159,14 +174,14 @@ describe("openai adapter", () => {
     const componentUrls = fetchMock.mock.calls
       .map(([input]) => String(input))
       .filter((url) => new URL(url).searchParams.has("group_by"));
-    expect(componentUrls).toHaveLength(2);
+    expect(componentUrls).toHaveLength(3);
     expect(componentUrls).toEqual(
       expect.arrayContaining([
         expect.stringContaining("group_by=project_id"),
         expect.stringContaining("group_by=line_item"),
+        expect.stringContaining("group_by=api_key_id"),
       ])
     );
-    expect(componentUrls.join("&")).not.toContain("api_key_id");
     const costsCall = fetchMock.mock.calls.find(([input]) =>
       String(input).includes("/v1/organization/costs?")
     );
@@ -302,6 +317,37 @@ describe("openai adapter", () => {
     });
   });
 
+  it.each([
+    ["omits has_more", (page: Record<string, unknown>) => { delete page.has_more; }],
+    ["returns non-boolean has_more", (page: Record<string, unknown>) => { page.has_more = 0; }],
+    ["returns a cursor on an explicitly final page", (page: Record<string, unknown>) => { page.next_page = "unexpected"; }],
+  ])("does not treat a canonical Costs page as complete when it %s", async (_name, corrupt) => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((input: string | URL | Request) => {
+        const url = String(input);
+        if (url.includes("/v1/organization/costs?")) {
+          const malformed = costsPage(100) as Record<string, unknown>;
+          corrupt(malformed);
+          return Promise.resolve(jsonResponse(malformed));
+        }
+        if (url.includes("/dashboard/billing/usage?")) {
+          return Promise.resolve(jsonResponse({ total_usage: 725 }));
+        }
+        return Promise.resolve(jsonResponse({}));
+      })
+    );
+
+    const result = await fetchUsage("test-key", { adminApiKey: "admin-key" });
+
+    expect(result.totalCost).toBe(7.25);
+    expect(result.rawData).toMatchObject({
+      costSource: "legacy_billing_usage",
+      organizationCosts: { available: false, totalCostUsd: null },
+      organizationCostsError: "Malformed or non-USD organization costs response",
+    });
+  });
+
   it("keeps the canonical cash total when one optional component breakdown fails", async () => {
     vi.stubGlobal(
       "fetch",
@@ -314,6 +360,11 @@ describe("openai adapter", () => {
           if (url.searchParams.get("group_by") === "line_item") {
             return Promise.resolve(
               jsonResponse(costsPage(9, false, null, "usd", { line_item: "batch", quantity: 3 }))
+            );
+          }
+          if (url.searchParams.get("group_by") === "api_key_id") {
+            return Promise.resolve(
+              jsonResponse(costsPage(9, false, null, "usd", { api_key_id: "key_shared" }))
             );
           }
           return Promise.resolve(jsonResponse(costsPage(9)));
@@ -330,6 +381,7 @@ describe("openai adapter", () => {
       organizationCostBreakdowns: {
         project_id: { available: false, status: 403, componentCount: 0 },
         line_item: { available: true, componentCount: 1 },
+        api_key_id: { available: true, componentCount: 1 },
       },
     });
     expect(result.externalBilling?.records).toHaveLength(1);
@@ -337,6 +389,14 @@ describe("openai adapter", () => {
       expect.objectContaining({
         source: "openai-organization-costs-line-items",
         records: [expect.objectContaining({ amountUsd: 9, rollupRole: "component" })],
+      }),
+      expect.objectContaining({
+        source: "openai-organization-costs-api-keys",
+        records: [expect.objectContaining({
+          serviceName: "OpenAI API key ID: key_shared",
+          amountUsd: 9,
+          rollupRole: "component",
+        })],
       }),
     ]);
   });
@@ -358,6 +418,11 @@ describe("openai adapter", () => {
         if (url.searchParams.get("group_by") === "line_item") {
           return Promise.resolve(
             jsonResponse(costsPage(6, false, null, "usd", { line_item: "completions" }))
+          );
+        }
+        if (url.searchParams.get("group_by") === "api_key_id") {
+          return Promise.resolve(
+            jsonResponse(costsPage(6, false, null, "usd", { api_key_id: "key_ct" }))
           );
         }
         return Promise.resolve(jsonResponse(costsPage(6)));
@@ -390,6 +455,53 @@ describe("openai adapter", () => {
     ).toBe(true);
   });
 
+  it.each([
+    ["omits has_more", (page: Record<string, unknown>) => { delete page.has_more; }],
+    ["returns non-boolean has_more", (page: Record<string, unknown>) => { page.has_more = "false"; }],
+    ["returns a cursor on an explicitly final page", (page: Record<string, unknown>) => { page.next_page = "unexpected"; }],
+  ])("does not publish an authoritative component sync when a breakdown %s", async (_name, corrupt) => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((input: string | URL | Request) => {
+        const url = new URL(String(input));
+        if (url.pathname === "/v1/organization/costs") {
+          if (url.searchParams.get("group_by") === "project_id") {
+            const malformed = costsPage(4, false, null, "usd", { project_id: "proj_ct" }) as Record<string, unknown>;
+            corrupt(malformed);
+            return Promise.resolve(jsonResponse(malformed));
+          }
+          if (url.searchParams.get("group_by") === "line_item") {
+            return Promise.resolve(
+              jsonResponse(costsPage(4, false, null, "usd", { line_item: "completions", quantity: 3 }))
+            );
+          }
+          if (url.searchParams.get("group_by") === "api_key_id") {
+            return Promise.resolve(
+              jsonResponse(costsPage(4, false, null, "usd", { api_key_id: "key_ct" }))
+            );
+          }
+          return Promise.resolve(jsonResponse(costsPage(4)));
+        }
+        return Promise.resolve(jsonResponse({}));
+      })
+    );
+
+    const result = await fetchUsage("test-key", { adminApiKey: "admin-key" });
+
+    expect(result.totalCost).toBe(4);
+    expect(result.rawData).toMatchObject({
+      organizationCostBreakdowns: {
+        project_id: { available: false, status: 502, componentCount: 0 },
+        line_item: { available: true, componentCount: 1 },
+      },
+      organizationCostProjectBreakdownError: "Malformed or non-USD organization cost component response",
+    });
+    expect(result.externalBillingSyncs?.map((sync) => sync.source)).toEqual([
+      "openai-organization-costs-line-items",
+      "openai-organization-costs-api-keys",
+    ]);
+  });
+
   it("bounds an over-cardinality component view without discarding the canonical total", async () => {
     vi.stubGlobal(
       "fetch",
@@ -420,6 +532,11 @@ describe("openai adapter", () => {
               jsonResponse(costsPage(1.01, false, null, "usd", { line_item: "completions" }))
             );
           }
+          if (url.searchParams.get("group_by") === "api_key_id") {
+            return Promise.resolve(
+              jsonResponse(costsPage(1.01, false, null, "usd", { api_key_id: "key_ct" }))
+            );
+          }
           return Promise.resolve(jsonResponse(costsPage(1.01)));
         }
         return Promise.resolve(jsonResponse({}));
@@ -438,6 +555,7 @@ describe("openai adapter", () => {
     });
     expect(result.externalBillingSyncs).toEqual([
       expect.objectContaining({ source: "openai-organization-costs-line-items" }),
+      expect.objectContaining({ source: "openai-organization-costs-api-keys" }),
     ]);
   });
 });
