@@ -213,13 +213,14 @@ const CATALOG: Record<CatalogProviderName, ProviderIntegrationProfile> = {
   }),
   vercel: defineProfile({
     name: "vercel", displayName: "Vercel", category: "Developer Platform", mode: "direct",
-    summary: "Reads FOCUS billing charges for a personal scope or one configured team.",
-    reads: ["Current-month billed cost, service/category, charge period, and consumed quantity."],
+    summary: "Reads FOCUS billing charges for a personal scope or one configured team, including the documented Vercel ProjectId/ProjectName charge tags when returned.",
+    reads: ["Current-month billed cost, service/category, charge period, and consumed quantity.", "Per-charge Vercel ProjectId and ProjectName tags for non-additive project/service attribution when the FOCUS response returns valid tags."],
+    stores: ["One canonical billed-cost total per currency plus bounded non-additive service and project/service components; project identity is Vercel ProjectId and ProjectName is display metadata only.", "Counts/capability states for missing or cardinality-suppressed detail; raw tag values are not retained in snapshot raw data."],
     credentialInputs: ["Vercel token with billing access.", "Optional team ID; blank selects personal scope."],
-    billing: { visibility: "actual", summary: "Actual FOCUS charges are direct for eligible Pro/Enterprise scopes; plan renewal and invoice documents remain outside this connector." },
+    billing: { visibility: "actual", summary: "Actual FOCUS billed charges are direct for eligible Pro/Enterprise scopes. Project/service rows are a breakdown of that canonical total, never an additional charge; plan renewal and invoice documents remain outside this connector." },
     canAdd: ["Separate provider rows can track multiple Vercel teams."],
     cannotAdd: ["Scopes without billing-read access and unsupported plan tiers cannot expose FOCUS charges."],
-    limitations: ["The API may include fixed and variable charges together; the monitor marks that composition as unknown."],
+    limitations: ["The API may include fixed and variable charges together; the monitor marks that composition as unknown.", "Project detail is emitted only for Vercel's documented FOCUS Tags.ProjectId dimension. A valid Tags object without ProjectId is treated as genuinely untagged; absent/non-object Tags or a malformed present ProjectId withhold the optional project sync rather than inferring or pruning prior detail. More than 250 distinct project/service dimensions also suppresses that optional sync while retaining the canonical billed total."],
     source: "src/lib/adapters/vercel.ts",
   }),
   render: defineProfile({
