@@ -17,6 +17,7 @@ import {
 describe("summarizeExternalUsageEvents", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    prismaMock.externalUsageEvent.findMany.mockResolvedValue([]);
   });
 
   it("merges each raw page directly into the summary and preserves rollup totals", async () => {
@@ -493,6 +494,185 @@ describe("summarizeExternalUsageEvents", () => {
       unpricedEventCount: 0,
       unclassifiedCostEventCount: 0,
     });
+  });
+
+  it("collapses raw cost groups and excludes only fully validated receipt cash", async () => {
+    const providerId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+    const digest = "b".repeat(64);
+    const receiptBase = {
+      sourceApp: "billing-receipt-import",
+      provider: "anthropic",
+      service: "api-prepaid-funding",
+      label: "receipt_cash_paid",
+      keyRef: `provider:${providerId}:billing-receipt:${digest}`,
+      billingMode: "actual",
+      metricType: "cost",
+      unit: "USD",
+      confidence: "actual",
+      costUsd: 50,
+      occurredAt: new Date("2026-07-10T00:00:00.000Z"),
+    };
+    prismaMock.externalUsageEvent.findMany.mockResolvedValueOnce([
+      {
+        id: "valid-receipt",
+        idempotencyKey: `billing-receipt:v1:${digest}`,
+        metadata: { evidenceRef: `hmac-sha256:${digest}` },
+        ...receiptBase,
+      },
+      {
+        id: "malformed-receipt",
+        idempotencyKey: `billing-receipt:v1:${digest}`,
+        metadata: { evidenceRef: `hmac-sha256:${"c".repeat(64)}` },
+        ...receiptBase,
+      },
+    ]);
+    prismaMock.externalUsageEvent.groupBy.mockResolvedValueOnce([
+      {
+        provider: "anthropic",
+        sourceApp: "socratic-trade",
+        service: "messages",
+        metricType: "cost",
+        _sum: { costUsd: 10 },
+        _count: { _all: 2, costUsd: 1 },
+      },
+      {
+        provider: "anthropic",
+        sourceApp: "claude-code",
+        service: "claude-code",
+        metricType: "cost",
+        _sum: { costUsd: 999 },
+        _count: { _all: 1, costUsd: 1 },
+      },
+      {
+        provider: "anthropic",
+        sourceApp: "subscription",
+        service: null,
+        metricType: "subscription",
+        _sum: { costUsd: 200 },
+        _count: { _all: 1, costUsd: 1 },
+      },
+      {
+        provider: "anthropic",
+        sourceApp: "manual-billing-adjustment",
+        service: null,
+        metricType: "subscription",
+        _sum: { costUsd: -25 },
+        _count: { _all: 1, costUsd: 1 },
+      },
+    ]);
+
+    const byProvider = await sumMonthToDateExternalCostByProvider(
+      new Date("2026-07-01T00:00:00.000Z"),
+      new Date("2026-07-01T00:00:00.000Z")
+    );
+
+    expect(prismaMock.externalUsageEvent.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          sourceApp: "billing-receipt-import",
+          service: "api-prepaid-funding",
+          label: "receipt_cash_paid",
+          billingMode: "actual",
+          metricType: "cost",
+          confidence: "actual",
+        }),
+      })
+    );
+    expect(prismaMock.externalUsageEvent.groupBy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        by: ["provider", "sourceApp", "service", "metricType"],
+        where: expect.objectContaining({
+          OR: expect.arrayContaining([{ service: null }, { label: null }]),
+        }),
+      })
+    );
+    expect(byProvider.get("anthropic")).toEqual({
+      usagePushed: 60,
+      subscriptionPushed: 175,
+      subscriptionPushedManualUsd: -25,
+      estimatedApiEquivalentUsd: 999,
+      pricedEventCount: 4,
+      unpricedEventCount: 1,
+      unclassifiedCostEventCount: 0,
+    });
+  });
+
+  it("uses the reduced raw grouping dimensions for exact project attribution", async () => {
+    const providerId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+    const digest = "d".repeat(64);
+    const receiptBase = {
+      sourceApp: "billing-receipt-import",
+      provider: "openai",
+      service: "api-prepaid-funding",
+      projectId: "project-a",
+      label: "receipt_cash_paid",
+      keyRef: `provider:${providerId}:billing-receipt:${digest}`,
+      billingMode: "actual",
+      metricType: "cost",
+      unit: "usd",
+      confidence: "actual",
+      costUsd: 30,
+      occurredAt: new Date("2026-07-10T00:00:00.000Z"),
+    };
+    prismaMock.externalUsageEvent.findMany.mockResolvedValueOnce([
+      {
+        id: "valid-project-receipt",
+        idempotencyKey: `billing-receipt:v1:${digest}`,
+        metadata: { evidenceRef: `hmac-sha256:${digest}` },
+        ...receiptBase,
+      },
+      {
+        id: "malformed-project-receipt",
+        idempotencyKey: "wrong-idempotency-key",
+        metadata: { evidenceRef: `hmac-sha256:${digest}` },
+        ...receiptBase,
+      },
+    ]);
+    prismaMock.externalUsageEvent.groupBy.mockResolvedValueOnce([
+      {
+        provider: "openai",
+        sourceApp: "socratic-trade",
+        service: "responses",
+        projectId: "project-a",
+        metricType: "cost",
+        _sum: { costUsd: 12 },
+        _count: { _all: 2, costUsd: 1 },
+      },
+    ]);
+
+    const attribution = await sumMonthToDateExternalCostAttribution(
+      new Date("2026-07-01T00:00:00.000Z"),
+      new Date("2026-07-01T00:00:00.000Z")
+    );
+
+    expect(prismaMock.externalUsageEvent.groupBy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        by: ["provider", "sourceApp", "service", "projectId", "metricType"],
+        where: expect.objectContaining({ OR: expect.any(Array) }),
+      })
+    );
+    expect(attribution).toEqual([
+      {
+        provider: "openai",
+        sourceApp: "socratic-trade",
+        projectId: "project-a",
+        metricType: "cost",
+        costUsd: 12,
+        pricedEventCount: 1,
+        unpricedEventCount: 1,
+        unclassifiedCostEventCount: 0,
+      },
+      {
+        provider: "openai",
+        sourceApp: "billing-receipt-import",
+        projectId: "project-a",
+        metricType: "cost",
+        costUsd: 30,
+        pricedEventCount: 1,
+        unpricedEventCount: 0,
+        unclassifiedCostEventCount: 0,
+      },
+    ]);
   });
 
   it("keeps exact receipt cash separate across raw rows and rollups", async () => {

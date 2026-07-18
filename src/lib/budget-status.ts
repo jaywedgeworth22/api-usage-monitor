@@ -1196,8 +1196,14 @@ export interface ProjectBudgetStatusResponse {
 }
 
 async function computeProjectBudgetStatusUncached(now: Date): Promise<ProjectBudgetStatusResponse> {
-  const [providerStatus, projects, attribution, identityProviders] = await Promise.all([
-    computeBudgetStatus(now),
+  // On a cold cache, both provider cost and project attribution aggregate the
+  // current month's raw ExternalUsageEvent rows. Running them concurrently
+  // doubles their peak SQLite/Prisma result memory and exceeded the 512 MB
+  // production instance. Provider totals remain the source of truth; finish
+  // that computation first, then build the attribution view. Once warm, the
+  // first await is an immediate cache hit.
+  const providerStatus = await computeBudgetStatus(now);
+  const [projects, attribution, identityProviders] = await Promise.all([
     prisma.project.findMany({
       include: {
         allocations: true,
