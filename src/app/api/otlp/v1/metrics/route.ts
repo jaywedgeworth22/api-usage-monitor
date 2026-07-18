@@ -124,26 +124,41 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  const contentType = (request.headers.get("content-type") ?? "").split(";")[0].trim().toLowerCase();
-
-  let parsed;
-  try {
-    const bytes = await readBoundedBody(request);
-    if (contentType === "" || contentType === "application/json") {
-      parsed = decodeMetricsJson(JSON.parse(new TextDecoder().decode(bytes)));
-    } else if (contentType === "application/x-protobuf" || contentType === "application/protobuf") {
-      parsed = decodeMetricsProtobuf(bytes);
-    } else {
-      return unsupportedProtocolResponse(contentType);
-    }
-    validateMetricsRequest(parsed);
-  } catch (error) {
-    const message = error instanceof Error ? error.message : "Invalid OTLP payload";
+  // Do not parse/map a potentially large exporter batch while another usage
+  // write owns SQLite. Returning the producer-visible backpressure response
+  // before body allocation is what prevents retry storms from recreating the
+  // receiver's memory/CPU failure mode.
+  const releaseAdmission = tryAcquireIngestAdmission();
+  if (!releaseAdmission) {
     return NextResponse.json(
-      { error: message },
-      { status: message.includes("exceeds") ? 413 : 400 }
+      { error: "Usage ingest is busy. Retry later." },
+      {
+        status: 503,
+        headers: { "Retry-After": String(INGEST_ADMISSION_RETRY_AFTER_SECONDS) },
+      }
     );
   }
+
+  try {
+    const contentType = (request.headers.get("content-type") ?? "").split(";")[0].trim().toLowerCase();
+    let parsed;
+    try {
+      const bytes = await readBoundedBody(request);
+      if (contentType === "" || contentType === "application/json") {
+        parsed = decodeMetricsJson(JSON.parse(new TextDecoder().decode(bytes)));
+      } else if (contentType === "application/x-protobuf" || contentType === "application/protobuf") {
+        parsed = decodeMetricsProtobuf(bytes);
+      } else {
+        return unsupportedProtocolResponse(contentType);
+      }
+      validateMetricsRequest(parsed);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Invalid OTLP payload";
+      return NextResponse.json(
+        { error: message },
+        { status: message.includes("exceeds") ? 413 : 400 }
+      );
+    }
 
   const claudeResult = mapClaudeCodeMetrics(parsed);
   const systemResult = mapSystemMetrics(parsed);
@@ -169,18 +184,6 @@ export async function POST(request: NextRequest) {
   let idempotentRetries = 0;
   let accepted = 0;
   if (events.length > 0) {
-    const releaseAdmission = tryAcquireIngestAdmission();
-    if (!releaseAdmission) {
-      return NextResponse.json(
-        { error: "Usage ingest is busy. Retry later." },
-        {
-          status: 503,
-          headers: { "Retry-After": String(INGEST_ADMISSION_RETRY_AFTER_SECONDS) },
-        }
-      );
-    }
-
-    try {
       // Resolve any `project` resource attribute (OTEL_RESOURCE_ATTRIBUTES) to a
       // Project.id. Unknown names stay null; the allowlisted raw project name is
       // preserved in metadata so a later-created Project can be back-filled.
@@ -246,9 +249,6 @@ export async function POST(request: NextRequest) {
           error instanceof Error ? error.message : error
         );
       }
-    } finally {
-      releaseAdmission();
-    }
   }
 
   return NextResponse.json(
@@ -262,4 +262,7 @@ export async function POST(request: NextRequest) {
     },
     { status: 202 }
   );
+  } finally {
+    releaseAdmission();
+  }
 }

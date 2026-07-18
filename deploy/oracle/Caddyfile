@@ -1,0 +1,11 @@
+{$USAGE_MONITOR_HOSTNAME:usage-oracle.132.226.90.164.sslip.io} {
+  encode zstd gzip
+  reverse_proxy app:3000
+
+  header {
+    Strict-Transport-Security "max-age=31536000; includeSubDomains"
+    X-Content-Type-Options "nosniff"
+    Referrer-Policy "strict-origin-when-cross-origin"
+    -Server
+  }
+}

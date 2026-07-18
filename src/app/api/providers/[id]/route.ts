@@ -241,7 +241,13 @@ export async function GET(
     externalBilling,
     ...clientConfig,
     credentialManagement,
-    keyPreview: credentialManaged ? null : buildKeyPreview(decryptedKey),
+    // A client-safe preview identifies this individual validated managed key
+    // without exposing the full key or the source list it came from. A
+    // malformed/unreadable ownership envelope must stay fully redacted.
+    keyPreview:
+      credentialManaged && credentialManagement == null
+        ? null
+        : buildKeyPreview(decryptedKey),
     geminiKeyStatus,
     geminiBillingStatus,
     geminiMonitoringStatus,

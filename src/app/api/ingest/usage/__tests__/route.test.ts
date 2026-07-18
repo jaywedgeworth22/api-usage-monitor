@@ -158,6 +158,21 @@ describe("POST /api/ingest/usage admission", () => {
     }
   });
 
+  it("rejects a busy receiver before decoding an otherwise invalid body", async () => {
+    const release = tryAcquireIngestAdmission();
+    expect(release).not.toBeNull();
+    try {
+      const response = await POST(nextRequest("not an ingest object", USAGE_TOKEN));
+      // Before the admission gate moved above body parsing this was a 400.
+      expect(response.status).toBe(503);
+      expect(response.headers.get("retry-after")).toBe("5");
+      expect(resolveProjects).not.toHaveBeenCalled();
+      expect(externalUsageMocks.persist).not.toHaveBeenCalled();
+    } finally {
+      release?.();
+    }
+  });
+
   it("releases admission after a successful ingest", async () => {
     const response = await POST(ordinaryRequest());
     expect(response.status).toBe(202);

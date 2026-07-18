@@ -1,0 +1,12 @@
+.git
+.github
+.next
+node_modules
+*.db
+*.db-*
+.env*
+bin/litestream
+process_prs.py
+protection*.json
+retry_merge*.py
+safari-extension

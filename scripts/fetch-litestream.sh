@@ -20,9 +20,10 @@
 # and a single-replica-per-database config, matching litestream.yml here and
 # the sibling Socratic.Trade app's docs/litestream.md this was adapted from.
 #
-# Release asset naming note: GitHub release assets for this project use
-# "linux-x86_64", not "linux-amd64" (despite Go's GOARCH being amd64) — the
-# 404 you'd get from the amd64-named URL is why this is called out here.
+# Release asset naming note: GitHub release assets use "linux-x86_64" for
+# Intel/AMD and "linux-arm64" for 64-bit Arm. Render currently builds on
+# x86_64 while the Oracle Always Free Ampere A1 target is aarch64, so select
+# the matching release and checksum instead of installing an unusable binary.
 #
 # Idempotent: if a binary is already present at ./bin/litestream and its
 # sha256 matches the pin below, this exits immediately without re-downloading.
@@ -30,12 +31,34 @@ set -euo pipefail
 
 LITESTREAM_VERSION="0.5.13"
 LITESTREAM_OS="linux"
-LITESTREAM_ARCH="x86_64"
+HOST_ARCH="${LITESTREAM_ARCH_OVERRIDE:-$(uname -m)}"
+case "${HOST_ARCH}" in
+  x86_64|amd64)
+    LITESTREAM_ARCH="x86_64"
+    LITESTREAM_SHA256="fc3420fea7d2f92d4d604aceeb0d7c63dc2c91f6ee5c1547cc05e25629e70f9f"
+    ;;
+  aarch64|arm64)
+    LITESTREAM_ARCH="arm64"
+    LITESTREAM_SHA256="ef47997794ce8dd87a64b44622d556b3a693b135fd72e0cf47cc42ac2e979051"
+    ;;
+  *)
+    echo "[fetch-litestream] WARNING: unsupported Linux architecture: ${HOST_ARCH}" >&2
+    echo "[fetch-litestream] Continuing without installing Litestream; configured/required" >&2
+    echo "[fetch-litestream] replication will fail closed during startup." >&2
+    exit 0
+    ;;
+esac
 LITESTREAM_ASSET="litestream-${LITESTREAM_VERSION}-${LITESTREAM_OS}-${LITESTREAM_ARCH}.tar.gz"
 LITESTREAM_URL="https://github.com/benbjohnson/litestream/releases/download/v${LITESTREAM_VERSION}/${LITESTREAM_ASSET}"
 # From that release's checksums.txt (sha256 of the .tar.gz asset itself, not
 # the extracted binary). Re-verify at https://github.com/benbjohnson/litestream/releases/tag/v0.5.13
-LITESTREAM_SHA256="fc3420fea7d2f92d4d604aceeb0d7c63dc2c91f6ee5c1547cc05e25629e70f9f"
+
+# Deterministic, network-free architecture regression hook. This is used only
+# by scripts/test-startup-config.mjs; ordinary builds leave it unset.
+if [[ "${FETCH_LITESTREAM_METADATA_ONLY:-false}" == "true" ]]; then
+  printf '%s %s\n' "${LITESTREAM_ASSET}" "${LITESTREAM_SHA256}"
+  exit 0
+fi
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"

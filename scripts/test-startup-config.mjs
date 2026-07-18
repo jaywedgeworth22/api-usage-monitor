@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 
 const repoRoot = fileURLToPath(new URL("..", import.meta.url));
 const script = join(repoRoot, "scripts", "start-with-litestream.sh");
+const fetchScript = join(repoRoot, "scripts", "fetch-litestream.sh");
 const renderConfig = join(repoRoot, "render.yaml");
 const keys = [
   "LITESTREAM_S3_BUCKET",
@@ -29,6 +30,24 @@ function expectStatus(name, result, expected) {
   if (result.status !== expected) {
     throw new Error(
       `${name}: expected exit ${expected}, got ${result.status}\n${result.stdout}\n${result.stderr}`
+    );
+  }
+}
+
+function expectLitestreamAsset(hostArch, expectedAsset, expectedSha256) {
+  const result = spawnSync("bash", [fetchScript], {
+    env: {
+      ...process.env,
+      LITESTREAM_ARCH_OVERRIDE: hostArch,
+      FETCH_LITESTREAM_METADATA_ONLY: "true",
+    },
+    encoding: "utf8",
+  });
+  expectStatus(`Litestream ${hostArch} asset`, result, 0);
+  const expected = `${expectedAsset} ${expectedSha256}`;
+  if (result.stdout.trim() !== expected) {
+    throw new Error(
+      `Litestream ${hostArch} asset: expected ${expected}, got ${result.stdout.trim()}`
     );
   }
 }
@@ -98,6 +117,17 @@ try {
       LITESTREAM_S3_SECRET_ACCESS_KEY: "secret",
     }),
     0
+  );
+
+  expectLitestreamAsset(
+    "x86_64",
+    "litestream-0.5.13-linux-x86_64.tar.gz",
+    "fc3420fea7d2f92d4d604aceeb0d7c63dc2c91f6ee5c1547cc05e25629e70f9f"
+  );
+  expectLitestreamAsset(
+    "aarch64",
+    "litestream-0.5.13-linux-arm64.tar.gz",
+    "ef47997794ce8dd87a64b44622d556b3a693b135fd72e0cf47cc42ac2e979051"
   );
 } finally {
   rmSync(temp, { recursive: true, force: true });

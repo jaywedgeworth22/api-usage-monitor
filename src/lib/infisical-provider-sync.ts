@@ -113,6 +113,13 @@ interface CredentialMapping {
   scope: InfisicalCredentialScope;
   providerName: string;
   attempts: readonly CredentialAttempt[];
+  /**
+   * The source value is a comma-delimited list of independent API keys. Each
+   * key becomes its own Provider row rather than treating the whole list as
+   * one credential. Only enable this for providers whose upstream contract
+   * explicitly accepts the same list shape (currently LlamaParse).
+   */
+  splitApiKeyList?: boolean;
   build(values: ReadonlyMap<string, string>): CredentialMaterial;
 }
 
@@ -121,6 +128,10 @@ interface CredentialCandidate {
   source: InfisicalCredentialScope;
   providerName: string;
   material: CredentialMaterial;
+  /** Server-only stable identity for one member of a split API-key list. */
+  keyFingerprint?: string;
+  /** Used only to safely adopt a pre-list binding during the first split sync. */
+  keyListOrdinal?: number;
 }
 
 interface StoredBinding {
@@ -130,6 +141,8 @@ interface StoredBinding {
   sequence?: number;
   status?: "active" | "revoked";
   fingerprint?: string | null;
+  /** Server-only SHA-256 identity for a split API-key-list member. */
+  keyFingerprint?: string;
   aliasOfProviderId?: string;
 }
 
@@ -172,6 +185,12 @@ const DEFAULT_SECRET_PATH = "/";
 const REQUEST_TIMEOUT_MS = 10_000;
 const MAX_RESPONSE_BYTES = 128 * 1024;
 const MAX_SECRET_VALUE_BYTES = 64 * 1024;
+// A comma-separated provider secret is deliberately a small account list,
+// not an unbounded account-creation interface. Individual API keys are much
+// shorter in practice; 4 KiB is a generous ceiling while keeping a malformed
+// source value from becoming a large encrypted Provider field.
+const MAX_SPLIT_API_KEYS = 25;
+const MAX_SPLIT_API_KEY_BYTES = 4 * 1024;
 const ST_GEMINI_BOOTSTRAP_FLAG = "INFISICAL_ST_GEMINI_BOOTSTRAP_ENABLED";
 const ST_GEMINI_PROVIDER_ID = "4a888d41-3988-4774-86d8-67d7aa14d7e2";
 const ST_GEMINI_SECRET_NAME = "GEMINI_API_KEY";
@@ -319,6 +338,7 @@ const CREDENTIAL_MAPPINGS: readonly CredentialMapping[] = [
     scope: "ct",
     providerName: "llamaindex",
     attempts: appAttempts("ct", ["LLAMAPARSE_API_KEY"]),
+    splitApiKeyList: true,
     build: (values) => ({ apiKey: values.get("LLAMAPARSE_API_KEY") }),
   },
   {
@@ -947,10 +967,50 @@ async function readSource(
   };
 }
 
+function splitApiKeyList(value: string): Array<{ apiKey: string; fingerprint: string }> {
+  const unique = new Map<string, { apiKey: string; fingerprint: string }>();
+  for (const part of value.split(",")) {
+    const apiKey = part.trim();
+    // Empty comma segments are harmless formatting noise. They are not
+    // candidates and therefore can never create blank provider rows.
+    if (!apiKey) continue;
+    if (Buffer.byteLength(apiKey, "utf8") > MAX_SPLIT_API_KEY_BYTES) {
+      throw new InfisicalSyncError("split_api_key_too_large");
+    }
+    const fingerprint = createHash("sha256").update(apiKey, "utf8").digest("hex");
+    if (!unique.has(fingerprint)) unique.set(fingerprint, { apiKey, fingerprint });
+    if (unique.size > MAX_SPLIT_API_KEYS) {
+      throw new InfisicalSyncError("split_api_key_list_too_large");
+    }
+  }
+  if (unique.size === 0) throw new InfisicalSyncError("split_api_key_list_empty");
+  return [...unique.values()];
+}
+
+function candidatesForMaterial(
+  mapping: CredentialMapping,
+  source: InfisicalCredentialScope,
+  material: CredentialMaterial
+): CredentialCandidate[] {
+  const base = {
+    scope: mapping.scope,
+    source,
+    providerName: mapping.providerName,
+  };
+  if (!mapping.splitApiKeyList) return [{ ...base, material }];
+  if (!material.apiKey) throw new InfisicalSyncError("split_api_key_missing");
+  return splitApiKeyList(material.apiKey).map(({ apiKey, fingerprint }, keyListOrdinal) => ({
+    ...base,
+    material: { ...material, apiKey },
+    keyFingerprint: fingerprint,
+    keyListOrdinal,
+  }));
+}
+
 function resolveMapping(
   mapping: CredentialMapping,
   reads: ReadonlyMap<InfisicalCredentialScope, SourceRead>
-): { candidate?: CredentialCandidate; missing?: true; failed?: true } {
+): { candidates?: CredentialCandidate[]; missing?: true; failed?: true } {
   for (let index = 0; index < mapping.attempts.length; index++) {
     const attempt = mapping.attempts[index];
     const source = reads.get(attempt.source)!;
@@ -970,14 +1030,7 @@ function resolveMapping(
       if (source.errors.has(optional)) values.delete(optional);
     }
     const material = mapping.build(values);
-    return {
-      candidate: {
-        scope: mapping.scope,
-        source: attempt.source,
-        providerName: mapping.providerName,
-        material,
-      },
-    };
+    return { candidates: candidatesForMaterial(mapping, attempt.source, material) };
   }
   return { missing: true };
 }
@@ -1354,6 +1407,23 @@ function hasHistoricalLabel(provider: ProviderRecord): boolean {
   );
 }
 
+function bindingMatchesCandidate(
+  binding: StoredBinding | undefined,
+  candidate: CredentialCandidate,
+  canonicalProviderName: string
+): boolean {
+  if (
+    binding?.scope !== candidate.scope ||
+    canonicalProviderKey(binding.providerName) !== canonicalProviderName
+  ) {
+    return false;
+  }
+  // A split-list member must match its own stable identity. A legacy binding
+  // without one is handled only by the first candidate below, so it cannot be
+  // accidentally claimed by every key from the same source value.
+  return binding.keyFingerprint === candidate.keyFingerprint;
+}
+
 function selectTarget(
   candidate: CredentialCandidate,
   providers: readonly ProviderRecord[],
@@ -1376,13 +1446,28 @@ function selectTarget(
   );
   const bound = available.filter((provider) => {
     const binding = bindingFor(provider);
-    return (
-      binding?.scope === candidate.scope &&
-      canonicalProviderKey(binding.providerName) === canonical
-    );
+    return bindingMatchesCandidate(binding, candidate, canonical);
   });
   if (bound.length > 1) throw new InfisicalSyncError("ambiguous_bound_provider");
   if (bound.length === 1) return bound[0];
+
+  if (candidate.keyFingerprint && candidate.keyListOrdinal === 0) {
+    // Upgrade a prior single-value binding in place when a source is first
+    // changed to a comma-separated list. Only the first deterministic key may
+    // adopt it; every other key creates/selects its own row.
+    const legacyBound = available.filter((provider) => {
+      const binding = bindingFor(provider);
+      return (
+        binding?.scope === candidate.scope &&
+        canonicalProviderKey(binding.providerName) === canonical &&
+        binding.keyFingerprint === undefined
+      );
+    });
+    if (legacyBound.length > 1) {
+      throw new InfisicalSyncError("ambiguous_legacy_split_provider");
+    }
+    if (legacyBound.length === 1) return legacyBound[0];
+  }
 
   const hinted = available.filter((provider) =>
     hasScopeHint(provider, candidate.scope, projectId)
@@ -1590,6 +1675,9 @@ async function applyCandidates(candidates: readonly CredentialCandidate[]): Prom
         scope: candidate.scope,
         source: candidate.source,
         providerName: candidate.providerName,
+        ...(candidate.keyFingerprint
+          ? { keyFingerprint: candidate.keyFingerprint }
+          : {}),
       };
 
       if (!target) {
@@ -1643,7 +1731,8 @@ async function applyCandidates(candidates: readonly CredentialCandidate[]): Prom
         existingBinding?.scope === binding.scope &&
         existingBinding.source === binding.source &&
         canonicalProviderKey(existingBinding.providerName) ===
-          canonicalProviderKey(binding.providerName);
+          canonicalProviderKey(binding.providerName) &&
+        existingBinding.keyFingerprint === binding.keyFingerprint;
       if (
         materialMatches &&
         bindingMatches &&
@@ -2195,7 +2284,7 @@ async function syncRootOnce(
     }
     try {
       const resolved = resolveMapping(mapping, reads);
-      if (resolved.candidate) candidates.push(resolved.candidate);
+      if (resolved.candidates) candidates.push(...resolved.candidates);
       else if (resolved.missing) result.missing++;
       else result.failed++;
     } catch {

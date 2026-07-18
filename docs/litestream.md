@@ -1,8 +1,10 @@
-# Litestream WAL Replication (Render)
+# Litestream WAL Replication (Render and Oracle A1)
 
 Continuous SQLite backup via [Litestream](https://litestream.io) **0.5.x**. Streams
-writes to `/data/prod.db` (the Render disk backing this app) to a Cloudflare R2 bucket
-as LTX files. Adapted from the sibling Socratic.Trade app's PM2/macOS setup
+writes to `/data/prod.db` as LTX files. Render uses its Cloudflare R2 bucket;
+the Oracle candidate uses the separate Coolify Garage S3 bucket so the two
+deployments never write to the same replica. Adapted from the sibling
+Socratic.Trade app's PM2/macOS setup
 (`docs/litestream.md` there) for Render's single-web-service, build-then-run model.
 
 Render's encrypted daily disk snapshots are retained for at least seven days, but
@@ -30,7 +32,8 @@ and makes `/api/ready` fail.
 ## How it fits into this repo
 
 - `scripts/fetch-litestream.sh` — runs in `render.yaml`'s `buildCommand`. Downloads a
-  pinned Litestream release (currently v0.5.13, linux-x86_64) into `./bin/litestream`,
+  pinned Litestream release (currently v0.5.13, selecting linux-x86_64 or linux-arm64
+  from the build host) into `./bin/litestream`,
   verifying its sha256 against a pin in the script. Idempotent (skips if the right
   version is already there) and safe to run even when replication is never enabled —
   the binary just sits unused.
@@ -87,6 +90,13 @@ is optional for R2 and can be left unset: Litestream
 expands config env vars with Go's `os.Getenv` (not a shell, so `${VAR:-default}` is not
 supported), and with an S3 endpoint set an empty region falls back to `us-east-1`, which
 R2 accepts for SigV4. Set it to `auto` only if you prefer to be explicit.
+
+For Oracle, put the same variable names in the protected
+`/etc/usage-monitor/usage-monitor.env`, but use the Coolify Garage endpoint,
+`usage-monitor` bucket, and its dedicated key. Use region `garage`. Do not copy
+Render's R2 credentials or replica endpoint onto Oracle: Litestream 0.5 permits
+one replica per database, and a future rollback must not leave two hosts
+publishing divergent SQLite histories to one object prefix.
 
 ### 3. Deploy
 

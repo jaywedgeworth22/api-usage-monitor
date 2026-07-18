@@ -132,6 +132,23 @@ describe("POST /api/otlp/v1/metrics", () => {
     }
   });
 
+  it("rejects a busy receiver before decoding an otherwise invalid OTLP payload", async () => {
+    const release = tryAcquireIngestAdmission();
+    expect(release).not.toBeNull();
+    try {
+      const res = await POST(
+        jsonRequest("not-an-otlp-object", { authorization: "Bearer test-token-123" })
+      );
+      // Before the admission gate moved above decoding this was a 400.
+      expect(res.status).toBe(503);
+      expect(res.headers.get("retry-after")).toBe("5");
+      expect(await prisma.externalUsageEvent.count({ where: { sourceApp: "claude-code" } })).toBe(0);
+      expect(await prisma.otlpMetricState.count()).toBe(0);
+    } finally {
+      release?.();
+    }
+  });
+
   it("accepts a valid bearer token and writes a usage row", async () => {
     const res = await POST(jsonRequest(samplePayload, { authorization: "Bearer test-token-123" }));
     expect(res.status).toBe(202);

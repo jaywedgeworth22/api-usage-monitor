@@ -354,7 +354,14 @@ export async function GET(request: NextRequest) {
         : 0,
       ...clientConfig,
       credentialManagement,
-      keyPreview: credentialManaged ? null : buildKeyPreview(decryptedKey),
+      // A validated managed credential may expose a masked preview so
+      // independently managed multi-key rows stay distinguishable. Malformed
+      // or unreadable ownership envelopes fail closed: never infer that their
+      // stored key is safe to reveal even partially.
+      keyPreview:
+        credentialManaged && credentialManagement == null
+          ? null
+          : buildKeyPreview(decryptedKey),
       geminiKeyStatus,
       geminiBillingStatus,
       geminiMonitoringStatus,

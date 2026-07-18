@@ -69,21 +69,36 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  let events;
-  try {
-    const bytes = await readBoundedRequestBody(request, {
-      maxBytes: MAX_USAGE_TELEMETRY_BODY_BYTES,
-      label: "Usage ingest payload",
-    });
-    events = parseUsageTelemetryBatch(
-      JSON.parse(new TextDecoder().decode(bytes))
-    );
-  } catch (error) {
+  // Reject a retry storm before decoding up to 4 MiB of JSON or doing any
+  // project/provider lookup. SQLite is single-writer and the incumbent writer
+  // remains the only request allowed to consume parsing/DB memory.
+  const releaseAdmission = tryAcquireIngestAdmission();
+  if (!releaseAdmission) {
     return NextResponse.json(
-      { error: error instanceof Error ? error.message : "Invalid request" },
-      { status: error instanceof RequestBodyTooLargeError ? 413 : 400 }
+      { error: "Usage ingest is busy. Retry later." },
+      {
+        status: 503,
+        headers: { "Retry-After": String(INGEST_ADMISSION_RETRY_AFTER_SECONDS) },
+      }
     );
   }
+
+  try {
+    let events;
+    try {
+      const bytes = await readBoundedRequestBody(request, {
+        maxBytes: MAX_USAGE_TELEMETRY_BODY_BYTES,
+        label: "Usage ingest payload",
+      });
+      events = parseUsageTelemetryBatch(
+        JSON.parse(new TextDecoder().decode(bytes))
+      );
+    } catch (error) {
+      return NextResponse.json(
+        { error: error instanceof Error ? error.message : "Invalid request" },
+        { status: error instanceof RequestBodyTooLargeError ? 413 : 400 }
+      );
+    }
 
   // SUBSCRIPTION_SOURCE_APP is reserved for the internal subscription
   // materializer, which writes its own charge events directly via
@@ -113,18 +128,6 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  const releaseAdmission = tryAcquireIngestAdmission();
-  if (!releaseAdmission) {
-    return NextResponse.json(
-      { error: "Usage ingest is busy. Retry later." },
-      {
-        status: 503,
-        headers: { "Retry-After": String(INGEST_ADMISSION_RETRY_AFTER_SECONDS) },
-      }
-    );
-  }
-
-  try {
     const receiptTargets: Array<{ providerId: string; providerName: string }> = [];
     if (receiptLikeEvents.length > 0) {
       const hmacKey = process.env.BILLING_RECEIPT_HMAC_KEY?.trim() ?? "";
@@ -246,6 +249,8 @@ export async function POST(request: NextRequest) {
       { status: 202 }
     );
   } finally {
+    // This lease starts before parsing, so it covers every early validation
+    // response as well as all SQLite failures.
     releaseAdmission();
   }
 }

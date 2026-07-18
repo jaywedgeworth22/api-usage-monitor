@@ -1024,6 +1024,76 @@ describe("Infisical provider credential sync", () => {
     expect(JSON.stringify(langfuse.config)).not.toContain("infisicalCredential");
   });
 
+  it("splits comma-delimited LlamaParse keys into stable, deduplicated managed rows", async () => {
+    configureSources("st", "ct", "shared");
+    const secrets = {
+      st: valuesFor("st"),
+      ct: valuesFor("ct"),
+      shared: valuesFor("shared"),
+    };
+    const llamaKeys = ["llama-first-key", "llama-second-key", "llama-third-key"];
+    secrets.ct.LLAMAPARSE_API_KEY = ` ${llamaKeys[0]},, ${llamaKeys[1]} , ${llamaKeys[0]} ,${llamaKeys[2]} `;
+    installInfisicalMock(secrets);
+
+    const first = await syncProviderCredentialsFromInfisical();
+    expect(first).toMatchObject({ created: 23, failed: 0 });
+    expectRedacted(first, Object.values(secrets).flatMap(Object.values));
+
+    const initialRows = await prisma.provider.findMany({
+      where: { name: "llamaindex" },
+      orderBy: { id: "asc" },
+    });
+    expect(initialRows).toHaveLength(3);
+    expect(initialRows.map((row) => decrypt(row.apiKey!)).sort()).toEqual(
+      [...llamaKeys].sort()
+    );
+    for (const row of initialRows) {
+      const stored = decryptJson(row.secretConfig!);
+      expect(stored).toMatchObject({
+        infisicalCredential: {
+          scope: "ct",
+          source: "ct",
+          providerName: "llamaindex",
+          keyFingerprint: expect.stringMatching(/^[a-f0-9]{64}$/),
+        },
+      });
+      expect(JSON.stringify(stored)).not.toContain(secrets.ct.LLAMAPARSE_API_KEY);
+    }
+
+    // Identity is keyed to each member, not its position in the source list.
+    secrets.ct.LLAMAPARSE_API_KEY = `${llamaKeys[2]}, ${llamaKeys[0]}, ${llamaKeys[1]}`;
+    installInfisicalMock(secrets);
+    const second = await syncProviderCredentialsFromInfisical();
+    expect(second).toMatchObject({ created: 0, updated: 0, unchanged: 23, failed: 0 });
+    const replayRows = await prisma.provider.findMany({
+      where: { name: "llamaindex" },
+      orderBy: { id: "asc" },
+    });
+    expect(replayRows.map((row) => row.id)).toEqual(initialRows.map((row) => row.id));
+  });
+
+  it("rejects an over-capacity or oversized LlamaParse key list without creating rows", async () => {
+    configureSources("ct");
+    const overCapacity = Array.from({ length: 26 }, (_, index) => `llama-key-${index}`).join(",");
+    const tooLong = "x".repeat(4 * 1024 + 1);
+
+    for (const value of [overCapacity, tooLong]) {
+      await prisma.provider.deleteMany();
+      await prisma.project.deleteMany();
+      const secrets = { ct: valuesFor("ct") };
+      secrets.ct.LLAMAPARSE_API_KEY = value;
+      installInfisicalMock(secrets);
+
+      const result = await syncProviderCredentialsFromInfisical();
+      // Other mappings are unavailable because this fixture deliberately
+      // configures only CT; the list itself must add at least one failure and
+      // must never create a LlamaParse provider row.
+      expect(result.failed).toBeGreaterThan(0);
+      expect(await prisma.provider.count({ where: { name: "llamaindex" } })).toBe(0);
+      expectRedacted(result, Object.values(secrets.ct));
+    }
+  });
+
   it("uses shared only after a definite miss, then promotes the app key", async () => {
     configureSources("st", "ct", "shared");
     const st = valuesFor("st");

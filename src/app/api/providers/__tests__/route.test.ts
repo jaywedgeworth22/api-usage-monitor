@@ -3,6 +3,7 @@ import fs from "fs";
 import os from "os";
 import path from "path";
 import { NextRequest } from "next/server";
+import { createHash } from "node:crypto";
 import { setupPrismaSqliteTestDb } from "@/lib/__tests__/setup-test-db";
 
 // GET /api/providers is the dashboard's (and Settings/Connections') primary
@@ -250,6 +251,52 @@ describe("GET /api/providers - rawData exclusion and cost-coverage caveat", () =
     expect(response.status).toBe(200);
     expect(entry.costCoverageCaveat).toBeNull();
     expect(entry.latestSnapshot).toBeNull();
+  });
+});
+
+describe("GET /api/providers - managed key previews", () => {
+  it("uses each managed row's own key for a masked preview without exposing the key or binding", async () => {
+    const firstKey = "alpha-managed-one1";
+    const secondKey = "bravo-managed-two2";
+    const binding = (fingerprint: string) => ({
+      scope: "ct",
+      source: "ct",
+      providerName: "llamaindex",
+      keyFingerprint: fingerprint,
+    });
+    const [first, second] = await Promise.all(
+      [firstKey, secondKey].map((apiKey) =>
+        prisma.provider.create({
+          data: {
+            name: "llamaindex",
+            displayName: "LlamaIndex",
+            type: "builtin",
+            apiKey: encrypt(apiKey),
+            secretConfig: encryptJson({
+              infisicalCredential: binding(
+                createHash("sha256").update(apiKey).digest("hex")
+              ),
+            }),
+          },
+        })
+      )
+    );
+
+    const response = await GET(
+      new NextRequest("https://usage.jays.services/api/providers")
+    );
+    const body = await response.json();
+    const firstEntry = body.find((entry: { id: string }) => entry.id === first.id);
+    const secondEntry = body.find((entry: { id: string }) => entry.id === second.id);
+    const serialized = JSON.stringify(body);
+
+    expect(firstEntry.keyPreview).toBe("alpha-...one1");
+    expect(secondEntry.keyPreview).toBe("bravo-...two2");
+    // The preview comes from its own encrypted row; neither full key nor the
+    // stable server-only fingerprint reaches clients.
+    expect(serialized).not.toContain(firstKey);
+    expect(serialized).not.toContain(secondKey);
+    expect(serialized).not.toContain("keyFingerprint");
   });
 });
 

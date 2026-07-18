@@ -88,7 +88,7 @@ describe("Infisical-managed provider API boundaries", () => {
     const body = await response.json();
 
     expect(response.status).toBe(200);
-    expect(body.keyPreview).toBeNull();
+    expect(body.keyPreview).toBe("manage...-key");
     expect(body.credentialManagement).toEqual({
       source: "infisical",
       scope: "st-primary",

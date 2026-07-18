@@ -151,7 +151,7 @@ function skippedDatabaseCheck(): DatabaseCheck {
   };
 }
 
-export async function GET() {
+export async function GET(request: Request) {
   // Live evidence showed a native Prisma query could outlive JavaScript's
   // timeout and the host continued polling this route even after its service
   // metadata named /api/health. The temporary flag keeps strict diagnostics
@@ -188,6 +188,13 @@ export async function GET() {
     : databaseColdStartGraceActive
       ? "starting"
       : "not_ready";
+  // Render's internal liveness probe must keep receiving HTTP 200 from the
+  // historical route, but independent uptime monitors need transport-level
+  // failure semantics. `?strict=1` is public and returns 503 whenever the
+  // dependency body says not ready; it adds no extra database work because it
+  // reuses this request's already-bounded probe result.
+  const strictTransport =
+    new URL(request.url).searchParams.get("strict") === "1";
 
   return NextResponse.json(
     {
@@ -232,7 +239,7 @@ export async function GET() {
       // semantically strict (`ok`, `status`, and every check) while making the
       // transport status liveness-safe until Render applies the configured
       // health-check path.
-      status: 200,
+      status: strictTransport && !ok ? 503 : 200,
       headers: {
         "Cache-Control": "no-store",
         "X-Readiness-Status": status,
