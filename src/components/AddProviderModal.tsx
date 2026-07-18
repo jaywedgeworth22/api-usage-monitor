@@ -955,7 +955,18 @@ export default function AddProviderModal({
               <button
                 type="button"
                 aria-label={`Remove allocation ${idx + 1}`}
-                onClick={() => setAllocations((current) => current.filter((_, i) => i !== idx))}
+                onClick={() => {
+                  setAllocations((current) => {
+                    const newAllocations = current.filter((_, i) => i !== idx);
+                    if (newAllocations.length === 0) return newAllocations;
+                    
+                    const defaultPercentage = Number((100 / newAllocations.length).toFixed(2));
+                    return newAllocations.map(item => ({
+                      ...item,
+                      percentage: defaultPercentage
+                    }));
+                  });
+                }}
                 className="min-h-9 min-w-9 rounded text-lg font-bold leading-none text-red-600 hover:bg-red-50 hover:text-red-800 dark:text-red-400 dark:hover:bg-red-950/60 dark:hover:text-red-300"
               >
                 &times;

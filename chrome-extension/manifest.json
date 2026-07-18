@@ -1,0 +1,33 @@
+{
+  "manifest_version": 3,
+  "name": "Usage Monitor",
+  "version": "1.0.0",
+  "description": "Automatically syncs API keys and usage tokens from provider dashboards.",
+  "permissions": [
+    "storage",
+    "activeTab",
+    "scripting"
+  ],
+  "host_permissions": [
+    "<all_urls>"
+  ],
+  "background": {
+    "service_worker": "scripts/background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://console.anthropic.com/*"],
+      "js": ["scripts/anthropic.js"],
+      "run_at": "document_end"
+    },
+    {
+      "matches": ["https://platform.openai.com/*"],
+      "js": ["scripts/openai.js"],
+      "run_at": "document_end"
+    }
+  ],
+  "action": {
+    "default_popup": "popup/index.html",
+    "default_title": "Usage Monitor"
+  }
+}
