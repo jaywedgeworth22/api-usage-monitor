@@ -348,6 +348,74 @@ describe("budgetStatusCacheTtlMs", () => {
 });
 
 describe("computeProjectBudgetStatus stale-while-revalidate cache", () => {
+  it("serializes stale provider and project external-cost refreshes without blocking stale callers", async () => {
+    const NOW = new Date("2027-03-10T12:00:00.000Z");
+    await createProviderWithCost(
+      "stale-overlap-provider",
+      17,
+      new Date("2027-03-10T10:00:00.000Z")
+    );
+
+    // Prime both caches while they are fresh. The project compute also primes
+    // the nested provider cache; capture each exact cached object so the stale
+    // calls below can prove they remain immediate SWR hits.
+    process.env.BUDGET_STATUS_CACHE_TTL_MS = "60000";
+    const firstProject = await computeProjectBudgetStatus(NOW);
+    const firstProvider = await computeBudgetStatus(NOW);
+
+    let releaseProviderGroup!: (rows: never[]) => void;
+    const blockedProviderGroup = new Promise<never[]>((resolve) => {
+      releaseProviderGroup = resolve;
+    });
+    const originalGroupBy = prisma.externalUsageEvent.groupBy.bind(
+      prisma.externalUsageEvent
+    );
+    const groupBySpy = vi.spyOn(prisma.externalUsageEvent, "groupBy");
+    let providerGroupBlocked = false;
+    groupBySpy.mockImplementation((args) => {
+      const by = Array.isArray(args.by) ? args.by : [];
+      if (
+        !providerGroupBlocked &&
+        by.includes("provider") &&
+        !by.includes("projectId")
+      ) {
+        providerGroupBlocked = true;
+        return blockedProviderGroup as never;
+      }
+      return originalGroupBy(args as never) as never;
+    });
+    const heavyAggregationCallCount = () =>
+      groupBySpy.mock.calls.filter(([args]) => {
+        const by = Array.isArray(args.by) ? args.by : [];
+        return by.includes("provider");
+      }).length;
+
+    // Make both entries stale. The provider call returns its cached object and
+    // starts a background refresh whose heavy groupBy is deliberately held.
+    process.env.BUDGET_STATUS_CACHE_TTL_MS = "0";
+    const staleProvider = await computeBudgetStatus(NOW);
+    expect(staleProvider).toBe(firstProvider);
+    await waitUntil(async () => heavyAggregationCallCount() === 1);
+
+    // The stale project call must also return immediately. Its background
+    // refresh reaches attribution, but the shared aggregation lease keeps it
+    // behind the still-held provider aggregation (including result handling).
+    const staleProject = await computeProjectBudgetStatus(NOW);
+    expect(staleProject).toBe(firstProject);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(heavyAggregationCallCount()).toBe(1);
+
+    // Stop further zero-TTL refreshes, release the provider aggregate, and
+    // prove attribution starts only afterward. Then wait for the project
+    // background refresh to settle so it cannot leak into the next test.
+    process.env.BUDGET_STATUS_CACHE_TTL_MS = "60000";
+    releaseProviderGroup([]);
+    await waitUntil(async () => heavyAggregationCallCount() === 2);
+    await waitUntil(async () =>
+      (await computeProjectBudgetStatus(NOW)) !== firstProject
+    );
+  });
+
   it("dedupes concurrent cold callers onto a single underlying compute and the same cached instance", async () => {
     const NOW = new Date("2026-11-10T12:00:00.000Z");
     const provider = await createProviderWithCost(

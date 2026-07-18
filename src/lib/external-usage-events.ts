@@ -758,7 +758,110 @@ type ReceiptCashEventLikeWithCost = Parameters<typeof receiptCashProviderId>[0];
 // rarely anyway, and the count barely changes call-to-call.
 let loggedExternalEventsRawSizeOnce = false;
 
+// Provider totals and project attribution both scan and materialize the
+// current month's raw ExternalUsageEvent rows. A stale provider-cache hit can
+// start its refresh in the background and return immediately; a stale project
+// cache refresh may then reach its separate attribution aggregate before that
+// provider refresh finishes. On the 512 MB production instance, retaining
+// both aggregate result sets at once is enough to kill the process.
+//
+// Serialize the complete aggregation bodies, not just their groupBy calls, so
+// the next aggregate cannot start while the prior query result is still being
+// classified into application maps. The lease lives below the SWR caches:
+// stale callers still receive their cached response immediately, while only
+// background/cold recomputation queues. Keeping it here also covers every
+// caller and avoids taking a higher-level lock before a nested budget compute.
+let externalUsageCostAggregationTail: Promise<void> = Promise.resolve();
+
+async function withExclusiveExternalUsageCostAggregation<T>(
+  work: () => Promise<T>
+): Promise<T> {
+  const previous = externalUsageCostAggregationTail;
+  let release!: () => void;
+  externalUsageCostAggregationTail = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+
+  await previous;
+  try {
+    return await work();
+  } finally {
+    release();
+  }
+}
+
+/**
+ * Return a narrow superset of possible raw receipt-cash rows. Full identity
+ * validation still happens through isReceiptCashEvent so a malformed
+ * receipt-like row remains ordinary cost.
+ *
+ * The main aggregate excludes this fixed-shape superset without an id list,
+ * then the caller adds every invalid candidate back individually. That avoids
+ * an unbounded SQLite `NOT IN (?, ...)` parameter list while excluding valid
+ * receipts before SUM (so receipt subtraction cannot introduce float drift).
+ * It also lets the main groupBy use only the dimensions that affect money
+ * semantics. Previously label/keyRef/billingMode/unit/confidence were all
+ * group dimensions solely so the loop could recognize receipts;
+ * high-cardinality keyRef values therefore made the database return nearly
+ * one group per event.
+ */
+async function rawReceiptCashCandidates(rawSince: Date) {
+  return prisma.externalUsageEvent.findMany({
+    where: {
+      occurredAt: { gte: rawSince },
+      sourceApp: BILLING_RECEIPT_SOURCE_APP,
+      service: API_PREPAID_FUNDING_SERVICE,
+      label: RECEIPT_CASH_LABEL,
+      billingMode: "actual",
+      metricType: "cost",
+      confidence: "actual",
+    },
+    select: {
+      id: true,
+      idempotencyKey: true,
+      sourceApp: true,
+      provider: true,
+      service: true,
+      projectId: true,
+      label: true,
+      keyRef: true,
+      billingMode: true,
+      metricType: true,
+      unit: true,
+      confidence: true,
+      costUsd: true,
+      occurredAt: true,
+      metadata: true,
+    },
+  });
+}
+
+// Exact logical complement of rawReceiptCashCandidates' fixed-shape filter.
+// Nullable service/label columns need explicit null branches: relying on SQL
+// `NOT (a AND b ...)` would drop NULL rows under three-valued logic.
+const NON_RECEIPT_CANDIDATE_WHERE: Prisma.ExternalUsageEventWhereInput = {
+  OR: [
+    { sourceApp: { not: BILLING_RECEIPT_SOURCE_APP } },
+    { service: null },
+    { service: { not: API_PREPAID_FUNDING_SERVICE } },
+    { label: null },
+    { label: { not: RECEIPT_CASH_LABEL } },
+    { billingMode: { not: "actual" } },
+    { metricType: { not: "cost" } },
+    { confidence: { not: "actual" } },
+  ],
+};
+
 export async function sumMonthToDateExternalCostByProvider(
+  monthStart: Date,
+  rawCutoff: Date
+): Promise<Map<string, ProviderPushedCost>> {
+  return withExclusiveExternalUsageCostAggregation(() =>
+    sumMonthToDateExternalCostByProviderUnserialized(monthStart, rawCutoff)
+  );
+}
+
+async function sumMonthToDateExternalCostByProviderUnserialized(
   monthStart: Date,
   rawCutoff: Date
 ): Promise<Map<string, ProviderPushedCost>> {
@@ -791,22 +894,14 @@ export async function sumMonthToDateExternalCostByProvider(
     }
   }
 
+  const receiptCandidates = await rawReceiptCashCandidates(rawSince);
   const [rawGroups, rollups] = await Promise.all([
     prisma.externalUsageEvent.groupBy({
-      by: [
-        "provider",
-        "sourceApp",
-        "service",
-        "label",
-        "keyRef",
-        "billingMode",
-        "metricType",
-        "unit",
-        "confidence",
-      ],
-      where: { 
-        occurredAt: { gte: rawSince }, 
-        metricType: { notIn: Array.from(STATUS_METRIC_TYPES) }
+      by: ["provider", "sourceApp", "service", "metricType"],
+      where: {
+        occurredAt: { gte: rawSince },
+        metricType: { notIn: Array.from(STATUS_METRIC_TYPES) },
+        ...NON_RECEIPT_CANDIDATE_WHERE,
       },
       _sum: { costUsd: true },
       _count: { _all: true, costUsd: true },
@@ -880,7 +975,6 @@ export async function sumMonthToDateExternalCostByProvider(
   };
 
   for (const row of rawGroups) {
-    if (isReceiptCashEvent(row)) continue;
     add(
       row.provider,
       row.sourceApp,
@@ -890,6 +984,21 @@ export async function sumMonthToDateExternalCostByProvider(
       {
         pricedEventCount: row._count.costUsd,
         unpricedEventCount: row._count._all - row._count.costUsd,
+        unclassifiedCostEventCount: 0,
+      }
+    );
+  }
+  for (const candidate of receiptCandidates) {
+    if (isReceiptCashEvent(candidate)) continue;
+    add(
+      candidate.provider,
+      candidate.sourceApp,
+      candidate.service,
+      candidate.metricType,
+      candidate.costUsd ?? 0,
+      {
+        pricedEventCount: candidate.costUsd == null ? 0 : 1,
+        unpricedEventCount: candidate.costUsd == null ? 1 : 0,
         unclassifiedCostEventCount: 0,
       }
     );
@@ -931,25 +1040,25 @@ export async function sumMonthToDateExternalCostAttribution(
   monthStart: Date,
   rawCutoff: Date
 ): Promise<ExternalCostAttributionRow[]> {
+  return withExclusiveExternalUsageCostAggregation(() =>
+    sumMonthToDateExternalCostAttributionUnserialized(monthStart, rawCutoff)
+  );
+}
+
+async function sumMonthToDateExternalCostAttributionUnserialized(
+  monthStart: Date,
+  rawCutoff: Date
+): Promise<ExternalCostAttributionRow[]> {
   const rawSince = monthStart > rawCutoff ? monthStart : rawCutoff;
 
+  const receiptCandidates = await rawReceiptCashCandidates(rawSince);
   const [rawGroups, rollups] = await Promise.all([
     prisma.externalUsageEvent.groupBy({
-      by: [
-        "provider",
-        "sourceApp",
-        "service",
-        "label",
-        "keyRef",
-        "billingMode",
-        "projectId",
-        "metricType",
-        "unit",
-        "confidence",
-      ],
-      where: { 
-        occurredAt: { gte: rawSince }, 
-        metricType: { notIn: Array.from(STATUS_METRIC_TYPES) }
+      by: ["provider", "sourceApp", "service", "projectId", "metricType"],
+      where: {
+        occurredAt: { gte: rawSince },
+        metricType: { notIn: Array.from(STATUS_METRIC_TYPES) },
+        ...NON_RECEIPT_CANDIDATE_WHERE,
       },
       _sum: { costUsd: true },
       _count: { _all: true, costUsd: true },
@@ -1014,7 +1123,7 @@ export async function sumMonthToDateExternalCostAttribution(
   };
 
   for (const row of rawGroups) {
-    if (isClaudeCodeAnalyticsTelemetry(row) || isReceiptCashEvent(row)) continue;
+    if (isClaudeCodeAnalyticsTelemetry(row)) continue;
     add(
       row.provider,
       row.sourceApp,
@@ -1024,6 +1133,21 @@ export async function sumMonthToDateExternalCostAttribution(
       {
         pricedEventCount: row._count.costUsd,
         unpricedEventCount: row._count._all - row._count.costUsd,
+        unclassifiedCostEventCount: 0,
+      }
+    );
+  }
+  for (const candidate of receiptCandidates) {
+    if (isReceiptCashEvent(candidate)) continue;
+    add(
+      candidate.provider,
+      candidate.sourceApp,
+      candidate.projectId,
+      candidate.metricType,
+      candidate.costUsd ?? 0,
+      {
+        pricedEventCount: candidate.costUsd == null ? 0 : 1,
+        unpricedEventCount: candidate.costUsd == null ? 1 : 0,
         unclassifiedCostEventCount: 0,
       }
     );
