@@ -15,7 +15,7 @@ export interface ProviderInput {
 
 export interface ProviderUpdateInput {
   displayName?: string;
-  apiKey?: string;
+  apiKey?: string | null;
   config?: Record<string, unknown> | null;
   secretConfigOperations?: ProviderSecretConfigOperationInput[];
   isActive?: boolean;
@@ -65,6 +65,12 @@ function cleanNullableString(value: unknown): string | null | undefined {
   return cleanOptionalString(value);
 }
 
+function isSafePathSegment(segment: unknown): segment is string {
+  if (typeof segment !== "string" || !segment) return false;
+  if (segment === "__proto__" || segment === "constructor" || segment === "prototype") return false;
+  return true;
+}
+
 function parseSecretConfigOperations(
   value: unknown
 ): ProviderSecretConfigOperationInput[] | undefined {
@@ -79,15 +85,17 @@ function parseSecretConfigOperations(
     if (!operation) {
       throw new Error(`secretConfigOperations[${index}] must be an object`);
     }
-    if (
-      !Array.isArray(operation.path) ||
-      operation.path.length !== 1 ||
-      operation.path[0] !== GOOGLE_SERVICE_ACCOUNT_SECRET_PATH
-    ) {
-      throw new Error(
-        `secretConfigOperations[${index}].path only supports serviceAccountJson`
-      );
+    
+    if (!Array.isArray(operation.path) || operation.path.length === 0) {
+      throw new Error(`secretConfigOperations[${index}].path must be a non-empty array`);
     }
+    
+    for (const segment of operation.path) {
+      if (!isSafePathSegment(segment)) {
+        throw new Error(`secretConfigOperations[${index}] contains an unsafe or invalid path segment`);
+      }
+    }
+    
     if (operation.action !== "clear") {
       throw new Error(
         `secretConfigOperations[${index}].action only supports clear`
@@ -98,13 +106,15 @@ function parseSecretConfigOperations(
         `secretConfigOperations[${index}].value must be omitted for clear`
       );
     }
+    
     const pathKey = JSON.stringify(operation.path);
     if (seenPaths.has(pathKey)) {
       throw new Error("secretConfigOperations contains a duplicate path");
     }
     seenPaths.add(pathKey);
+    
     return {
-      path: [GOOGLE_SERVICE_ACCOUNT_SECRET_PATH],
+      path: operation.path as string[],
       action: "clear" as const,
     };
   });
@@ -329,7 +339,11 @@ export function parseProviderUpdateInput(
   }
 
   if (body.apiKey !== undefined) {
-    update.apiKey = cleanOptionalString(body.apiKey);
+    if (body.apiKey === null || body.apiKey === "") {
+      update.apiKey = null;
+    } else {
+      update.apiKey = cleanOptionalString(body.apiKey);
+    }
   }
 
   if (body.config !== undefined) {

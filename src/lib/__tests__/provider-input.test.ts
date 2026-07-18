@@ -21,14 +21,14 @@ describe("provider secret config operations", () => {
     });
   });
 
-  it("rejects attempts to clear unrelated protected fields", () => {
+  it("rejects attempts to clear prototype pollution paths", () => {
     expect(() =>
       parseProviderUpdateInput({
         secretConfigOperations: [
-          { path: ["adminApiKey"], action: "clear" },
+          { path: ["__proto__"], action: "clear" },
         ],
       })
-    ).toThrow(/only supports serviceAccountJson/);
+    ).toThrow(/unsafe or invalid path segment/);
   });
 
   it("rejects ambiguous combinations and create-route operations", () => {
