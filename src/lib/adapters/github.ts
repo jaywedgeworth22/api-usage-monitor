@@ -142,7 +142,6 @@ const LICENSE_BUDGET_SKUS = new Set([
   "ghas_secret_protection_licenses",
   "ghec_licenses",
 ]);
-const BLOCKABLE_LICENSE_PRODUCTS = new Set(["ghas"]);
 const BLOCKABLE_LICENSE_SKUS = new Set([
   "ghas_code_security_licenses",
   "ghas_licenses",
@@ -451,11 +450,9 @@ function budgetUnit(type: string, skus: string[]): BudgetUnit {
 
 function supportsUsageBlocking(type: string, skus: string[], unit: BudgetUnit): boolean {
   if (unit === "usd") return true;
+  if (type !== "SkuPricing") return false;
   const normalized = skus.map((sku) => sku.toLowerCase());
-  const blockableSet = type === "ProductPricing"
-    ? BLOCKABLE_LICENSE_PRODUCTS
-    : BLOCKABLE_LICENSE_SKUS;
-  return normalized.every((sku) => blockableSet.has(sku));
+  return normalized.every((sku) => BLOCKABLE_LICENSE_SKUS.has(sku));
 }
 
 function budgetRecords(budgets: GitHubBudget[]): AdapterExternalBillingRecord[] {

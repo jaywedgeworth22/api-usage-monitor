@@ -387,6 +387,48 @@ describe("github billing adapter", () => {
     expect(budgets?.every((budget) => budget.spendLimitUsd === 10 && budget.currency === "USD")).toBe(true);
   });
 
+  it("never marks a product-level GHAS budget enforced but allows exact GHAS SKU enforcement", async () => {
+    const identifiers = [
+      ["ghas-product", "ProductPricing", "ghas"],
+      ["ghas-code-security", "SkuPricing", "ghas_code_security_licenses"],
+      ["ghas-legacy", "SkuPricing", "ghas_licenses"],
+      ["ghas-secret-protection", "SkuPricing", "ghas_secret_protection_licenses"],
+    ] as const;
+    const fetchMock = vi.fn(async (input: string) => {
+      if (input.includes("/usage/summary?")) return response({ usageItems: [] });
+      if (input.includes("/budgets?")) return response({
+        budgets: identifiers.map(([id, budgetType, sku]) => ({
+          id,
+          budget_type: budgetType,
+          budget_product_skus: [sku],
+          budget_scope: "organization",
+          budget_amount: 10,
+          prevent_further_usage: true,
+          budget_alerting: { will_alert: false, alert_recipients: [] },
+        })),
+        has_next_page: false,
+        total_count: identifiers.length,
+      });
+      if (input.includes("/ai_credit/usage?")) return response({ usageItems: [] });
+      if (input.includes("/premium_request/usage?")) return response({ usageItems: [] });
+      throw new Error(`unexpected URL: ${input}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await fetchUsage("token", { org: "Acme" });
+    const budgets = result.externalBillingSyncs?.find(
+      (sync) => sync.source === "github-enhanced-billing-budgets"
+    )?.records;
+
+    expect(budgets?.find((budget) => budget.externalId === "ghas-product")?.status).toBe("active");
+    expect(budgets?.filter((budget) => budget.externalId !== "ghas-product"))
+      .toEqual(expect.arrayContaining([
+        expect.objectContaining({ externalId: "ghas-code-security", status: "enforced" }),
+        expect.objectContaining({ externalId: "ghas-legacy", status: "enforced" }),
+        expect.objectContaining({ externalId: "ghas-secret-protection", status: "enforced" }),
+      ]));
+  });
+
   it.each([undefined, -1, 1.5, Number.MAX_SAFE_INTEGER + 1])(
     "rejects an invalid budget total_count (%s)",
     async (totalCount) => {

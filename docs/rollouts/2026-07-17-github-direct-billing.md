@@ -18,8 +18,9 @@ For one configured billing boundary it reads:
   `prevent_further_usage` setting. Exact documented metered product/SKU IDs
   are represented in USD. Known license counts and unknown-unit amounts stay
   labeled in metadata; neither is stored as a request limit. Most license
-  budgets cannot stop further usage, so only metered budgets and GitHub
-  Advanced Security's documented license exception may be labeled enforced.
+  budgets cannot stop further usage, so only metered budgets and the three
+  exact documented GitHub Advanced Security SkuPricing license IDs may be
+  labeled enforced; ProductPricing `ghas` remains active.
   Enterprise `multi_user_cost_center` is accepted. GitHub does not document a
   personal-user budget-list endpoint, so that state is explicitly
   `not_exposed` for user accounts.
