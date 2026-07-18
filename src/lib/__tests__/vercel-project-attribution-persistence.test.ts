@@ -74,7 +74,7 @@ describe("Vercel FOCUS project-attribution persistence", () => {
             BilledCost: "3.75",
             BillingCurrency: "USD",
             ServiceName: "Functions",
-            Tags: ["malformed"],
+            Tags: { ProjectName: "Congress Trade" },
           },
         ])
       )
@@ -82,8 +82,13 @@ describe("Vercel FOCUS project-attribution persistence", () => {
     const incomplete = await fetchUsage("token");
 
     expect(incomplete.totalCost).toBe(3.75);
-    expect(incomplete.externalBillingSyncs).toBeUndefined();
+    expect(incomplete.externalBillingSyncs?.map((sync) => sync.source)).toEqual([
+      "vercel-focus-service-detail",
+    ]);
     await reconcileProviderExternalBilling(providerId, incomplete.externalBilling!);
+    for (const sync of incomplete.externalBillingSyncs ?? []) {
+      await reconcileProviderExternalBilling(providerId, sync);
+    }
 
     expect(await prisma.providerExternalBilling.findMany({ orderBy: { source: "asc" } })).toEqual(
       expect.arrayContaining([
@@ -95,6 +100,62 @@ describe("Vercel FOCUS project-attribution persistence", () => {
         expect.objectContaining({
           source: "vercel-focus-project-attribution",
           serviceName: "Congress Trade",
+          amountUsd: 2.5,
+          rollupRole: "component",
+        }),
+      ])
+    );
+  });
+
+  it("does not prune a prior service breakdown when later FOCUS detail exceeds its cardinality bound", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        focusResponse([
+          {
+            BilledCost: "2.50",
+            BillingCurrency: "USD",
+            ServiceName: "Functions",
+          },
+        ])
+      )
+    );
+    const complete = await fetchUsage("token");
+    const serviceSync = complete.externalBillingSyncs?.find(
+      (sync) => sync.source === "vercel-focus-service-detail"
+    );
+    expect(serviceSync).toMatchObject({ authoritative: true });
+    await reconcileProviderExternalBilling(providerId, complete.externalBilling!);
+    await reconcileProviderExternalBilling(providerId, serviceSync!);
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        focusResponse(
+          Array.from({ length: 251 }, (_, index) => ({
+            BilledCost: "1",
+            BillingCurrency: "USD",
+            ServiceName: `Service ${index}`,
+          }))
+        )
+      )
+    );
+    const suppressed = await fetchUsage("token");
+
+    expect(suppressed.totalCost).toBe(251);
+    expect(suppressed.externalBillingSyncs).toBeUndefined();
+    await reconcileProviderExternalBilling(providerId, suppressed.externalBilling!);
+
+    expect(await prisma.providerExternalBilling.findMany({ orderBy: { source: "asc" } })).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          source: "vercel-focus-billing",
+          amountUsd: 251,
+          rollupRole: "canonical",
+        }),
+        expect.objectContaining({
+          source: "vercel-focus-service-detail",
+          serviceName: "Functions",
           amountUsd: 2.5,
           rollupRole: "component",
         }),

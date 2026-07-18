@@ -26,12 +26,23 @@ describe("vercel billing adapter", () => {
     });
     expect(result.externalBilling?.records).toEqual(
       expect.arrayContaining([
-        expect.objectContaining({ serviceName: "Functions", rollupRole: "component" }),
-        expect.objectContaining({ serviceName: "Bandwidth", rollupRole: "component" }),
+        expect.objectContaining({ serviceName: "Vercel", rollupRole: "canonical" }),
       ])
     );
     expect(JSON.stringify(result.rawData)).not.toContain("secret");
-    expect(result.externalBillingSyncs).toBeUndefined();
+    expect(result.externalBillingSyncs).toEqual([
+      expect.objectContaining({
+        source: "vercel-focus-service-detail",
+        records: expect.arrayContaining([
+          expect.objectContaining({ serviceName: "Functions", rollupRole: "component" }),
+          expect.objectContaining({ serviceName: "Bandwidth", rollupRole: "component" }),
+        ]),
+      }),
+    ]);
+    expect(result.rawData).toMatchObject({
+      capabilities: { projectAttribution: "incomplete" },
+      projectAttribution: { complete: false },
+    });
     expect(fetchMock.mock.calls[0][0]).toContain("teamId=team_123");
     expect(result.costIncludesUnknownFixed).toBe(true);
   });
@@ -108,6 +119,37 @@ describe("vercel billing adapter", () => {
     expect(JSON.stringify(result.rawData)).not.toContain("Socratic Trade");
   });
 
+  it("fails closed for project-shaped Tags that omit the documented ProjectId", async () => {
+    const body = [
+      {
+        BilledCost: "2.50",
+        BillingCurrency: "USD",
+        ServiceName: "Functions",
+        Tags: { project_id: "prj_ambiguous" },
+      },
+    ].map((value) => JSON.stringify(value)).join("\n");
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        new Response(body, {
+          status: 200,
+          headers: { "content-type": "application/x-ndjson" },
+        })
+      )
+    );
+
+    const result = await fetchUsage("token");
+
+    expect(result.totalCost).toBe(2.5);
+    expect(result.externalBillingSyncs?.map((sync) => sync.source)).toEqual([
+      "vercel-focus-service-detail",
+    ]);
+    expect(result.rawData).toMatchObject({
+      capabilities: { projectAttribution: "incomplete" },
+      projectAttribution: { complete: false, componentCount: 0 },
+    });
+  });
+
   it("ignores a malformed optional ProjectName without invalidating canonical FOCUS cost", async () => {
     const body = [
       {
@@ -177,7 +219,9 @@ describe("vercel billing adapter", () => {
     expect(result.externalBilling?.records).toEqual(
       expect.arrayContaining([expect.objectContaining({ amountUsd: 3.75, rollupRole: "canonical" })])
     );
-    expect(result.externalBillingSyncs).toBeUndefined();
+    expect(result.externalBillingSyncs?.map((sync) => sync.source)).toEqual([
+      "vercel-focus-service-detail",
+    ]);
     expect(result.rawData).toMatchObject({
       capabilities: { projectAttribution: "incomplete" },
       projectAttribution: { componentCount: 0, complete: false },
