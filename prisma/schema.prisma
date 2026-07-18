@@ -146,6 +146,20 @@ model UsageSnapshot {
   // findFirst/groupBy calls in budget-status.ts, usage-recorder.ts, and the
   // providers/snapshots API routes) — column order matches that shape.
   @@index([providerId, fetchedAt])
+  // Standalone fetchedAt index for queries that range-filter/order across ALL
+  // providers with no providerId equality term - e.g. computeBudgetStatus's
+  // usageSnapshot.groupBy(by: ["providerId"], where: { fetchedAt: {...} })
+  // (GET /api/providers's dominant cost) and /api/snapshots's global chart
+  // query. The composite (providerId, fetchedAt) index above CAN serve these
+  // via a "skip scan" across each distinct providerId, but only once
+  // SQLite's query planner has cost statistics (ANALYZE) to justify it; this
+  // app never runs ANALYZE, so absent this index the planner falls back to a
+  // full index/table scan of every retained snapshot (45-day retention x
+  // 15-min polling x every provider - verified via EXPLAIN QUERY PLAN
+  // against a freshly `db push`-ed, un-ANALYZEd SQLite file, matching
+  // production's real startup state). This index turns that into a direct
+  // indexed range search regardless of statistics.
+  @@index([fetchedAt])
 }
 
 model UsageSnapshotDailyRollup {
@@ -217,6 +231,20 @@ model ExternalUsageEvent {
   @@index([provider, occurredAt])
   @@index([keyRef, occurredAt])
   @@index([projectId, occurredAt])
+  // Standalone occurredAt index for month-to-date aggregations that filter
+  // ONLY by occurredAt with no sourceApp/provider/keyRef/projectId equality
+  // term - e.g. external-usage-events.ts's
+  // sumMonthToDateExternalCostByProvider and
+  // sumMonthToDateExternalCostAttribution groupBy calls, both on
+  // computeBudgetStatus's hot path for GET /api/providers. None of the
+  // composite indexes above have occurredAt as the leading column, so
+  // without this index (and without ANALYZE statistics, which this app never
+  // runs) those queries fall back to a full table scan of every retained
+  // event (90-day retention, potentially hundreds of thousands of rows) -
+  // verified via EXPLAIN QUERY PLAN against a freshly `db push`-ed,
+  // un-ANALYZEd SQLite file. This index turns that into a direct indexed
+  // range search.
+  @@index([occurredAt])
 }
 
 model ExternalUsageEventDailyRollup {
