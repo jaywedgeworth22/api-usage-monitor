@@ -362,7 +362,7 @@ describe("google-ai billing adapter", () => {
     expect(result.totalCost).toBe(8.25);
     expect(result.totalRequests).toBe(14);
     expect(result.externalBilling).toMatchObject({
-      source: "google-cloud-billing-export",
+      source: "google-cloud-billing-export:gemini-prod",
       authoritative: true,
     });
     expect(result.externalBillingSyncs?.map((sync) => sync.source)).toEqual([
@@ -399,7 +399,7 @@ describe("google-ai billing adapter", () => {
     expect(result.totalCost).toBe(8.25);
     expect(result.totalRequests).toBeNull();
     expect(result.externalBilling).toMatchObject({
-      source: "google-cloud-billing-export",
+      source: "google-cloud-billing-export:gemini-prod",
       authoritative: true,
     });
     expect(result.externalBillingSyncs?.map((sync) => sync.source)).toEqual([
