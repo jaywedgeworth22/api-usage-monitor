@@ -909,44 +909,74 @@ async function computeBudgetStatusUncached(now: Date): Promise<BudgetStatusRespo
 }
 
 // ---------------------------------------------------------------------------
-// Stale-while-revalidate cache for computeBudgetStatus.
+// Stale-while-revalidate cache for computeBudgetStatus and
+// computeProjectBudgetStatus.
 //
 // computeBudgetStatusUncached's sumMonthToDateExternalCostByProvider call
 // live-groups the ENTIRE current month of raw ExternalUsageEvent rows on
 // every invocation (the daily-rollup branch only ever applies to days older
 // than the raw-retention cutoff, never to the current month) - measured at
 // ~11.4s in production, which is effectively all of GET /api/providers's
-// ~11.5s. A second overlapping request (the dashboard auto-refreshes) then
-// 502s the single Render instance. Everything else this function reads stays
-// well under 100ms.
+// ~11.5s. computeProjectBudgetStatusUncached's OWN
+// sumMonthToDateExternalCostAttribution call has the identical shape and
+// cost (same live-group-the-current-month root cause) and is the entire
+// reason GET /api/projects and GET /api/budget-status were STILL ~11s after
+// computeBudgetStatus grew its own cache: neither endpoint calls
+// computeBudgetStatus directly - both call computeProjectBudgetStatus, whose
+// Promise.all runs that separate uncached query alongside the (by-then-fast)
+// cached computeBudgetStatus call. A second overlapping request (the
+// dashboard auto-refreshes) then 502s the single Render instance. Everything
+// else either function reads stays well under 100ms.
 //
 // Rather than changing what gets computed (a money-path calculation with a
 // lot of reconciliation logic - see the comment atop this file), this caches
-// the OUTPUT: the exact same object computeBudgetStatusUncached returns
-// today, memoized for a short TTL. The dashboard is fine reading numbers up
-// to TTL seconds stale (this is explicitly an accepted trade-off, not an
-// oversight).
+// the OUTPUT of each: the exact same object the respective *Uncached
+// function returns today, memoized for a short TTL. The dashboard is fine
+// reading numbers up to TTL seconds stale (this is explicitly an accepted
+// trade-off, not an oversight). Caching computeProjectBudgetStatus's OUTPUT
+// (rather than only its own extra query) is the simplest fix: it already
+// calls the now-cached computeBudgetStatus internally, so wrapping its own
+// output makes the ENTIRE /api/projects + /api/budget-status path fast, not
+// just the slice that overlaps /api/providers.
 //
-// Design:
-//   - Single module-level cache entry (this app runs numInstances:1, so a
-//     per-process cache is equivalent to a shared one - no cross-instance
-//     staleness/coherency concerns).
-//   - Cache key is the UTC month-start timestamp, so the cache auto-drops
+// Design: one small generic helper (createStaleWhileRevalidateCache below),
+// used by both caches, so the concurrency/rollover contract is fixed and
+// tested in exactly one place instead of two bespoke copies with two chances
+// to reintroduce the same bug.
+//   - Single module-level cache entry per wrapped function (this app runs
+//     numInstances:1, so a per-process cache is equivalent to a shared one -
+//     no cross-instance staleness/coherency concerns).
+//   - Cache key is the UTC month-start timestamp, so each cache auto-drops
 //     stale data at month rollover instead of serving last month's spend
-//     into the new month. `now` is computeBudgetStatus's only input, and
+//     into the new month. `now` is each wrapped function's only input, and
 //     every other value the computation reads (DB rows, env-driven
 //     retention cutoff) comes from the current process's live state at
 //     compute time, not from any other argument - so the month-start key is
 //     complete for this cache's correctness contract.
-//   - TTL is env-overridable via BUDGET_STATUS_CACHE_TTL_MS (default 60s).
+//   - TTL is env-overridable via BUDGET_STATUS_CACHE_TTL_MS (default 60s),
+//     shared by both caches below.
 //   - Stale-while-revalidate: once a value exists for the current key, every
 //     call returns it immediately - even past TTL. A stale hit kicks off a
-//     background refresh (deduped: only one refresh in flight at a time) and
-//     still returns the old value immediately rather than making the caller
-//     wait on it. Only a cold cache (nothing cached yet for the current
-//     month) or a month rollover computes inline/blocking, and concurrent
-//     callers during that blocking compute share the same in-flight promise
-//     instead of each starting their own 11s query.
+//     background refresh (deduped: only one refresh in flight per key at a
+//     time) and still returns the old value immediately rather than making
+//     the caller wait on it. Only a cold cache (nothing cached yet for the
+//     current month) or a month rollover computes inline/blocking, and
+//     concurrent callers during that blocking compute share the same
+//     in-flight promise instead of each starting their own ~11s query.
+//   - The in-flight refresh promise is associated with the key it is
+//     computing (not just "something is running"). A caller only piggybacks
+//     on an in-flight refresh when that refresh's key matches its OWN
+//     requested key; a caller whose key doesn't match (e.g. a UTC month
+//     rollover landing while the previous month's background refresh is
+//     still running) starts its own fresh compute instead of awaiting the
+//     wrong month's in-flight work and returning its (mislabeled) result. A
+//     refresh only writes its result into the cache and clears the
+//     in-flight slot while it still "owns" that slot at completion; if a
+//     newer request for a different key has since taken over the slot, the
+//     older refresh's result is discarded instead of clobbering the newer
+//     entry. After awaiting, a caller re-checks (and if necessary retries)
+//     until the cache entry actually matches its own requested key, so a
+//     caller can never return a different key's data.
 //   - A background refresh that throws is caught and logged at warn; the
 //     last good cached value keeps being served. A blocking (cold-start)
 //     compute that throws propagates the error as before - there is no
@@ -958,91 +988,167 @@ async function computeBudgetStatusUncached(now: Date): Promise<BudgetStatusRespo
 // (module instance), and a real cache keyed only on month-start would serve
 // one test's provider data to every later test in that file. Production has
 // no VITEST env var, so this only ever affects `vitest run`. The dedicated
-// cache-behavior tests below force it on via
-// __setBudgetStatusCacheOverrideForTests.
-interface BudgetStatusCacheEntry {
+// cache-behavior tests below force each cache on via its own exported
+// test-only override.
+
+interface StaleWhileRevalidateCacheEntry<T> {
   key: string;
-  value: BudgetStatusResponse;
+  value: T;
   computedAt: number;
 }
 
-let budgetStatusCache: BudgetStatusCacheEntry | null = null;
-let budgetStatusRefreshPromise: Promise<void> | null = null;
-let budgetStatusCacheOverride: boolean | null = null;
+/**
+ * A small stale-while-revalidate memoization helper keyed by an arbitrary
+ * string derived from the call's `now`. See the file comment above for the
+ * full concurrency/rollover contract this implements.
+ */
+function createStaleWhileRevalidateCache<T>(options: {
+  label: string;
+  compute: (now: Date) => Promise<T>;
+  keyFor: (now: Date) => string;
+  ttlMs: () => number;
+}) {
+  let entry: StaleWhileRevalidateCacheEntry<T> | null = null;
+  // The key of the refresh that currently "owns" refreshPromise. A refresh
+  // only writes to `entry` / clears these two slots while it still owns
+  // them at completion - see the file comment above.
+  let refreshPromise: Promise<void> | null = null;
+  let refreshKey: string | null = null;
+  let override: boolean | null = null;
 
-function budgetStatusCacheTtlMs(): number {
-  const raw = process.env.BUDGET_STATUS_CACHE_TTL_MS;
-  const parsed = raw != null ? Number(raw) : NaN;
-  return Number.isFinite(parsed) && parsed >= 0 ? parsed : 60_000;
+  function enabled(): boolean {
+    if (override !== null) return override;
+    return process.env.VITEST !== "true";
+  }
+
+  async function refresh(now: Date, key: string): Promise<void> {
+    try {
+      const value = await options.compute(now);
+      // Only adopt this result if a newer request hasn't already taken over
+      // this key's in-flight slot (e.g. a month rollover started its own
+      // fresh compute for the new key while this now-stale-key refresh was
+      // still in flight) - otherwise a slow, superseded refresh could
+      // clobber a more current cache entry after the fact.
+      if (refreshKey === key) {
+        entry = { key, value, computedAt: Date.now() };
+      }
+    } catch (error) {
+      // A background refresh (there IS a last-good value for this key) must
+      // never crash the process or surface to the caller that triggered it -
+      // keep serving what we have and try again on the next stale hit. A
+      // cold start (no cached value yet for this key) has nothing to fall
+      // back to, so it rethrows and the caller sees the failure, exactly
+      // like an uncached call would today.
+      // eslint-disable-next-line no-console -- intentional: surfaces cache-refresh failures for on-call visibility
+      console.warn(
+        `[${options.label}] refresh failed; serving last good value if available`,
+        error
+      );
+      if (!entry || entry.key !== key) {
+        throw error;
+      }
+    } finally {
+      if (refreshKey === key) {
+        refreshPromise = null;
+        refreshKey = null;
+      }
+    }
+  }
+
+  async function get(now: Date): Promise<T> {
+    if (!enabled()) {
+      return options.compute(now);
+    }
+
+    const key = options.keyFor(now);
+    const cached = entry;
+    if (cached && cached.key === key) {
+      if (
+        Date.now() - cached.computedAt >= options.ttlMs() &&
+        !(refreshPromise && refreshKey === key)
+      ) {
+        // Fire-and-forget: don't let a slow/failing background refresh delay
+        // (or, via an unhandled rejection, crash) the caller that happened
+        // to notice the value was stale.
+        refreshKey = key;
+        refreshPromise = refresh(now, key).catch(() => {});
+      }
+      return cached.value;
+    }
+
+    // Cold cache, or the requested key doesn't match what's cached (e.g. a
+    // UTC month rollover). Only piggyback on an in-flight refresh when it is
+    // for THIS key - an in-flight refresh for a different key (a
+    // still-finishing prior-month background refresh, or another caller's
+    // own rollover) must never be awaited here: it would resolve to the
+    // wrong key's data and could block us needlessly.
+    for (;;) {
+      let inFlight: Promise<void>;
+      if (refreshPromise && refreshKey === key) {
+        inFlight = refreshPromise;
+      } else {
+        refreshKey = key;
+        inFlight = refresh(now, key);
+        refreshPromise = inFlight;
+      }
+      await inFlight;
+      if (entry && entry.key === key) {
+        return entry.value;
+      }
+      // Extremely rare: something else moved the cache on again before we
+      // could read our own result back (e.g. a rapid double rollover).
+      // Loop and try again for our own key.
+    }
+  }
+
+  return {
+    get,
+    setOverrideForTests(value: boolean | null): void {
+      override = value;
+    },
+    resetForTests(): void {
+      entry = null;
+      refreshPromise = null;
+      refreshKey = null;
+    },
+  };
 }
 
 function budgetStatusCacheKey(now: Date): string {
   return monthStartUtc(now).toISOString();
 }
 
-function budgetStatusCacheEnabled(): boolean {
-  if (budgetStatusCacheOverride !== null) return budgetStatusCacheOverride;
-  return process.env.VITEST !== "true";
+// Exported (mirrors resolveSchedulerBootDelayMs in usage-recorder.ts) so
+// budget-status-cache.test.ts can exercise the env-parsing edge cases
+// directly. An empty or whitespace-only BUDGET_STATUS_CACHE_TTL_MS must fall
+// through to the 60s default rather than parsing as 0 (Number("") === 0,
+// which is finite and >= 0, so it would otherwise silently disable the SWR
+// window entirely).
+export function budgetStatusCacheTtlMs(): number {
+  const raw = process.env.BUDGET_STATUS_CACHE_TTL_MS?.trim();
+  const parsed = raw ? Number(raw) : NaN;
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : 60_000;
 }
 
-async function refreshBudgetStatusCache(now: Date, key: string): Promise<void> {
-  try {
-    const value = await computeBudgetStatusUncached(now);
-    budgetStatusCache = { key, value, computedAt: Date.now() };
-  } catch (error) {
-    // A background refresh (there IS a last-good value for this key) must
-    // never crash the process or surface to the caller that triggered it -
-    // keep serving what we have and try again on the next stale hit. A cold
-    // start (no cached value yet for this key) has nothing to fall back to,
-    // so it rethrows and the caller sees the failure, exactly like an
-    // uncached call would today.
-    // eslint-disable-next-line no-console -- intentional: surfaces cache-refresh failures for on-call visibility
-    console.warn("[budget-status-cache] refresh failed; serving last good value if available", error);
-    if (!budgetStatusCache || budgetStatusCache.key !== key) {
-      throw error;
-    }
-  } finally {
-    budgetStatusRefreshPromise = null;
-  }
-}
+const budgetStatusSwrCache = createStaleWhileRevalidateCache<BudgetStatusResponse>({
+  label: "budget-status-cache",
+  compute: computeBudgetStatusUncached,
+  keyFor: budgetStatusCacheKey,
+  ttlMs: budgetStatusCacheTtlMs,
+});
 
 /** Test-only: force the cache on/off regardless of the Vitest-default gate. Pass null to restore the default. */
 export function __setBudgetStatusCacheOverrideForTests(enabled: boolean | null): void {
-  budgetStatusCacheOverride = enabled;
+  budgetStatusSwrCache.setOverrideForTests(enabled);
 }
 
 /** Test-only: drop any cached value/in-flight refresh so the next call recomputes from scratch. */
 export function __resetBudgetStatusCacheForTests(): void {
-  budgetStatusCache = null;
-  budgetStatusRefreshPromise = null;
+  budgetStatusSwrCache.resetForTests();
 }
 
 export async function computeBudgetStatus(now: Date = new Date()): Promise<BudgetStatusResponse> {
-  if (!budgetStatusCacheEnabled()) {
-    return computeBudgetStatusUncached(now);
-  }
-
-  const key = budgetStatusCacheKey(now);
-  const cached = budgetStatusCache;
-  if (cached && cached.key === key) {
-    const age = Date.now() - cached.computedAt;
-    if (age >= budgetStatusCacheTtlMs() && !budgetStatusRefreshPromise) {
-      // Fire-and-forget: don't let a slow/failing background refresh delay
-      // (or, via an unhandled rejection, crash) the caller that happened to
-      // notice the value was stale.
-      budgetStatusRefreshPromise = refreshBudgetStatusCache(now, key).catch(() => {});
-    }
-    return cached.value;
-  }
-
-  // Cold cache or month rollover: nothing usable to serve immediately.
-  // Compute inline, deduping concurrent callers onto one in-flight promise
-  // rather than each kicking off their own ~11s query.
-  if (!budgetStatusRefreshPromise) {
-    budgetStatusRefreshPromise = refreshBudgetStatusCache(now, key);
-  }
-  await budgetStatusRefreshPromise;
-  return budgetStatusCache!.value;
+  return budgetStatusSwrCache.get(now);
 }
 
 export interface ProjectBudgetStatus {
@@ -1089,7 +1195,7 @@ export interface ProjectBudgetStatusResponse {
   };
 }
 
-export async function computeProjectBudgetStatus(now: Date = new Date()): Promise<ProjectBudgetStatusResponse> {
+async function computeProjectBudgetStatusUncached(now: Date): Promise<ProjectBudgetStatusResponse> {
   const [providerStatus, projects, attribution, identityProviders] = await Promise.all([
     computeBudgetStatus(now),
     prisma.project.findMany({
@@ -1384,4 +1490,34 @@ export async function computeProjectBudgetStatus(now: Date = new Date()): Promis
       warning: projectStatuses.some((p) => p.status === "warning"),
     },
   };
+}
+
+// Wraps computeProjectBudgetStatusUncached with the same generic SWR cache
+// used for computeBudgetStatus above (same key function, same shared TTL
+// knob). This is FIX 1 for GET /api/projects and GET /api/budget-status:
+// both routes call only computeProjectBudgetStatus, never computeBudgetStatus
+// directly, so caching computeBudgetStatus alone left their own
+// sumMonthToDateExternalCostAttribution call fully exposed to the same
+// ~11.4s current-month live-group cost. Caching this function's OUTPUT
+// covers that call (and, transitively, the now-fast cached
+// computeBudgetStatus call it also makes) in one place.
+const projectBudgetStatusSwrCache = createStaleWhileRevalidateCache<ProjectBudgetStatusResponse>({
+  label: "project-budget-status-cache",
+  compute: computeProjectBudgetStatusUncached,
+  keyFor: budgetStatusCacheKey,
+  ttlMs: budgetStatusCacheTtlMs,
+});
+
+/** Test-only: force the project cache on/off regardless of the Vitest-default gate. Pass null to restore the default. */
+export function __setProjectBudgetStatusCacheOverrideForTests(enabled: boolean | null): void {
+  projectBudgetStatusSwrCache.setOverrideForTests(enabled);
+}
+
+/** Test-only: drop any cached project value/in-flight refresh so the next call recomputes from scratch. */
+export function __resetProjectBudgetStatusCacheForTests(): void {
+  projectBudgetStatusSwrCache.resetForTests();
+}
+
+export async function computeProjectBudgetStatus(now: Date = new Date()): Promise<ProjectBudgetStatusResponse> {
+  return projectBudgetStatusSwrCache.get(now);
 }
