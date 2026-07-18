@@ -69,6 +69,15 @@ if (process.env.NODE_ENV !== "production") {
 // allocation, and this 512MB container has no slack to let the OS map large
 // chunks of the file into the query engine's address space.
 //
+// Temp B-trees are a separate native-memory risk. EXPLAIN QUERY PLAN shows
+// that the current-month ExternalUsageEvent aggregation necessarily uses one
+// for GROUP BY; keeping it in memory can transiently consume tens or hundreds
+// of MiB on top of the page cache. FILE makes SQLite spill that B-tree to the
+// service disk instead. This has identical query semantics, trades a little
+// latency/I/O for bounded RSS, and is the safer default in Render's 512MiB
+// container. An operator can opt back into MEMORY only with an explicit env
+// override after measuring their own headroom.
+//
 // There is no dedicated per-connection init hook in Prisma's public API for
 // SQLite, so this is applied as an explicit, idempotent, awaited step -
 // see instrumentation.ts's register(), which Next.js guarantees completes
@@ -78,6 +87,33 @@ if (process.env.NODE_ENV !== "production") {
 export interface SqliteMemoryPragmaValues {
   cacheSizeKib: number;
   mmapSizeBytes: number;
+  tempStore: SqliteTempStore;
+}
+
+export type SqliteTempStore = "default" | "file" | "memory";
+
+function sqliteTempStoreFromEnv(): Exclude<SqliteTempStore, "default"> {
+  switch (process.env.SQLITE_TEMP_STORE?.trim().toLowerCase()) {
+    case "memory":
+      return "memory";
+    case "file":
+    case undefined:
+    case "":
+      return "file";
+    default:
+      return "file";
+  }
+}
+
+function sqliteTempStoreFromPragma(value: unknown): SqliteTempStore {
+  switch (Number(value)) {
+    case 1:
+      return "file";
+    case 2:
+      return "memory";
+    default:
+      return "default";
+  }
 }
 
 export function resolveSqliteMemoryPragmaValues(): SqliteMemoryPragmaValues {
@@ -86,11 +122,12 @@ export function resolveSqliteMemoryPragmaValues(): SqliteMemoryPragmaValues {
     cacheSizeKib: -Math.abs(clampedIntEnv("SQLITE_CACHE_SIZE_KIB", 2_000, 256, 65_536)),
     // 0 disables mmap I/O entirely; a positive value is a byte ceiling.
     mmapSizeBytes: clampedIntEnv("SQLITE_MMAP_SIZE_BYTES", 0, 0, 268_435_456),
+    tempStore: sqliteTempStoreFromEnv(),
   };
 }
 
 /**
- * Reads the currently-effective cache_size / mmap_size off the live
+ * Reads the currently-effective cache_size / mmap_size / temp_store off the live
  * connection. SQLite returns these as 64-bit INTEGERs, which Prisma surfaces
  * as JS BigInt, so each is coerced to Number before returning.
  */
@@ -101,9 +138,13 @@ export async function readSqliteMemoryPragmas(): Promise<SqliteMemoryPragmaValue
   const mmapRows = await prisma.$queryRawUnsafe<Array<Record<string, unknown>>>(
     "PRAGMA mmap_size"
   );
+  const tempStoreRows = await prisma.$queryRawUnsafe<Array<Record<string, unknown>>>(
+    "PRAGMA temp_store"
+  );
   return {
     cacheSizeKib: Number(cacheRows[0]?.cache_size),
     mmapSizeBytes: Number(mmapRows[0]?.mmap_size),
+    tempStore: sqliteTempStoreFromPragma(tempStoreRows[0]?.temp_store),
   };
 }
 
@@ -121,6 +162,7 @@ export function applySqliteNativeMemoryPragmas(): Promise<void> {
         // match the target.
         await prisma.$queryRawUnsafe(`PRAGMA cache_size = ${target.cacheSizeKib}`);
         await prisma.$queryRawUnsafe(`PRAGMA mmap_size = ${target.mmapSizeBytes}`);
+        await prisma.$queryRawUnsafe(`PRAGMA temp_store = ${target.tempStore.toUpperCase()}`);
         // Read the values back on the same connection and confirm they took.
         // A mismatch is logged loudly (never swallowed): it would mean a future
         // engine change rejected a PRAGMA, or connection_limit was raised above
@@ -129,12 +171,14 @@ export function applySqliteNativeMemoryPragmas(): Promise<void> {
         const applied = await readSqliteMemoryPragmas();
         if (
           applied.cacheSizeKib !== target.cacheSizeKib ||
-          applied.mmapSizeBytes !== target.mmapSizeBytes
+          applied.mmapSizeBytes !== target.mmapSizeBytes ||
+          applied.tempStore !== target.tempStore
         ) {
           console.error(
             `[prisma] SQLite native memory bounds did not take effect ` +
               `(wanted cache_size=${target.cacheSizeKib}, mmap_size=${target.mmapSizeBytes}; ` +
-              `read back cache_size=${applied.cacheSizeKib}, mmap_size=${applied.mmapSizeBytes})`
+              `temp_store=${target.tempStore}; read back cache_size=${applied.cacheSizeKib}, ` +
+              `mmap_size=${applied.mmapSizeBytes}, temp_store=${applied.tempStore})`
           );
         }
       } catch (error) {
