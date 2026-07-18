@@ -292,6 +292,8 @@ Protocol: /Users/jay/apps/EFFORT-LOG-PROTOCOL.md (canonical). Live board: this f
 
 ## Completed
 
+- **Effort-log section normalization and live/mirror reconciliation (CODEX, owner-directed 2026-07-18) — COMPLETED / MERGED PR #459 as `97be9ec`.** Reconciled every task against current GitHub and Oracle deployment evidence; preserved all task rows; moved terminal, active, parked, historical, and changelog content into canonical sections; closed duplicate ownership claims as explicit handoffs; refreshed stale PR/deploy prose; and made `origin/main`'s `docs/EFFORT-LOG.md` byte-identical to the live board. PR #432 merged first to remove its collision; overlapping PRs #439/#441 were instructed to rebase and preserve the canonical mirror. Documentation-only: no provider, billing, secret, database, production-data, runtime, or deployment mutation.
+
 - **PR #432 resolution + repo effort-log mirror reconciliation (CLAUDE/CODEX, 2026-07-18) — COMPLETED / MERGED as `d8474ba`.** The non-draft docs PR passed hosted Verify, CodeQL, and Gitleaks with no comments, reviews, or threads. It merged before the canonical live-board normalization; the follow-up mirror snapshot is owned by the active CODEX normalization row and must be preserved by overlapping PRs #439 and #441.
 
 - **Minimize and classify persisted adapter `rawData` — ROUTING COMPLETE / SUPERSEDED BY ACTIVE PR #441 LANE.** Poll snapshots retain
@@ -668,7 +670,7 @@ Protocol: /Users/jay/apps/EFFORT-LOG-PROTOCOL.md (canonical). Live board: this f
 
 - **Safari-extension security lineage follow-up — OWNER DECISION RESOLVED BY PR #436; CREDENTIAL-ROTATION CONFIRMATION REMAINS.** + untracked copy in the main checkout — same browser-sync lineage merged as PR #106 then REVERTED for security in PR #107. Needs explicit owner decision; also confirm PR #107's credential-rotation action was ever done. _(filed by MONET 2026-07-15 from eval-sweep audit)_
 
-- **Effort-log section normalization and live/mirror reconciliation (CODEX, owner-directed 2026-07-18) — IN PROGRESS.** Reclassify terminal receipts currently filed under In Progress, move completed work out of Planned, preserve genuinely active/held rows, and make the branch-neutral live board match `docs/EFFORT-LOG.md` now that #432 merged; overlapping PRs #439 and #441 must rebase and preserve the canonical snapshot. Isolated branch/worktree: `agent/normalize-effort-log` / `/Users/jay/apps/usage-monitor-effort-log-normalize`; documentation-only, no provider, billing, secret, production-data, or runtime mutation.
+
 - **Adapter `rawData` minimization and privacy redaction (AG, owner-directed 2026-07-18) — PR #441 OPEN / BLOCKED at `94aef45`.** Implemented per-adapter redaction rules/allowlists for provider-shaped payloads via `src/lib/data-privacy.ts`, retaining normalized fields and stripping opaque payloads for custom endpoints. Retention/privacy provenance is now documented before exposing raw details. Hosted Verify is failing; corrective PR #442 is active while review remains pending.
 - **Backlog-closeout coordination umbrella (CLAUDE, owner-directed 2026-07-18 ~16:05 CDT) — IN PROGRESS / CHILD LANES BELOW.** Owner directed CLAUDE to drive the remaining 12-item backlog with a delegated team. The Oracle cutover receipt is complete; child lanes below now follow ordinary hosted gates, review, ownership, and deployment controls. Session branch `claude/team-agent-tasks-backlog-d653f8`; per-lane rows below.
 
@@ -805,6 +807,8 @@ Jul 8 18:10 CT)._
 - **Integration P1 (CT-side): Congress.Trade never reads GET /api/budget-status** — no spend-feedback loop; wire periodic read + self-throttle. _(filed by MONET 2026-07-15 from eval-sweep audit)_
 - **Integration P1: quota_sync/credit_balance receiver (PR #90) has ZERO producers on ST/CT** — wire a producer or park the receiver. _(filed by MONET 2026-07-15 from eval-sweep audit)_
 ## Changelog of this log
+
+- 2026-07-18 — CODEX: PR #459 passed Verify, CodeQL, and Gitleaks with no review threads, merged as `97be9ec`, and made the live board and `origin/main` mirror byte-identical; moved the normalization row to Completed.
 
 - 2026-07-18 — CODEX: merged green docs PR #432 as `d8474ba`, moved its monitoring receipt to Deployed and its reconciliation lane to Completed, and continued the canonical mirror snapshot around overlapping PRs #439/#441.
 
