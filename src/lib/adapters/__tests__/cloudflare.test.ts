@@ -108,6 +108,86 @@ describe("cloudflare adapter", () => {
     });
   });
 
+  it("uses a current paid billing term when Cloudflare reports an inconsistent Expired state", async () => {
+    const now = new Date();
+    const currentPeriodStart = new Date(now.getTime() - 86_400_000).toISOString();
+    const currentPeriodEnd = new Date(now.getTime() + 86_400_000).toISOString();
+    const priorPeriodStart = new Date(now.getTime() - 3 * 86_400_000).toISOString();
+    const priorPeriodEnd = new Date(now.getTime() - 2 * 86_400_000).toISOString();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn()
+        .mockResolvedValueOnce(json({ result: { totals: { requests: 10 } } }))
+        .mockResolvedValueOnce(json({}, 403))
+        .mockResolvedValueOnce(
+          json({
+            result: [
+              {
+                id: "paid-current",
+                currency: "USD",
+                current_period_start: currentPeriodStart,
+                current_period_end: currentPeriodEnd,
+                frequency: "monthly",
+                price: 5,
+                rate_plan: { public_name: "Workers Paid" },
+                state: "Paid",
+              },
+              {
+                id: "expired-current",
+                currency: "USD",
+                current_period_start: currentPeriodStart,
+                current_period_end: currentPeriodEnd,
+                frequency: "monthly",
+                price: 5,
+                rate_plan: { public_name: "Workers Paid" },
+                state: "Expired",
+              },
+              {
+                id: "expired-prior",
+                currency: "USD",
+                current_period_start: priorPeriodStart,
+                current_period_end: priorPeriodEnd,
+                frequency: "monthly",
+                price: 5,
+                rate_plan: { public_name: "Workers Paid" },
+                state: "Expired",
+              },
+              {
+                id: "cancelled-current",
+                currency: "USD",
+                current_period_start: currentPeriodStart,
+                current_period_end: currentPeriodEnd,
+                frequency: "monthly",
+                price: 5,
+                rate_plan: { public_name: "Workers Paid" },
+                state: "Cancelled",
+              },
+            ],
+            result_info: { count: 4, page: 1, per_page: 50, total_count: 4 },
+          })
+        )
+        .mockResolvedValueOnce(json({}, 403))
+    );
+
+    const result = await fetchUsage("token", {
+      accountId: "account-id",
+      authMode: "api_token",
+    });
+    const records = result.externalBillingSyncs?.find(
+      (sync) => sync.source === "cloudflare-subscriptions"
+    )?.records;
+
+    expect(result.totalCost).toBe(10);
+    expect(records).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ externalId: "paid-current", status: "paid", rollupRole: "canonical" }),
+        expect.objectContaining({ externalId: "expired-current", status: "paid", rollupRole: "canonical" }),
+        expect.objectContaining({ externalId: "expired-prior", status: "expired", rollupRole: "metadata" }),
+        expect.objectContaining({ externalId: "cancelled-current", status: "cancelled", rollupRole: "metadata" }),
+      ])
+    );
+  });
+
   it("uses explicit API-token auth even when a legacy account email remains", async () => {
     const fetchMock = vi
       .fn()
