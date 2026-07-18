@@ -69,20 +69,85 @@ const BUDGET_SCOPES = new Set([
   "repository",
   "cost_center",
   "multi_user_customer",
+  "multi_user_cost_center",
   "user",
 ]);
-// GitHub documents these as metered/spend products. Unknown SKUs are kept as
-// provider-defined budget units because budget_amount is a license count for
-// license products and the response has no separate currency/unit field.
-const METERED_BUDGET_SKU_PATTERNS = [
-  /^actions(?:_|$)/,
-  /^packages(?:_|$)/,
-  /^codespaces(?:_|$)/,
-  /^shared_storage(?:_|$)/,
-  /^git_lfs(?:_|$)/,
-  /^ai_credits$/,
-  /^premium_requests?$/,
-];
+const METERED_BUDGET_PRODUCTS = new Set(["actions", "packages", "codespaces", "sandbox"]);
+const LICENSE_BUDGET_PRODUCTS = new Set(["copilot", "ghas", "ghec"]);
+// Exact metered identifiers from GitHub's Product and SKU names reference,
+// plus the two documented bundle/multi-user budget identifiers.
+const METERED_BUDGET_SKUS = new Set([
+  "actions_cache_storage",
+  "actions_custom_image_storage",
+  "actions_linux",
+  "actions_linux_2_core_advanced",
+  "actions_linux_2_core_arm",
+  "actions_linux_32_core",
+  "actions_linux_32_core_arm",
+  "actions_linux_4_core",
+  "actions_linux_4_core_arm",
+  "actions_linux_4_core_gpu",
+  "actions_linux_64_core",
+  "actions_linux_64_core_arm",
+  "actions_linux_8_core",
+  "actions_linux_8_core_arm",
+  "actions_linux_96_core",
+  "actions_linux_arm",
+  "actions_linux_slim",
+  "actions_macos",
+  "actions_macos_l",
+  "actions_macos_xl",
+  "actions_storage",
+  "actions_windows",
+  "actions_windows_16_core",
+  "actions_windows_2_core",
+  "actions_windows_2_core_advanced",
+  "actions_windows_2_core_arm",
+  "actions_windows_32_core",
+  "actions_windows_32_core_arm",
+  "actions_windows_4_core",
+  "actions_windows_4_core_arm",
+  "actions_windows_4_core_gpu",
+  "actions_windows_64_core",
+  "actions_windows_64_core_arm",
+  "actions_windows_8_core",
+  "actions_windows_8_core_arm",
+  "actions_windows_arm",
+  "ai_credits",
+  "codespaces_compute_d16",
+  "codespaces_compute_d2",
+  "codespaces_compute_d32",
+  "codespaces_compute_d4",
+  "codespaces_compute_d8",
+  "codespaces_prebuild_storage",
+  "codespaces_storage",
+  "copilot_ai_credits",
+  "git_lfs_bandwidth",
+  "git_lfs_storage",
+  "models_inference",
+  "packages_bandwidth",
+  "packages_storage",
+  "premium_requests",
+  "sandbox_linux",
+  "sandbox_memory",
+  "sandbox_snapshot",
+  "spark_ai_credits",
+]);
+const LICENSE_BUDGET_SKUS = new Set([
+  "copilot_enterprise",
+  "copilot_for_business",
+  "copilot_standalone",
+  "ghas_code_security_licenses",
+  "ghas_licenses",
+  "ghas_secret_protection_licenses",
+  "ghec_licenses",
+]);
+const BLOCKABLE_LICENSE_PRODUCTS = new Set(["ghas"]);
+const BLOCKABLE_LICENSE_SKUS = new Set([
+  "ghas_code_security_licenses",
+  "ghas_licenses",
+  "ghas_secret_protection_licenses",
+]);
 
 function adapterError(error: unknown, message: string): AdapterError {
   if (error instanceof AdapterError) return error;
@@ -281,6 +346,7 @@ async function fetchAllBudgets(
   headers: HeadersInit
 ): Promise<BudgetOutcome> {
   const budgets: GitHubBudget[] = [];
+  let expectedTotalCount: number | null = null;
   for (let page = 1; page <= MAX_BUDGET_PAGES; page += 1) {
     const params = new URLSearchParams({ page: String(page), per_page: "100" });
     const outcome = await get(`${base}/budgets?${params}`, headers);
@@ -301,7 +367,12 @@ async function fetchAllBudgets(
         error: adapterError(error, "GitHub budgets response is invalid"),
       };
     }
-    if (!Array.isArray(data.budgets) || typeof data.has_next_page !== "boolean") {
+    if (
+      !Array.isArray(data.budgets) ||
+      typeof data.has_next_page !== "boolean" ||
+      !Number.isSafeInteger(data.total_count) ||
+      (data.total_count as number) < 0
+    ) {
       return {
         budgets: null,
         status: outcome.response.status,
@@ -311,8 +382,31 @@ async function fetchAllBudgets(
         }),
       };
     }
+    const totalCount = data.total_count as number;
+    if (expectedTotalCount == null) {
+      expectedTotalCount = totalCount;
+    } else if (totalCount !== expectedTotalCount) {
+      return {
+        budgets: null,
+        status: outcome.response.status,
+        error: new AdapterError("GitHub budgets total_count changed during pagination", {
+          code: "INVALID_RESPONSE",
+          status: outcome.response.status,
+        }),
+      };
+    }
     budgets.push(...(data.budgets as GitHubBudget[]));
     if (!data.has_next_page) {
+      if (budgets.length !== expectedTotalCount) {
+        return {
+          budgets: null,
+          status: outcome.response.status,
+          error: new AdapterError("GitHub budgets total_count did not match the completed collection", {
+            code: "INVALID_RESPONSE",
+            status: outcome.response.status,
+          }),
+        };
+      }
       return { budgets, status: outcome.response.status, error: null };
     }
   }
@@ -344,10 +438,24 @@ function budgetProductSkus(budget: GitHubBudget): string[] {
   return (values as string[]).map((value) => value.trim());
 }
 
-function isUsdBudget(skus: string[]): boolean {
-  return skus.every((sku) =>
-    METERED_BUDGET_SKU_PATTERNS.some((pattern) => pattern.test(sku.toLowerCase()))
-  );
+type BudgetUnit = "usd" | "licenses" | "unknown";
+
+function budgetUnit(type: string, skus: string[]): BudgetUnit {
+  const normalized = skus.map((sku) => sku.toLowerCase());
+  const meteredSet = type === "ProductPricing" ? METERED_BUDGET_PRODUCTS : METERED_BUDGET_SKUS;
+  const licenseSet = type === "ProductPricing" ? LICENSE_BUDGET_PRODUCTS : LICENSE_BUDGET_SKUS;
+  if (normalized.every((sku) => meteredSet.has(sku))) return "usd";
+  if (normalized.every((sku) => licenseSet.has(sku))) return "licenses";
+  return "unknown";
+}
+
+function supportsUsageBlocking(type: string, skus: string[], unit: BudgetUnit): boolean {
+  if (unit === "usd") return true;
+  const normalized = skus.map((sku) => sku.toLowerCase());
+  const blockableSet = type === "ProductPricing"
+    ? BLOCKABLE_LICENSE_PRODUCTS
+    : BLOCKABLE_LICENSE_SKUS;
+  return normalized.every((sku) => blockableSet.has(sku));
 }
 
 function budgetRecords(budgets: GitHubBudget[]): AdapterExternalBillingRecord[] {
@@ -396,18 +504,25 @@ function budgetRecords(budgets: GitHubBudget[]): AdapterExternalBillingRecord[] 
     }
     const skus = budgetProductSkus(budget);
     const amount = budget.budget_amount;
-    const usdBudget = isUsdBudget(skus);
+    const unit = budgetUnit(type, skus);
+    const usdBudget = unit === "usd";
+    const amountMetadata = unit === "licenses"
+      ? `${amount} licenses`
+      : unit === "unknown"
+        ? `${amount} provider-defined units`
+        : null;
+    const usageBlocking = supportsUsageBlocking(type, skus, unit);
     return {
       externalId: id,
       kind: "account",
       serviceName: `GitHub ${scope} budget`,
-      planName: [type, skus.join(", ")].filter(Boolean).join(" · ") || "GitHub budget",
-      status: budget.prevent_further_usage === true ? "enforced" : "active",
+      planName: [type, skus.join(", "), amountMetadata].filter(Boolean).join(" · ") || "GitHub budget",
+      status: budget.prevent_further_usage && usageBlocking ? "enforced" : "active",
       currency: usdBudget ? "USD" : null,
       spendLimitUsd: usdBudget ? amount : null,
       spendLimitWindow: usdBudget ? "GitHub budget" : null,
-      requestLimit: usdBudget ? null : amount,
-      requestLimitWindow: usdBudget ? null : "provider-defined budget units",
+      requestLimit: null,
+      requestLimitWindow: null,
       rollupRole: "metadata",
     };
   });
@@ -513,11 +628,18 @@ export async function fetchUsage(
     }
   }
   if (!primaryOutcome.response?.ok) {
-    if (!primaryOutcome.response && primaryOutcome.error) {
-      throw primaryOutcome.error;
+    const summaryRetryable = summaryOutcome.error?.retryable === true ||
+      (summaryOutcome.response?.status != null &&
+        (summaryOutcome.response.status === 429 || summaryOutcome.response.status >= 500));
+    const fallbackRetryable = primaryOutcome.error?.retryable === true ||
+      (primaryOutcome.response?.status != null &&
+        (primaryOutcome.response.status === 429 || primaryOutcome.response.status >= 500));
+    const failure = summaryRetryable && !fallbackRetryable ? summaryOutcome : primaryOutcome;
+    if (!failure.response && failure.error) {
+      throw failure.error;
     }
     return errorResult(
-      primaryOutcome.response?.status ?? summaryOutcome.response?.status ?? 500,
+      failure.response?.status ?? failure.error?.status ?? 500,
       {
         note: `GitHub ${scope} enhanced billing usage is unavailable. The token needs the documented billing permission and the account may need the enhanced billing platform.`,
       }

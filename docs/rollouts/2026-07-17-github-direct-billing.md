@@ -15,11 +15,14 @@ For one configured billing boundary it reads:
   are never stored. Enterprise usage never falls back because its summary is
   the all-cost-center view while the detailed endpoint requires a cost center.
 - Read-only organization/enterprise spending budgets, including amount and
-  `prevent_further_usage` setting. Documented metered SKUs are represented in
-  USD; unknown or license-like SKUs retain provider-defined units instead of
-  being mislabeled as dollars. GitHub does not document a personal-user
-  budget-list endpoint, so that state is explicitly `not_exposed` for user
-  accounts.
+  `prevent_further_usage` setting. Exact documented metered product/SKU IDs
+  are represented in USD. Known license counts and unknown-unit amounts stay
+  labeled in metadata; neither is stored as a request limit. Most license
+  budgets cannot stop further usage, so only metered budgets and GitHub
+  Advanced Security's documented license exception may be labeled enforced.
+  Enterprise `multi_user_cost_center` is accepted. GitHub does not document a
+  personal-user budget-list endpoint, so that state is explicitly
+  `not_exposed` for user accounts.
 - Copilot AI-credit and premium-request usage as separate product/model
   breakdowns. These are never added to the canonical summary a second time.
 
@@ -45,6 +48,12 @@ An unavailable optional surface is persisted as a bounded capability state:
 does not prune the last successfully synced records from that independent
 source.
 
+Budget pruning requires collection proof: every page must contain a
+nonnegative safe-integer `total_count`, that count must remain stable across
+pages, and the final accumulated record count must match it exactly. A mixed
+summary/fallback failure also retains a retryable summary transport/5xx error
+instead of replacing it with a later 403/404.
+
 ## Explicitly unavailable from GitHub billing REST
 
 GitHub does not document a general REST feed for base-plan price, renewal date,
@@ -56,5 +65,7 @@ plan metadata or Marketplace publisher endpoints.
 
 - https://docs.github.com/en/rest/billing/usage
 - https://docs.github.com/en/rest/billing/budgets
+- https://docs.github.com/en/enterprise-cloud@latest/rest/billing/budgets
 - https://docs.github.com/en/billing/reference/product-and-sku-names
+- https://docs.github.com/en/billing/concepts/budgets-and-alerts
 - https://docs.github.com/en/billing/tutorials/automate-usage-reporting

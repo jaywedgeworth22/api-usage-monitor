@@ -33,6 +33,7 @@ describe("github billing adapter", () => {
             budget_alerting: { will_alert: true, alert_recipients: ["billing-manager"] },
           }],
           has_next_page: false,
+          total_count: 1,
         });
       }
       if (input.includes("/ai_credit/usage?")) {
@@ -129,7 +130,7 @@ describe("github billing adapter", () => {
   it("uses the configured GHE.com API origin for an enterprise boundary", async () => {
     const fetchMock = vi.fn(async (input: string) => {
       if (input.includes("/usage/summary?")) return response({ usageItems: [] });
-      if (input.includes("/budgets?")) return response({ budgets: [], has_next_page: false });
+      if (input.includes("/budgets?")) return response({ budgets: [], has_next_page: false, total_count: 0 });
       if (input.includes("/ai_credit/usage?")) return response({ usageItems: [] });
       if (input.includes("/premium_request/usage?")) return response({ usageItems: [] });
       throw new Error(`unexpected URL: ${input}`);
@@ -172,10 +173,47 @@ describe("github billing adapter", () => {
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
+  it("preserves a retryable summary transport failure when the fallback is unavailable", async () => {
+    const fetchMock = vi.fn(async (input: string) => {
+      if (input.includes("/usage/summary?")) throw new Error("DNS unavailable");
+      if (input.includes("/usage?")) return response({ message: "not found" }, 404);
+      throw new Error(`unexpected URL: ${input}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(fetchUsage("token", { org: "Acme" })).rejects.toMatchObject({
+      code: "TRANSPORT_ERROR",
+      status: null,
+      retryable: true,
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("preserves a retryable summary 5xx when the fallback is forbidden", async () => {
+    const fetchMock = vi.fn(async (input: string) => {
+      if (input.includes("/usage/summary?")) {
+        return new Response(JSON.stringify({ message: "unavailable" }), {
+          status: 503,
+          headers: { "content-type": "application/json", "retry-after": "0" },
+        });
+      }
+      if (input.includes("/usage?")) return response({ message: "forbidden" }, 403);
+      throw new Error(`unexpected URL: ${input}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(fetchUsage("token", { org: "Acme" })).rejects.toMatchObject({
+      code: "HTTP_ERROR",
+      status: 503,
+      retryable: true,
+    });
+    expect(fetchMock.mock.calls.some(([url]) => String(url).includes("/usage?"))).toBe(true);
+  });
+
   it("keeps canonical usage when an optional Copilot response is malformed", async () => {
     const fetchMock = vi.fn(async (input: string) => {
       if (input.includes("/usage/summary?")) return response({ usageItems: [] });
-      if (input.includes("/budgets?")) return response({ budgets: [], has_next_page: false });
+      if (input.includes("/budgets?")) return response({ budgets: [], has_next_page: false, total_count: 0 });
       if (input.includes("/ai_credit/usage?")) return response({ unexpected: true });
       if (input.includes("/premium_request/usage?")) return response({ usageItems: [] });
       throw new Error(`unexpected URL: ${input}`);
@@ -198,6 +236,7 @@ describe("github billing adapter", () => {
       if (input.includes("/budgets?")) return response({
         budgets: [{ budget_type: "SkuPricing", budget_amount: 50 }],
         has_next_page: false,
+        total_count: 1,
       });
       if (input.includes("/ai_credit/usage?")) return response({ usageItems: [] });
       if (input.includes("/premium_request/usage?")) return response({ usageItems: [] });
@@ -215,20 +254,32 @@ describe("github billing adapter", () => {
     });
   });
 
-  it("preserves an unknown license-budget unit instead of labeling it USD", async () => {
+  it("preserves license and unknown budget units as metadata instead of requests or USD", async () => {
     const fetchMock = vi.fn(async (input: string) => {
       if (input.includes("/usage/summary?")) return response({ usageItems: [] });
       if (input.includes("/budgets?")) return response({
-        budgets: [{
-          id: "copilot-license-cap",
-          budget_type: "BundlePricing",
-          budget_product_skus: ["copilot_enterprise"],
-          budget_scope: "organization",
-          budget_amount: 25,
-          prevent_further_usage: true,
-          budget_alerting: { will_alert: true, alert_recipients: [] },
-        }],
+        budgets: [
+          {
+            id: "copilot-license-cap",
+            budget_type: "SkuPricing",
+            budget_product_skus: ["copilot_enterprise"],
+            budget_scope: "organization",
+            budget_amount: 25,
+            prevent_further_usage: true,
+            budget_alerting: { will_alert: true, alert_recipients: [] },
+          },
+          {
+            id: "future-unit-cap",
+            budget_type: "SkuPricing",
+            budget_product_skus: ["future_provider_unit"],
+            budget_scope: "organization",
+            budget_amount: 7,
+            prevent_further_usage: true,
+            budget_alerting: { will_alert: false, alert_recipients: [] },
+          },
+        ],
         has_next_page: false,
+        total_count: 2,
       });
       if (input.includes("/ai_credit/usage?")) return response({ usageItems: [] });
       if (input.includes("/premium_request/usage?")) return response({ usageItems: [] });
@@ -237,16 +288,199 @@ describe("github billing adapter", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     const result = await fetchUsage("token", { org: "Acme" });
+    const budgets = result.externalBillingSyncs?.find(
+      (sync) => sync.source === "github-enhanced-billing-budgets"
+    )?.records;
+    const licenseBudget = budgets?.find((record) => record.externalId === "copilot-license-cap");
+    const unknownBudget = budgets?.find((record) => record.externalId === "future-unit-cap");
+
+    expect(licenseBudget).toMatchObject({
+      currency: null,
+      spendLimitUsd: null,
+      requestLimit: null,
+      requestLimitWindow: null,
+      status: "active",
+    });
+    expect(licenseBudget?.planName).toContain("25 licenses");
+    expect(unknownBudget).toMatchObject({
+      currency: null,
+      spendLimitUsd: null,
+      requestLimit: null,
+      requestLimitWindow: null,
+      status: "active",
+    });
+    expect(unknownBudget?.planName).toContain("7 provider-defined units");
+  });
+
+  it("accepts GitHub's enterprise multi_user_cost_center budget scope", async () => {
+    const fetchMock = vi.fn(async (input: string) => {
+      if (input.includes("/usage/summary?")) return response({ usageItems: [] });
+      if (input.includes("/budgets?")) return response({
+        budgets: [{
+          id: "cost-center-ai-cap",
+          budget_type: "BundlePricing",
+          budget_product_skus: ["ai_credits"],
+          budget_scope: "multi_user_cost_center",
+          budget_amount: 30,
+          prevent_further_usage: true,
+          budget_alerting: { will_alert: true, alert_recipients: [] },
+        }],
+        has_next_page: false,
+        total_count: 1,
+      });
+      if (input.includes("/ai_credit/usage?")) return response({ usageItems: [] });
+      if (input.includes("/premium_request/usage?")) return response({ usageItems: [] });
+      throw new Error(`unexpected URL: ${input}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await fetchUsage("token", {
+      accountType: "enterprise",
+      account: "octo-enterprise",
+    });
     const budget = result.externalBillingSyncs?.find(
       (sync) => sync.source === "github-enhanced-billing-budgets"
     )?.records[0];
 
     expect(budget).toMatchObject({
-      currency: null,
-      spendLimitUsd: null,
-      requestLimit: 25,
-      requestLimitWindow: "provider-defined budget units",
+      serviceName: "GitHub multi_user_cost_center budget",
+      spendLimitUsd: 30,
+      status: "enforced",
     });
+  });
+
+  it("classifies every newly documented metered product/SKU family as USD", async () => {
+    const identifiers = [
+      ["sandbox-product", "ProductPricing", "sandbox"],
+      ["sandbox-sku", "SkuPricing", "sandbox_memory"],
+      ["models", "SkuPricing", "models_inference"],
+      ["copilot-ai", "SkuPricing", "copilot_ai_credits"],
+      ["spark-ai", "SkuPricing", "spark_ai_credits"],
+    ] as const;
+    const fetchMock = vi.fn(async (input: string) => {
+      if (input.includes("/usage/summary?")) return response({ usageItems: [] });
+      if (input.includes("/budgets?")) return response({
+        budgets: identifiers.map(([id, budgetType, sku]) => ({
+          id,
+          budget_type: budgetType,
+          budget_product_skus: [sku],
+          budget_scope: "organization",
+          budget_amount: 10,
+          prevent_further_usage: true,
+          budget_alerting: { will_alert: false, alert_recipients: [] },
+        })),
+        has_next_page: false,
+        total_count: identifiers.length,
+      });
+      if (input.includes("/ai_credit/usage?")) return response({ usageItems: [] });
+      if (input.includes("/premium_request/usage?")) return response({ usageItems: [] });
+      throw new Error(`unexpected URL: ${input}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await fetchUsage("token", { org: "Acme" });
+    const budgets = result.externalBillingSyncs?.find(
+      (sync) => sync.source === "github-enhanced-billing-budgets"
+    )?.records;
+
+    expect(budgets).toHaveLength(identifiers.length);
+    expect(budgets?.every((budget) => budget.spendLimitUsd === 10 && budget.currency === "USD")).toBe(true);
+  });
+
+  it.each([undefined, -1, 1.5, Number.MAX_SAFE_INTEGER + 1])(
+    "rejects an invalid budget total_count (%s)",
+    async (totalCount) => {
+      const fetchMock = vi.fn(async (input: string) => {
+        if (input.includes("/usage/summary?")) return response({ usageItems: [] });
+        if (input.includes("/budgets?")) return response({
+          budgets: [],
+          has_next_page: false,
+          total_count: totalCount,
+        });
+        if (input.includes("/ai_credit/usage?")) return response({ usageItems: [] });
+        if (input.includes("/premium_request/usage?")) return response({ usageItems: [] });
+        throw new Error(`unexpected URL: ${input}`);
+      });
+      vi.stubGlobal("fetch", fetchMock);
+
+      const result = await fetchUsage("token", { org: "Acme" });
+
+      expect(result.externalBillingSyncs?.some(
+        (sync) => sync.source === "github-enhanced-billing-budgets"
+      )).toBe(false);
+      expect((result.rawData as {
+        capabilities: { budgets: { status: string; errorCode: string } };
+      }).capabilities.budgets).toMatchObject({ status: "error", errorCode: "INVALID_RESPONSE" });
+    }
+  );
+
+  it.each(["changes between pages", "does not match the final collection"])(
+    "rejects authoritative budget sync when total_count %s",
+    async (failureMode) => {
+      const fetchMock = vi.fn(async (input: string) => {
+        if (input.includes("/usage/summary?")) return response({ usageItems: [] });
+        if (input.includes("/budgets?") && new URL(input).searchParams.get("page") === "1") return response({
+          budgets: [],
+          has_next_page: failureMode === "changes between pages",
+          total_count: 1,
+        });
+        if (input.includes("/budgets?") && new URL(input).searchParams.get("page") === "2") return response({
+          budgets: [],
+          has_next_page: false,
+          total_count: 2,
+        });
+        if (input.includes("/ai_credit/usage?")) return response({ usageItems: [] });
+        if (input.includes("/premium_request/usage?")) return response({ usageItems: [] });
+        throw new Error(`unexpected URL: ${input}`);
+      });
+      vi.stubGlobal("fetch", fetchMock);
+
+      const result = await fetchUsage("token", { org: "Acme" });
+
+      expect(result.externalBillingSyncs?.some(
+        (sync) => sync.source === "github-enhanced-billing-budgets"
+      )).toBe(false);
+      expect((result.rawData as {
+        capabilities: { budgets: { status: string; errorCode: string } };
+      }).capabilities.budgets).toMatchObject({ status: "error", errorCode: "INVALID_RESPONSE" });
+    }
+  );
+
+  it("accepts a complete paginated budget collection with a stable total_count", async () => {
+    const budget = (id: string) => ({
+      id,
+      budget_type: "SkuPricing",
+      budget_product_skus: ["actions_linux"],
+      budget_scope: "organization",
+      budget_amount: 50,
+      prevent_further_usage: true,
+      budget_alerting: { will_alert: false, alert_recipients: [] },
+    });
+    const fetchMock = vi.fn(async (input: string) => {
+      if (input.includes("/usage/summary?")) return response({ usageItems: [] });
+      if (input.includes("/budgets?") && new URL(input).searchParams.get("page") === "1") return response({
+        budgets: [budget("first")],
+        has_next_page: true,
+        total_count: 2,
+      });
+      if (input.includes("/budgets?") && new URL(input).searchParams.get("page") === "2") return response({
+        budgets: [budget("second")],
+        has_next_page: false,
+        total_count: 2,
+      });
+      if (input.includes("/ai_credit/usage?")) return response({ usageItems: [] });
+      if (input.includes("/premium_request/usage?")) return response({ usageItems: [] });
+      throw new Error(`unexpected URL: ${input}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await fetchUsage("token", { org: "Acme" });
+    const sync = result.externalBillingSyncs?.find(
+      (candidate) => candidate.source === "github-enhanced-billing-budgets"
+    );
+
+    expect(sync).toMatchObject({ authoritative: true });
+    expect(sync?.records.map((record) => record.externalId)).toEqual(["first", "second"]);
   });
 
   it.each([
@@ -270,6 +504,7 @@ describe("github billing adapter", () => {
       if (input.includes("/budgets?")) return response({
         budgets: [validBudget, { ...validBudget, id: "invalid", ...override }],
         has_next_page: false,
+        total_count: 2,
       });
       if (input.includes("/ai_credit/usage?")) return response({ usageItems: [] });
       if (input.includes("/premium_request/usage?")) return response({ usageItems: [] });
