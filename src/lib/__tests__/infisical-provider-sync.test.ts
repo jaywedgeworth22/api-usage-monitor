@@ -109,6 +109,14 @@ const ALLOWLIST: Record<Scope, readonly string[]> = {
     "TWELVEDATA_API_KEY",
     "TWILIO_ACCOUNT_SID",
     "TWILIO_AUTH_TOKEN",
+    "OCI_TENANCY_OCID",
+    "OCI_USER_OCID",
+    "OCI_API_KEY_FINGERPRINT",
+    "OCI_API_SIGNING_PRIVATE_KEY",
+    "OCI_REGION",
+    "OCI_COMPARTMENT_OCID",
+    "OCI_LIMIT_SERVICES",
+    "OCI_BUDGET_CURRENCY",
   ],
   "st-primary": ["BRIDGE_MANIFEST_V1", "GEMINI_API_KEY", "DEEPSEEK_API_KEY"],
 };
@@ -951,7 +959,7 @@ describe("Infisical provider credential sync", () => {
     expect(result).toMatchObject({
       enabled: true,
       configured: true,
-      created: 21,
+      created: 22,
       updated: 0,
       unchanged: 0,
       missing: 0,
@@ -962,7 +970,7 @@ describe("Infisical provider credential sync", () => {
     const providers = await prisma.provider.findMany({
       include: { allocations: { include: { project: true } } },
     });
-    expect(providers).toHaveLength(21);
+    expect(providers).toHaveLength(22);
     const deepseek = providers.filter((provider) => provider.name === "deepseek");
     expect(deepseek).toHaveLength(2);
     expect(
@@ -1022,6 +1030,19 @@ describe("Infisical provider credential sync", () => {
       },
     });
     expect(JSON.stringify(langfuse.config)).not.toContain("infisicalCredential");
+    const oracle = providers.find((provider) => provider.name === "oracle")!;
+    expect(oracle.secretConfig).not.toContain(secrets.shared.OCI_API_SIGNING_PRIVATE_KEY);
+    expect(decryptJson(oracle.secretConfig!)).toMatchObject({
+      privateKey: secrets.shared.OCI_API_SIGNING_PRIVATE_KEY,
+      infisicalCredential: { scope: "shared", source: "shared", providerName: "oracle" },
+    });
+    expect(oracle.config).toMatchObject({
+      tenancyOcid: secrets.shared.OCI_TENANCY_OCID,
+      userOcid: secrets.shared.OCI_USER_OCID,
+      fingerprint: secrets.shared.OCI_API_KEY_FINGERPRINT,
+      region: secrets.shared.OCI_REGION,
+      budgetCurrency: secrets.shared.OCI_BUDGET_CURRENCY,
+    });
   });
 
   it("splits comma-delimited LlamaParse keys into stable, deduplicated managed rows", async () => {
@@ -1036,7 +1057,7 @@ describe("Infisical provider credential sync", () => {
     installInfisicalMock(secrets);
 
     const first = await syncProviderCredentialsFromInfisical();
-    expect(first).toMatchObject({ created: 23, failed: 0 });
+    expect(first).toMatchObject({ created: 24, failed: 0 });
     expectRedacted(first, Object.values(secrets).flatMap(Object.values));
 
     const initialRows = await prisma.provider.findMany({
@@ -1064,7 +1085,7 @@ describe("Infisical provider credential sync", () => {
     secrets.ct.LLAMAPARSE_API_KEY = `${llamaKeys[2]}, ${llamaKeys[0]}, ${llamaKeys[1]}`;
     installInfisicalMock(secrets);
     const second = await syncProviderCredentialsFromInfisical();
-    expect(second).toMatchObject({ created: 0, updated: 0, unchanged: 23, failed: 0 });
+    expect(second).toMatchObject({ created: 0, updated: 0, unchanged: 24, failed: 0 });
     const replayRows = await prisma.provider.findMany({
       where: { name: "llamaindex" },
       orderBy: { id: "asc" },
@@ -1130,7 +1151,7 @@ describe("Infisical provider credential sync", () => {
     const second = await syncProviderCredentialsFromInfisical();
 
     expect(second.updated).toBe(1);
-    expect(second.unchanged).toBe(20);
+    expect(second.unchanged).toBe(21);
     const updated = await prisma.provider.findUniqueOrThrow({
       where: { id: stResend.id },
     });
@@ -1503,7 +1524,7 @@ describe("Infisical provider credential sync", () => {
 
     const result = await syncProviderCredentialsFromInfisical();
 
-    expect(result.failed).toBe(21);
+    expect(result.failed).toBe(22);
     expect(result.sources[0]).toMatchObject({
       source: "st",
       status: "error",

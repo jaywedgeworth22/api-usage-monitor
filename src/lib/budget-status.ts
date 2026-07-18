@@ -419,6 +419,32 @@ async function computeBudgetStatusUncached(now: Date): Promise<BudgetStatusRespo
       latestCostByProviderId.set(snapshot.providerId, snapshot);
     }
   }
+  // Cost-coverage caveats are tiny, typed metadata. Read just their presence
+  // from selected cost snapshots so a provider-reported amount can remain
+  // exact while budget coverage is never presented as complete when the
+  // provider documents a known missing cost surface (for example OCI's
+  // publication delay). Do not materialize raw adapter payloads here.
+  const latestCostSnapshotIds = [...latestCostByProviderId.values()].map(
+    (snapshot) => snapshot.id
+  );
+  const costCoverageCaveatSnapshotIds = new Set<string>();
+  if (latestCostSnapshotIds.length > 0) {
+    const rows = await prisma.$queryRaw<Array<{ id: string; version: unknown; code: unknown }>>(
+      Prisma.sql`
+        SELECT
+          "id" AS "id",
+          json_extract("rawData", '$.__apiUsageMonitor.version') AS "version",
+          json_extract("rawData", '$.__apiUsageMonitor.costCoverageCaveat.code') AS "code"
+        FROM "UsageSnapshot"
+        WHERE "id" IN (${Prisma.join(latestCostSnapshotIds)})
+      `
+    );
+    for (const row of rows) {
+      if (Number(row.version) === 1 && typeof row.code === "string") {
+        costCoverageCaveatSnapshotIds.add(row.id);
+      }
+    }
+  }
   // Fetch rawData only for the selected Gemini and Mistral cost candidates.
   // Gemini needs its billing-config identity check. Mistral needs a bounded
   // read-time defense so the known retired spend-limit-as-cash provenance is
@@ -487,6 +513,9 @@ async function computeBudgetStatusUncached(now: Date): Promise<BudgetStatusRespo
       latestSnapshot: geminiStatusSnapshots.get(p.id) ?? null,
     });
     const latestCostSnapshot = latestCostByProviderId.get(p.id) ?? null;
+    const snapshotCostCoverageIncomplete =
+      latestCostSnapshot != null &&
+      costCoverageCaveatSnapshotIds.has(latestCostSnapshot.id);
     const geminiCostIdentityStatus = deriveGeminiBillingStatus({
       providerName: p.name,
       providerType: p.type,
@@ -776,6 +805,11 @@ async function computeBudgetStatusUncached(now: Date): Promise<BudgetStatusRespo
     if (geminiBillingIncomplete && spendCoverage === "complete") {
       spendCoverage =
         hasKnownVariableCost || fixedAccruedUsd > 0 ? "partial" : "unknown";
+    }
+    if (snapshotCostCoverageIncomplete && spendCoverage === "complete") {
+      spendCoverage = hasKnownVariableCost || fixedAccruedUsd > 0
+        ? "partial"
+        : "unknown";
     }
     const forecastedSubscriptionRenewalsUsd = forecastSubscriptionRenewals(
       p.subscriptions,
