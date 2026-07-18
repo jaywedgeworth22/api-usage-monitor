@@ -89,47 +89,24 @@ describe("usage scheduler instrumentation", () => {
     expect(mocks.applySqliteNativeMemoryPragmas).not.toHaveBeenCalled();
   });
 
-  // Regression coverage for the boot-starves-the-single-connection bug: the
-  // budget-status warm-up used to fire computeBudgetStatus() synchronously
-  // (unawaited) from inside register(), so its ~11s cold compute could hold
-  // the one pooled DB connection (connection_limit=1) while Next.js was
-  // still starting, starving a real request that landed in that window.
-  it("defers warming the budget-status caches instead of firing them synchronously from register()", async () => {
+  // Regression guard: register() must NOT warm the budget-status caches at
+  // boot. A previous revision did (deferred setTimeout, warming both caches),
+  // and it crash-looped production - warming computeProjectBudgetStatus runs
+  // its internal Promise.all (computeBudgetStatus's ~336k-row groupBy AND the
+  // attribution ~336k-row groupBy) concurrently, and two such aggregations at
+  // once peaked past the 512MB instance limit and OOM-killed the box ~40-100s
+  // into every boot. The SWR cache must stay lazily populated on first
+  // request. Advancing timers here catches a re-introduced deferred warm-up,
+  // not just a synchronous one.
+  it("does not warm the budget-status caches at boot (OOM'd the 512MB instance)", async () => {
     vi.useFakeTimers();
     vi.stubEnv("NEXT_RUNTIME", "nodejs");
     vi.stubEnv("USAGE_SCHEDULER_ENABLED", "");
 
     await register();
+    await vi.advanceTimersByTimeAsync(60_000);
 
-    // register() must resolve before the warm-up fires, so it never delays
-    // (or, on a slow/failing DB, blocks) server readiness.
     expect(mocks.computeBudgetStatus).not.toHaveBeenCalled();
     expect(mocks.computeProjectBudgetStatus).not.toHaveBeenCalled();
-
-    await vi.advanceTimersByTimeAsync(5_000);
-
-    // Warms BOTH caches - GET /api/providers reads computeBudgetStatus
-    // directly, while GET /api/projects and GET /api/budget-status read only
-    // computeProjectBudgetStatus.
-    expect(mocks.computeBudgetStatus).toHaveBeenCalledOnce();
-    expect(mocks.computeProjectBudgetStatus).toHaveBeenCalledOnce();
-  });
-
-  it("warns but never crashes boot when the deferred warm-up fails", async () => {
-    vi.useFakeTimers();
-    vi.stubEnv("NEXT_RUNTIME", "nodejs");
-    vi.stubEnv("USAGE_SCHEDULER_ENABLED", "");
-    const warning = vi.spyOn(console, "warn").mockImplementation(() => undefined);
-    mocks.computeBudgetStatus.mockRejectedValueOnce(new Error("simulated warm-up failure"));
-
-    await expect(register()).resolves.toBeUndefined();
-    await vi.advanceTimersByTimeAsync(5_000);
-
-    expect(warning).toHaveBeenCalledWith(
-      "[budget-status-cache] boot warm-up failed",
-      expect.any(Error)
-    );
-    // The project cache's own warm-up is independent and must still run.
-    expect(mocks.computeProjectBudgetStatus).toHaveBeenCalledOnce();
   });
 });
