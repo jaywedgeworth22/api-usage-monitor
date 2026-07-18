@@ -172,7 +172,11 @@ describe("vercel billing adapter", () => {
     const result = await fetchUsage("token");
 
     expect(result.totalCost).toBe(7.75);
-    expect(result.externalBillingSyncs?.[0]?.records).toEqual(
+    expect(
+      result.externalBillingSyncs?.find(
+        (sync) => sync.source === "vercel-focus-project-attribution"
+      )?.records
+    ).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
           serviceName: "Vercel project prj_valid",
@@ -248,7 +252,9 @@ describe("vercel billing adapter", () => {
     const result = await fetchUsage("token");
 
     expect(result.totalCost).toBe(251);
-    expect(result.externalBillingSyncs).toBeUndefined();
+    expect(result.externalBillingSyncs?.map((sync) => sync.source)).toEqual([
+      "vercel-focus-service-detail",
+    ]);
     expect(result.rawData).toMatchObject({
       capabilities: { projectAttribution: "suppressed_cardinality_limit" },
       projectAttribution: {
@@ -364,12 +370,20 @@ describe("vercel billing adapter", () => {
           currency: "EUR",
           rollupRole: "canonical",
         }),
+      ])
+    );
+    expect(
+      result.externalBillingSyncs?.find(
+        (sync) => sync.source === "vercel-focus-service-detail"
+      )?.records
+    ).toEqual(
+      expect.arrayContaining([
         expect.objectContaining({
-        serviceName: "Functions",
-        amountUsd: 4.25,
-        currency: "EUR",
-        usageQuantity: 10,
-        rollupRole: "component",
+          serviceName: "Functions",
+          amountUsd: 4.25,
+          currency: "EUR",
+          usageQuantity: 10,
+          rollupRole: "component",
         }),
       ])
     );
