@@ -63,11 +63,51 @@ function cleanOptionalString(value: unknown): string | null {
   return typeof value === "string" && value.trim() ? value.trim() : null;
 }
 
+function rawSubscriptionState(subscription: CloudflareSubscription): string {
+  return cleanOptionalString(subscription.state)?.toLowerCase() ?? "unknown";
+}
+
+function subscriptionTermKey(
+  subscription: CloudflareSubscription
+): string | null {
+  const planId = cleanOptionalString(subscription.rate_plan?.id);
+  const planName = cleanOptionalString(subscription.rate_plan?.public_name);
+  const price = parseNumber(subscription.price);
+  const currency = cleanOptionalString(subscription.currency)?.toUpperCase() ?? null;
+  const frequency = cleanOptionalString(subscription.frequency)?.toLowerCase() ?? null;
+  const periodStart = subscription.current_period_start
+    ? Date.parse(subscription.current_period_start)
+    : Number.NaN;
+  const periodEnd = subscription.current_period_end
+    ? Date.parse(subscription.current_period_end)
+    : Number.NaN;
+  if (
+    (!planId && !planName) ||
+    price == null ||
+    !currency ||
+    !frequency ||
+    !Number.isFinite(periodStart) ||
+    !Number.isFinite(periodEnd)
+  ) {
+    return null;
+  }
+  return JSON.stringify([
+    planId,
+    planName,
+    price,
+    currency,
+    frequency,
+    periodStart,
+    periodEnd,
+  ]);
+}
+
 function normalizedSubscriptionState(
   subscription: CloudflareSubscription,
-  now = new Date()
+  now: Date,
+  livePaidTermKeys: ReadonlySet<string>
 ): string {
-  const state = cleanOptionalString(subscription.state)?.toLowerCase() ?? "unknown";
+  const state = rawSubscriptionState(subscription);
   if (state !== "expired") return state;
 
   const periodStart = subscription.current_period_start
@@ -88,14 +128,18 @@ function normalizedSubscriptionState(
     Number.isFinite(periodEnd) &&
     periodStart <= now.getTime() &&
     now.getTime() < periodEnd;
+  const termKey = subscriptionTermKey(subscription);
+  const hasEquivalentLivePaidTerm =
+    termKey != null && livePaidTermKeys.has(termKey);
 
   // Cloudflare defines current_period_end as both the end of the current
   // period and the next billing due date. A fresh response that calls a paid
   // term Expired while that provider-reported period is still current is
-  // internally contradictory. Treat only that narrow case as paid so the
-  // existing managed term is reconciled; actual expired and canceled terms
-  // remain terminal and cannot create a later charge.
-  return isCurrentPaidTerm ? "paid" : state;
+  // internally contradictory. Treat only that narrow case as paid when the
+  // response does not also contain an equivalent real Paid term. The real
+  // term remains canonical while its duplicate Expired row stays metadata;
+  // actual expired and canceled terms also remain terminal.
+  return isCurrentPaidTerm && !hasEquivalentLivePaidTerm ? "paid" : state;
 }
 
 function subscriptionPlanName(subscription: CloudflareSubscription): string | null {
@@ -105,13 +149,14 @@ function subscriptionPlanName(subscription: CloudflareSubscription): string | nu
 
 function sanitizeSubscription(
   subscription: CloudflareSubscription,
-  now: Date
+  now: Date,
+  livePaidTermKeys: ReadonlySet<string>
 ): SanitizedCloudflareSubscription {
   return {
     id: subscription.id!,
     planId: cleanOptionalString(subscription.rate_plan?.id),
     planName: subscriptionPlanName(subscription),
-    status: normalizedSubscriptionState(subscription, now),
+    status: normalizedSubscriptionState(subscription, now, livePaidTermKeys),
     price: parseNumber(subscription.price),
     currency: cleanOptionalString(subscription.currency)?.toUpperCase() ?? null,
     billingInterval: cleanOptionalString(subscription.frequency),
@@ -365,12 +410,19 @@ export async function fetchUsage(
 
   if (subscriptionsResult) {
     const { rows, pages } = subscriptionsResult;
+    const livePaidTermKeys = new Set(
+      rows.flatMap((subscription) => {
+        if (rawSubscriptionState(subscription) !== "paid") return [];
+        const termKey = subscriptionTermKey(subscription);
+        return termKey ? [termKey] : [];
+      })
+    );
     successfulCalls++;
     // Keep only the small set of fields needed to explain plan entitlements.
     // Cloudflare's full response can contain zone names and component payloads,
     // neither of which is needed for billing reconciliation.
     rawData.subscriptions = rows.map((subscription) =>
-      sanitizeSubscription(subscription, accountingTime)
+      sanitizeSubscription(subscription, accountingTime, livePaidTermKeys)
     );
 
     let billedThisMonthUsd = 0;
@@ -385,7 +437,8 @@ export async function fetchUsage(
         : Number.NaN;
       const normalizedState = normalizedSubscriptionState(
         subscription,
-        accountingTime
+        accountingTime,
+        livePaidTermKeys
       );
       const isPaid = normalizedState === "paid";
       if (

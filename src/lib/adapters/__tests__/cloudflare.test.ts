@@ -133,7 +133,10 @@ describe("cloudflare adapter", () => {
                 current_period_end: currentPeriodEnd,
                 frequency: "monthly",
                 price: 5,
-                rate_plan: { public_name: "Workers Paid" },
+                rate_plan: {
+                  id: "workers-secondary",
+                  public_name: "Workers Paid Secondary",
+                },
                 state: "Paid",
               },
               {
@@ -143,7 +146,7 @@ describe("cloudflare adapter", () => {
                 current_period_end: currentPeriodEnd,
                 frequency: "monthly",
                 price: 5,
-                rate_plan: { public_name: "Workers Paid" },
+                rate_plan: { id: "workers", public_name: "Workers Paid" },
                 state: "Expired",
               },
               {
@@ -188,6 +191,75 @@ describe("cloudflare adapter", () => {
         expect.objectContaining({ externalId: "expired-current", status: "paid", rollupRole: "canonical" }),
         expect.objectContaining({ externalId: "expired-prior", status: "expired", rollupRole: "metadata" }),
         expect.objectContaining({ externalId: "cancelled-current", status: "cancelled", rollupRole: "metadata" }),
+      ])
+    );
+  });
+
+  it("does not promote an Expired row that duplicates a real current Paid term", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-17T12:00:00.000Z"));
+    const currentPeriodStart = "2026-07-16T19:02:36.000Z";
+    const currentPeriodEnd = "2026-08-16T00:00:00.000Z";
+    vi.stubGlobal(
+      "fetch",
+      vi.fn()
+        .mockResolvedValueOnce(json({ result: { totals: { requests: 10 } } }))
+        .mockResolvedValueOnce(json({}, 403))
+        .mockResolvedValueOnce(
+          json({
+            result: [
+              {
+                id: "real-paid-term",
+                currency: "USD",
+                current_period_start: currentPeriodStart,
+                current_period_end: currentPeriodEnd,
+                frequency: "monthly",
+                price: 5,
+                rate_plan: { id: "workers", public_name: "Workers Paid" },
+                state: "Paid",
+              },
+              {
+                id: "duplicate-expired-term",
+                currency: "USD",
+                current_period_start: currentPeriodStart,
+                current_period_end: currentPeriodEnd,
+                frequency: "monthly",
+                price: 5,
+                rate_plan: { id: "workers", public_name: "Workers Paid" },
+                state: "Expired",
+              },
+            ],
+            result_info: { count: 2, page: 1, per_page: 50, total_count: 2 },
+          })
+        )
+        .mockResolvedValueOnce(json({}, 403))
+    );
+
+    const result = await fetchUsage("token", {
+      accountId: "account-id",
+      authMode: "api_token",
+    });
+    const records = result.externalBillingSyncs?.find(
+      (sync) => sync.source === "cloudflare-subscriptions"
+    )?.records;
+
+    expect(result.totalCost).toBe(5);
+    expect(result.fixedCostIncludedUsd).toBe(5);
+    expect(records).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          externalId: "real-paid-term",
+          status: "paid",
+          paidRecurringAuthoritative: true,
+          rollupRole: "canonical",
+        }),
+        expect.objectContaining({
+          externalId: "duplicate-expired-term",
+          status: "expired",
+          paidRecurringAuthoritative: false,
+          rollupRole: "metadata",
+          nextRenewalAt: null,
+        }),
       ])
     );
   });
