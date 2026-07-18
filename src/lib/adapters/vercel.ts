@@ -43,17 +43,30 @@ type ParsedProjectTag =
   | { state: "untagged" }
   | { state: "incomplete" };
 
+function hasProjectIdentityMetadata(tags: Record<string, unknown>): boolean {
+  // Treat any provider-supplied project-shaped tag as identity metadata. The
+  // documented keys are ProjectId and ProjectName, but failing closed for a
+  // malformed spelling (for example project_id or ProjectSlug) avoids
+  // authoritatively replacing a prior detailed view with an ambiguous one.
+  return Object.keys(tags).some((key) =>
+    key.toLowerCase().replace(/[^a-z0-9]/g, "").startsWith("project")
+  );
+}
+
 function parseProjectTag(value: unknown, present: boolean): ParsedProjectTag {
-  // FOCUS documents Tags as an object. A valid object with no ProjectId is a
-  // genuine untagged charge; absent/non-object Tags or a malformed present ID
-  // means the optional project-detail set is incomplete and must not prune it.
+  // FOCUS documents Tags as an object. It is genuinely untagged only when the
+  // object carries no project identity metadata at all. Absent/non-object tags,
+  // ProjectName-only tags, and malformed project-shaped keys are incomplete:
+  // they must not authorize pruning a prior detailed component view.
   if (!present || !value || typeof value !== "object" || Array.isArray(value)) {
     return { state: "incomplete" };
   }
 
   const tags = value as Record<string, unknown>;
   if (!Object.prototype.hasOwnProperty.call(tags, "ProjectId")) {
-    return { state: "untagged" };
+    return hasProjectIdentityMetadata(tags)
+      ? { state: "incomplete" }
+      : { state: "untagged" };
   }
   const rawProjectId = tags.ProjectId;
   if (typeof rawProjectId !== "string") return { state: "incomplete" };
@@ -247,13 +260,13 @@ export async function fetchUsage(
   const month = monthStart.toISOString().slice(0, 7);
   const owner = teamId ?? "personal";
   const canonicalTotalCost = foundUsd ? Math.max(0, totalCost) : null;
-  const records = [];
+  const canonicalRecords = [];
   const canonicalCurrencyTotals =
     charges.length === 0
       ? [["USD", 0] as const]
       : [...byCurrency.entries()].sort(([left], [right]) => left.localeCompare(right));
   for (const [currency, amount] of canonicalCurrencyTotals) {
-    records.push({
+    canonicalRecords.push({
       // The reconciled source is already provider-row scoped. Avoid admitting
       // an unbounded configured owner/team ID into the 255-character external
       // identity column.
@@ -270,12 +283,13 @@ export async function fetchUsage(
       dateKind: "period_end" as const,
     });
   }
+  const serviceRecords = [];
   if (!serviceComponentsSuppressed && byService.size > 0) {
     for (const aggregate of [...byService.values()].sort((left, right) =>
       left.currency.localeCompare(right.currency) ||
       left.service.localeCompare(right.service)
     )) {
-      records.push({
+      serviceRecords.push({
         externalId: serviceExternalId(
           month,
           aggregate.currency,
@@ -328,6 +342,28 @@ export async function fetchUsage(
       });
     }
   }
+  const externalBillingSyncs = [
+    // Service rows are optional detail, separate from canonical cash. A
+    // cardinality-suppressed collection emits no sync, preserving prior
+    // service components instead of pruning them through canonical success.
+    ...(!serviceComponentsSuppressed
+      ? [{
+          source: "vercel-focus-service-detail",
+          authoritative: true,
+          records: serviceRecords,
+        }]
+      : []),
+    // Project tags are optional display breakdowns. Keeping them in a distinct
+    // source lets canonical cash reconcile on every successful FOCUS response
+    // while incomplete tag metadata cannot prune a prior complete detail set.
+    ...(projectDetailComplete && !projectComponentsSuppressed
+      ? [{
+          source: "vercel-focus-project-attribution",
+          authoritative: true,
+          records: projectRecords,
+        }]
+      : []),
+  ];
 
   return {
     balance: null,
@@ -380,18 +416,12 @@ export async function fetchUsage(
     externalBilling: {
       source: "vercel-focus-billing",
       authoritative: true,
-      records,
+      records: canonicalRecords,
     },
     // Project tags are optional display breakdowns. Keeping them in a distinct
     // source lets canonical cash reconcile on every successful FOCUS response
     // while incomplete tag metadata cannot prune a prior complete detail set.
     externalBillingSyncs:
-      projectDetailComplete && !projectComponentsSuppressed
-        ? [{
-            source: "vercel-focus-project-attribution",
-            authoritative: true,
-            records: projectRecords,
-          }]
-        : undefined,
+      externalBillingSyncs.length > 0 ? externalBillingSyncs : undefined,
   };
 }
