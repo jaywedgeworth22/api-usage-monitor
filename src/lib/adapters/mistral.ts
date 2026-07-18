@@ -72,6 +72,17 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return value != null && typeof value === "object" && !Array.isArray(value);
 }
 
+function parsePaginationInteger(value: unknown): number | null {
+  if (typeof value === "number") {
+    return Number.isSafeInteger(value) && value >= 0 ? value : null;
+  }
+  if (typeof value !== "string" || !/^(0|[1-9]\d*)$/.test(value)) {
+    return null;
+  }
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) ? parsed : null;
+}
+
 function parseSpendLimitMetadata(report: MistralSpendLimits): {
   completion: NonNullable<NonNullable<MistralSpendLimits["limits"]>["completion"]>;
   currency: string;
@@ -194,9 +205,9 @@ async function listWorkspaces(
   ): data is MistralWorkspacePage & { items: unknown[] } => {
     if (
       !Array.isArray(data.items) ||
-      data.page !== expectedPage ||
-      data.page_size !== WORKSPACE_PAGE_SIZE ||
-      data.total !== expectedTotal
+      parsePaginationInteger(data.page) !== expectedPage ||
+      parsePaginationInteger(data.page_size) !== WORKSPACE_PAGE_SIZE ||
+      parsePaginationInteger(data.total) !== expectedTotal
     ) {
       return false;
     }
@@ -209,17 +220,16 @@ async function listWorkspaces(
   };
 
   const firstPage = (first.data ?? {}) as MistralWorkspacePage;
+  const firstTotal = parsePaginationInteger(firstPage.total);
   if (
-    typeof firstPage.total !== "number" ||
-    !Number.isSafeInteger(firstPage.total) ||
-    firstPage.total < 0 ||
-    !validPage(firstPage, 1, firstPage.total) ||
+    firstTotal == null ||
+    !validPage(firstPage, 1, firstTotal) ||
     !addPageItems(firstPage.items)
   ) {
     return { attempted: true, complete: false, workspaces: workspaces() };
   }
 
-  const total = firstPage.total;
+  const total = firstTotal;
   const pages = Math.max(1, Math.ceil(total / WORKSPACE_PAGE_SIZE));
   if (total > MAX_WORKSPACE_INVENTORY_ITEMS || pages > MAX_WORKSPACE_PAGES) {
     return { attempted: true, complete: false, workspaces: workspaces() };

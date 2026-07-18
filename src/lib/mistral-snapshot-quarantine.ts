@@ -112,12 +112,14 @@ export async function quarantineLegacyMistralSpendLimitSnapshots(): Promise<Mist
       ? await tx.usageSnapshot.updateMany({
           where: { id: { in: ids }, totalCost: { not: null } },
           data: {
+            balance: null,
             totalCost: null,
             fixedCostIncludedUsd: null,
             costWindowStart: null,
             costWindowEnd: null,
             costScope: "unknown",
             costIncludesUnknownFixed: false,
+            credits: null,
           },
         })
       : { count: 0 };

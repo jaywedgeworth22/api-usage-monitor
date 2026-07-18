@@ -706,10 +706,12 @@ describe("materializeDueSubscriptions + project attribution (integration)", () =
       data: {
         providerId: provider.id,
         fetchedAt: new Date("2026-07-10T00:01:00Z"),
+        balance: 88,
         totalCost: 12,
         costWindowStart: windowStart,
         costWindowEnd: windowEnd,
         costScope: "calendar_month_to_date",
+        credits: 88,
         rawData: legacyRawData,
       },
     });
@@ -732,10 +734,12 @@ describe("materializeDueSubscriptions + project attribution (integration)", () =
       data: {
         providerId: currentlyUnauthorizedProvider.id,
         fetchedAt: new Date("2026-07-10T00:01:00Z"),
+        balance: 88,
         totalCost: 12,
         costWindowStart: windowStart,
         costWindowEnd: windowEnd,
         costScope: "calendar_month_to_date",
+        credits: 88,
         rawData: legacyRawData,
       },
     });
@@ -743,10 +747,12 @@ describe("materializeDueSubscriptions + project attribution (integration)", () =
       data: {
         providerId: customProvider.id,
         fetchedAt: new Date("2026-07-10T00:01:00Z"),
+        balance: 88,
         totalCost: 12,
         costWindowStart: windowStart,
         costWindowEnd: windowEnd,
         costScope: "calendar_month_to_date",
+        credits: 88,
         rawData: legacyRawData,
       },
     });
@@ -823,21 +829,33 @@ describe("materializeDueSubscriptions + project attribution (integration)", () =
     expect(
       await prisma.usageSnapshot.findUniqueOrThrow({
         where: { id: legacySnapshot.id },
-        select: { totalCost: true, costWindowStart: true, costScope: true },
+        select: {
+          balance: true,
+          totalCost: true,
+          costWindowStart: true,
+          costScope: true,
+          credits: true,
+        },
       })
-    ).toEqual({ totalCost: null, costWindowStart: null, costScope: "unknown" });
+    ).toEqual({
+      balance: null,
+      totalCost: null,
+      costWindowStart: null,
+      costScope: "unknown",
+      credits: null,
+    });
     expect(
       await prisma.usageSnapshot.findUniqueOrThrow({
         where: { id: unauthorizedLegacySnapshot.id },
-        select: { totalCost: true },
+        select: { balance: true, totalCost: true, credits: true },
       })
-    ).toEqual({ totalCost: null });
+    ).toEqual({ balance: null, totalCost: null, credits: null });
     expect(
       await prisma.usageSnapshot.findUniqueOrThrow({
         where: { id: customSnapshot.id },
-        select: { totalCost: true },
+        select: { balance: true, totalCost: true, credits: true },
       })
-    ).toEqual({ totalCost: 12 });
+    ).toEqual({ balance: 88, totalCost: 12, credits: 88 });
     expect(
       await prisma.usageSnapshot.findUniqueOrThrow({
         where: { id: unrelatedBuiltinSnapshot.id },

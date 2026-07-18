@@ -174,6 +174,38 @@ describe("Mistral billing adapter", () => {
     expect(fetchMock.mock.calls[5][0]).toContain("workspace_id=one");
   });
 
+  it("accepts safe integer strings in workspace pagination metadata", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn()
+        .mockResolvedValueOnce(json(currentUsage()))
+        .mockResolvedValueOnce(json({ limits: { completion: { usage_limit: 100 }, currency: "USD" } }))
+        .mockResolvedValueOnce(json({ requests_per_second: 5 }))
+        .mockResolvedValueOnce(json({
+          items: [{ uuid: "one", name: "One" }],
+          total: "1",
+          page: "1",
+          page_size: "100",
+        }))
+        .mockResolvedValueOnce(json(currentUsage()))
+    );
+
+    const result = await fetchUsage("admin-key");
+    const workspaceSync = result.externalBillingSyncs?.find(
+      (sync) => sync.source === "mistral-workspace-usage"
+    );
+
+    expect(workspaceSync?.authoritative).toBe(true);
+    expect(workspaceSync?.records).toHaveLength(1);
+    expect(result.rawData).toMatchObject({
+      workspaceCoverage: {
+        enumerated: 1,
+        enumerationComplete: true,
+        complete: true,
+      },
+    });
+  });
+
   it("keeps valid organization metadata when an optional workspace report fails", async () => {
     vi.stubGlobal(
       "fetch",
