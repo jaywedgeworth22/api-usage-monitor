@@ -25,6 +25,7 @@ function family(overrides: Partial<Family> = {}): Family {
     providers: [],
     subscriptions: [],
     providerExternalBilling: [],
+    hiddenExternalBillingCount: 0,
     searchableExternalBilling: [],
     financialsAggregated: true,
     spentUsd: null,
@@ -171,10 +172,15 @@ function externalBilling(
 
 function renderWorkspace(
   providers: WorkspaceProvider[],
-  subscriptions: WorkspaceSubscription[] = []
+  subscriptions: WorkspaceSubscription[] = [],
+  initiallyExpanded = true
 ): string {
   return renderToStaticMarkup(
-    createElement(DashboardProviderWorkspace, { providers, subscriptions })
+    createElement(DashboardProviderWorkspace, {
+      providers,
+      subscriptions,
+      initiallyExpanded,
+    })
   );
 }
 
@@ -225,6 +231,40 @@ describe("DashboardProviderWorkspace", () => {
     expect(html).toContain(">$0.00</span>");
     expect(html).toContain(">Complete</span>");
     expect(html).not.toContain("Cost not reported");
+  });
+
+  it("renders provider-specific brokerage and prepaid labels", () => {
+    const tradierHtml = renderWorkspace([
+      provider("tradier", {
+        name: "tradier",
+        groupId: "tradier",
+        latestSnapshot: {
+          balance: 5,
+          totalCost: 0,
+          totalRequests: 0,
+          credits: 299,
+          fetchedAt: "2026-07-15T00:00:00.000Z",
+        },
+      }),
+    ]);
+    const openRouterHtml = renderWorkspace([
+      provider("openrouter", {
+        name: "openrouter",
+        groupId: "openrouter",
+        latestSnapshot: {
+          balance: 23.36,
+          totalCost: 1.64,
+          totalRequests: 10,
+          credits: 25,
+          fetchedAt: "2026-07-15T00:00:00.000Z",
+        },
+      }),
+    ]);
+
+    expect(tradierHtml).toContain("299 API requests remaining");
+    expect(tradierHtml).toContain("$5.00 brokerage equity");
+    expect(openRouterHtml).toContain("25 purchased credits");
+    expect(openRouterHtml).toContain("$23.36 prepaid remaining");
   });
 
   it("does not aggregate ambiguous same-family financial values", () => {
@@ -280,13 +320,13 @@ describe("DashboardProviderWorkspace", () => {
     expect(html).toContain("$200.00 spent");
     expect(html).toContain("$50.00 budget");
     expect(html).toContain("$75.00 budget");
-    expect(html).toContain("10 credits / $5.00 balance");
-    expect(html).toContain("20 credits / $7.00 balance");
+    expect(html).toContain("10 credits / $5.00 account balance");
+    expect(html).toContain("20 credits / $7.00 account balance");
     expect(html).not.toContain("$300.00");
     expect(html).not.toContain("$125.00");
     expect(html).not.toContain("$400.00");
     expect(html).not.toContain("30 credits");
-    expect(html).not.toContain("$12.00 balance");
+    expect(html).not.toContain("$12.00 account balance");
   });
 
   it("deduplicates linked provider billing and separates renewals from period and term ends", () => {
@@ -354,12 +394,16 @@ describe("DashboardProviderWorkspace", () => {
   });
 
   it("collapses repeated accounts by default while preserving an accessible drill-down", () => {
-    const html = renderWorkspace([
-      provider("provider-one"),
-      provider("provider-two"),
-      provider("provider-three"),
-      provider("provider-four"),
-    ]);
+    const html = renderWorkspace(
+      [
+        provider("provider-one"),
+        provider("provider-two"),
+        provider("provider-three"),
+        provider("provider-four"),
+      ],
+      [],
+      false
+    );
 
     expect(html).toContain('aria-pressed="true"');
     expect(html).toContain("4 accounts / keys");
@@ -379,24 +423,28 @@ describe("DashboardProviderWorkspace", () => {
       "provider-three",
       "provider-four",
     ]) {
-      expect(html).toContain(`href="/providers/${id}"`);
+      expect(html).not.toContain(`href="/providers/${id}"`);
     }
   });
 
   it("surfaces a cost coverage gap on the family row without requiring expansion", () => {
-    const html = renderWorkspace([
-      provider("cloudflare-account", {
-        name: "cloudflare",
-        displayName: "Cloudflare",
-        groupId: null,
-        spentUsd: 5,
-        spendCoverage: "complete",
-        costCoverageCaveat: {
-          code: "cloudflare_paygo_usage_unavailable",
-          message: "Usage-based costs (D1, R2, Workers, Queues overage) are not visible for this account — only the fixed subscription fee is shown. Cost may be understated.",
-        },
-      }),
-    ]);
+    const html = renderWorkspace(
+      [
+        provider("cloudflare-account", {
+          name: "cloudflare",
+          displayName: "Cloudflare",
+          groupId: null,
+          spentUsd: 5,
+          spendCoverage: "complete",
+          costCoverageCaveat: {
+            code: "cloudflare_paygo_usage_unavailable",
+            message: "Usage-based costs (D1, R2, Workers, Queues overage) are not visible for this account — only the fixed subscription fee is shown. Cost may be understated.",
+          },
+        }),
+      ],
+      [],
+      false
+    );
 
     // Single-account family: collapsed by default (PR #296).
     expect(html).toContain('aria-expanded="false"');
@@ -630,7 +678,7 @@ describe("Lane B compact markup (default state: compact density, attention sort,
     for (const label of [
       "Provider family",
       "Spend",
-      "Credits / balance",
+      "Funds / quota",
       "Services",
       "Health",
       "Last sync",

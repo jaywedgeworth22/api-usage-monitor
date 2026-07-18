@@ -252,7 +252,7 @@ const CATALOG: Record<CatalogProviderName, ProviderIntegrationProfile> = {
   finnhub: defineBlindProfile({ name: "finnhub", displayName: "Finnhub", category: "Market Data", reason: "No documented account usage or billing endpoint is available.", source: "src/lib/adapters/finnhub.ts" }),
   alphavantage: defineBlindProfile({ name: "alphavantage", displayName: "Alpha Vantage", category: "Market Data", reason: "No documented account usage or billing endpoint is available.", source: "src/lib/adapters/alphavantage.ts" }),
   tradier: defineProfile({
-    name: "tradier", displayName: "Tradier", category: "Market Data", mode: "partial",
+    name: "tradier", displayName: "Tradier", category: "Brokerage", mode: "partial",
     summary: "Resolves a brokerage account when needed, then reads a portfolio summary and documented API rate-limit headers.",
     reads: ["Account equity/cash, open P/L, buying power, and rate-limit allowed/used/available/reset metadata."],
     stores: ["Portfolio and quota summaries; holdings and orders are not requested. Portfolio value is never counted as API spend."],

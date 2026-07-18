@@ -18,6 +18,7 @@ import type {
 } from "@/components/ProviderCard";
 import type { SubscriptionRow } from "@/components/SubscriptionsPanel";
 import SortHeader, { type SortDirection } from "@/components/table/SortHeader";
+import { providerFinancialSemantics } from "@/lib/provider-financial-semantics";
 
 interface WorkspaceProvider {
   id: string;
@@ -63,6 +64,7 @@ interface WorkspaceProvider {
   pushedUnpricedEventCount: number;
   pushedUnclassifiedCostEventCount: number;
   externalBilling?: ExternalBillingRecord[];
+  externalBillingHiddenCount?: number;
   plan: {
     fixedMonthlyCostUsd: number | null;
     monthlyBudgetUsd: number | null;
@@ -93,6 +95,7 @@ interface ProviderFamily {
   providers: WorkspaceProvider[];
   subscriptions: SubscriptionRow[];
   providerExternalBilling: FamilyExternalBillingRecord[];
+  hiddenExternalBillingCount: number;
   searchableExternalBilling: FamilyExternalBillingRecord[];
   financialsAggregated: boolean;
   spentUsd: number | null;
@@ -133,6 +136,7 @@ interface FamilyExternalBillingRecord {
 interface DashboardProviderWorkspaceProps {
   providers: WorkspaceProvider[];
   subscriptions: SubscriptionRow[];
+  initiallyExpanded?: boolean;
 }
 
 export type WorkspaceSortField =
@@ -543,6 +547,7 @@ function CompactFamilyCells({
   nowMs: number;
 }) {
   const accountCount = family.providers.length;
+  const financialSemantics = providerFinancialSemantics(family.providerName);
   const dotClass = coverageDotClass(family);
 
   const budgetOrProjectionText =
@@ -553,11 +558,15 @@ function CompactFamilyCells({
         : "Projection unavailable";
   const spendTitle = `${budgetOrProjectionText} · Coverage: ${costCoverageLabel(family)}`;
 
-  const creditsBalanceTitle = `Credits ${formatNumber(family.credits)} · Balance ${formatCurrency(family.balance)}`;
+  const creditsBalanceTitle = `${financialSemantics.creditsLabel} ${formatNumber(family.credits)} · ${financialSemantics.balanceLabel} ${formatCurrency(family.balance)}`;
 
   const recordCount = family.subscriptions.length + family.providerExternalBilling.length;
   const shortDate = family.nextRenewalAt ? formatShortDate(family.nextRenewalAt, nowMs) : null;
-  const servicesTitle = `${recordCount} record${recordCount === 1 ? "" : "s"} · ${
+  const hiddenServicesSegment = family.hiddenExternalBillingCount > 0
+    ? ` · ${family.hiddenExternalBillingCount} additional detail${family.hiddenExternalBillingCount === 1 ? "" : "s"} hidden`
+    : "";
+  const visibleQualifier = family.hiddenExternalBillingCount > 0 ? "visible " : "";
+  const servicesTitle = `${recordCount} ${visibleQualifier}record${recordCount === 1 ? "" : "s"}${hiddenServicesSegment} · ${
     family.nextRenewalAt ? `Next renewal ${formatDate(family.nextRenewalAt)}` : "No active future renewal"
   }`;
 
@@ -633,28 +642,28 @@ function CompactFamilyCells({
           </p>
         )}
       </td>
-      <td data-label="Credits / balance" className="px-4 py-2">
+      <td data-label="Funds / quota" className="px-4 py-2">
         {family.financialsAggregated ? (
           <p className="text-sm sm:whitespace-nowrap" title={creditsBalanceTitle}>
             {family.credits == null && family.balance == null ? (
               <span className="text-gray-500 dark:text-gray-400">--</span>
             ) : family.credits != null && family.balance != null ? (
               <>
-                <span className="font-medium tabular-nums text-gray-800 dark:text-gray-200">{formatNumber(family.credits)} credits</span>
-                <span className="text-xs tabular-nums text-gray-500 dark:text-gray-400"> · {formatCurrency(family.balance)}</span>
+                <span className="font-medium tabular-nums text-gray-800 dark:text-gray-200">{formatNumber(family.credits)} {financialSemantics.creditsLabel}</span>
+                <span className="text-xs tabular-nums text-gray-500 dark:text-gray-400"> · {formatCurrency(family.balance)} {financialSemantics.balanceLabel}</span>
               </>
             ) : family.credits != null ? (
-              <span className="font-medium tabular-nums text-gray-800 dark:text-gray-200">{formatNumber(family.credits)} credits</span>
+              <span className="font-medium tabular-nums text-gray-800 dark:text-gray-200">{formatNumber(family.credits)} {financialSemantics.creditsLabel}</span>
             ) : (
-              <span className="text-xs tabular-nums text-gray-500 dark:text-gray-400">{formatCurrency(family.balance)} balance</span>
+              <span className="text-xs tabular-nums text-gray-500 dark:text-gray-400">{formatCurrency(family.balance)} {financialSemantics.balanceLabel}</span>
             )}
           </p>
         ) : (
           <p
             className="text-sm text-gray-500 dark:text-gray-400 sm:whitespace-nowrap"
-            title="Financials tracked per account — expand for exact values"
+            title="Expand for exact key and account values"
           >
-            Per account
+            See exact values
           </p>
         )}
       </td>
@@ -712,6 +721,7 @@ function ComfortableFamilyCells({
   onToggle: () => void;
   familySpendLabel: string;
 }) {
+  const financialSemantics = providerFinancialSemantics(family.providerName);
   return (
     <>
       <td data-label="Provider family" className="px-4 py-4 sm:px-6">
@@ -778,23 +788,28 @@ function ComfortableFamilyCells({
           </span>
         )}
       </td>
-      <td data-label="Credits / balance" className="px-4 py-4">
+      <td data-label="Funds / quota" className="px-4 py-4">
         {family.financialsAggregated ? (
           <>
-            <p className="font-medium text-gray-800 dark:text-gray-200">{formatNumber(family.credits)} credits</p>
-            <p className="text-xs text-gray-500 dark:text-gray-400">{formatCurrency(family.balance)} balance</p>
+            <p className="font-medium text-gray-800 dark:text-gray-200">{formatNumber(family.credits)} {financialSemantics.creditsLabel}</p>
+            <p className="text-xs text-gray-500 dark:text-gray-400">{formatCurrency(family.balance)} {financialSemantics.balanceLabel}</p>
           </>
         ) : (
           <>
-            <p className="font-medium text-gray-800 dark:text-gray-200">Per account</p>
-            <p className="text-xs text-gray-500 dark:text-gray-400">No duplicate totals</p>
+            <p className="font-medium text-gray-800 dark:text-gray-200">See exact values</p>
+            <p className="text-xs text-gray-500 dark:text-gray-400">No unproven totals</p>
           </>
         )}
       </td>
       <td data-label="Services" className="px-4 py-4">
         <p className="font-medium text-gray-800 dark:text-gray-200">
-          {family.subscriptions.length + family.providerExternalBilling.length} record{family.subscriptions.length + family.providerExternalBilling.length === 1 ? "" : "s"}
+          {family.subscriptions.length + family.providerExternalBilling.length} {family.hiddenExternalBillingCount > 0 ? "visible " : ""}record{family.subscriptions.length + family.providerExternalBilling.length === 1 ? "" : "s"}
         </p>
+        {family.hiddenExternalBillingCount > 0 && (
+          <p className="text-xs text-gray-500 dark:text-gray-400">
+            {family.hiddenExternalBillingCount} additional detail{family.hiddenExternalBillingCount === 1 ? "" : "s"} hidden
+          </p>
+        )}
         <p className="text-xs text-gray-500 dark:text-gray-400">
           {family.nextRenewalAt
             ? `Next renewal ${formatDate(family.nextRenewalAt)}`
@@ -829,6 +844,7 @@ function ComfortableFamilyCells({
 export default function DashboardProviderWorkspace({
   providers,
   subscriptions,
+  initiallyExpanded = false,
 }: DashboardProviderWorkspaceProps) {
   const [query, setQuery] = useState("");
   const [filterChip, setFilterChip] = useState<FilterChip>("all");
@@ -978,6 +994,10 @@ export default function DashboardProviderWorkspace({
           (a.record.serviceName ?? a.record.planName ?? a.record.kind).localeCompare(
             b.record.serviceName ?? b.record.planName ?? b.record.kind
           )
+        ),
+        hiddenExternalBillingCount: groupProviders.reduce(
+          (sum, provider) => sum + (provider.externalBillingHiddenCount ?? 0),
+          0
         ),
         searchableExternalBilling: allProviderExternalBilling,
         financialsAggregated,
@@ -1174,7 +1194,7 @@ export default function DashboardProviderWorkspace({
             <tr className="border-b border-gray-100 bg-gray-50 dark:border-gray-700 dark:bg-gray-900/60">
               <SortHeader {...sortHeaderProps} field="name" label="Provider family" paddingClassName="px-4 py-3 sm:px-6" labelClassName="text-xs" />
               <SortHeader {...sortHeaderProps} field="spend" label="Spend" paddingClassName="px-4 py-3" labelClassName="text-xs" />
-              <SortHeader {...sortHeaderProps} field="credits" label="Credits / balance" paddingClassName="px-4 py-3" labelClassName="text-xs" />
+              <SortHeader {...sortHeaderProps} field="credits" label="Funds / quota" paddingClassName="px-4 py-3" labelClassName="text-xs" />
               <SortHeader {...sortHeaderProps} field="services" label="Services" paddingClassName="px-4 py-3" labelClassName="text-xs" title="Sort by next renewal date" />
               <SortHeader {...sortHeaderProps} field="health" label="Health" paddingClassName="px-4 py-3" labelClassName="text-xs" />
               <SortHeader {...sortHeaderProps} field="lastSync" label="Last sync" paddingClassName="px-4 py-3 sm:px-6" labelClassName="text-xs" />
@@ -1182,7 +1202,7 @@ export default function DashboardProviderWorkspace({
           </thead>
           <tbody>
             {visibleFamilies.map((family) => {
-              const isCollapsed = collapsed[family.key] ?? true;
+              const isCollapsed = collapsed[family.key] ?? !initiallyExpanded;
               const familySpendLabel = family.spentUsd == null
                 ? "Cost not reported"
                 : `${formatCurrency(family.spentUsd)}${
@@ -1222,7 +1242,8 @@ export default function DashboardProviderWorkspace({
                     style={isCollapsed ? { display: "none" } : undefined}
                     className="border-b border-gray-100 bg-gray-50/70 dark:border-gray-700 dark:bg-gray-900/30"
                   >
-                      <td colSpan={6} className="table-group-cell px-4 py-3 sm:px-6">
+                    <td colSpan={6} className="table-group-cell px-4 py-3 sm:px-6">
+                      {!isCollapsed && (
                         <div className="grid gap-2 lg:grid-cols-2">
                           {family.providers.map((provider) => (
                             <Link
@@ -1273,8 +1294,13 @@ export default function DashboardProviderWorkspace({
                                   {formatCurrency(provider.plan?.monthlyBudgetUsd ?? null)} budget
                                 </span>
                                 <span className="block text-xs text-gray-500 dark:text-gray-400">
-                                  {formatNumber(provider.latestSnapshot?.credits ?? null)} credits / {formatCurrency(provider.latestSnapshot?.balance ?? null)} balance
+                                  {formatNumber(provider.latestSnapshot?.credits ?? null)} {providerFinancialSemantics(provider.name).creditsLabel} / {formatCurrency(provider.latestSnapshot?.balance ?? null)} {providerFinancialSemantics(provider.name).balanceLabel}
                                 </span>
+                                {(provider.externalBillingHiddenCount ?? 0) > 0 && (
+                                  <span className="block text-xs text-violet-700 dark:text-violet-300">
+                                    {provider.externalBillingHiddenCount} additional billing detail{provider.externalBillingHiddenCount === 1 ? "" : "s"} hidden; open to view all
+                                  </span>
+                                )}
                                 {provider.plan?.renewalDate && (
                                   <span className="block text-xs text-gray-500 dark:text-gray-400">
                                     Plan renewal {formatDate(provider.plan.renewalDate)}
@@ -1350,7 +1376,8 @@ export default function DashboardProviderWorkspace({
                             </Link>
                           ))}
                         </div>
-                      </td>
+                      )}
+                    </td>
                   </tr>
                 </Fragment>
               );

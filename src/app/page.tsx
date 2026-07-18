@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback, useRef } from "react";
 import Link from "next/link";
+import dynamic from "next/dynamic";
 import { ChevronRight } from "lucide-react";
 import {
   type ProviderCostCoverage,
@@ -9,13 +10,13 @@ import {
 } from "@/components/ProviderCard";
 import SentryHealthCard from "@/components/SentryHealthCard";
 import DashboardSummaryCards from "@/components/DashboardSummaryCards";
-import DashboardCharts from "@/components/DashboardCharts";
 import ExternalTelemetryPanel, { type ExternalUsageSummary } from "@/components/ExternalTelemetryPanel";
 import ProjectsPanel, { type ProjectBudgetStatus } from "@/components/ProjectsPanel";
 import type { ExternalBillingRecord } from "@/components/ExternalBillingDetails";
 import PaidServicesPanel from "@/components/PaidServicesPanel";
 import type { SubscriptionRow } from "@/components/SubscriptionsPanel";
 import DashboardProviderWorkspace from "@/components/DashboardProviderWorkspace";
+import { sumProviderFunds } from "@/lib/provider-financial-semantics";
 
 interface Provider {
   id: string;
@@ -66,6 +67,7 @@ interface Provider {
   pushedUnpricedEventCount: number;
   pushedUnclassifiedCostEventCount: number;
   externalBilling?: ExternalBillingRecord[];
+  externalBillingHiddenCount?: number;
   plan: {
     fixedMonthlyCostUsd: number | null;
     monthlyBudgetUsd: number | null;
@@ -108,6 +110,7 @@ async function fetchJson<T>(url: string, label: string): Promise<T> {
 
 const AUTO_REFRESH_INTERVAL_MS = 60_000;
 const FOCUS_REFRESH_THROTTLE_MS = 15_000;
+const DashboardCharts = dynamic(() => import("@/components/DashboardCharts"));
 
 export default function DashboardPage() {
   const [providers, setProviders] = useState<Provider[]>([]);
@@ -115,6 +118,10 @@ export default function DashboardPage() {
   const [projects, setProjects] = useState<ProjectBudgetStatus[]>([]);
   const [subscriptions, setSubscriptions] = useState<SubscriptionRow[]>([]);
   const [projectSummary, setProjectSummary] = useState<ProjectBudgetResponse["summary"] | null>(null);
+  const [portfolioOpen, setPortfolioOpen] = useState(false);
+  const [portfolioLoaded, setPortfolioLoaded] = useState(false);
+  const [portfolioLoading, setPortfolioLoading] = useState(false);
+  const [portfolioError, setPortfolioError] = useState("");
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState("");
@@ -125,6 +132,7 @@ export default function DashboardPage() {
   const isFetchingRef = useRef(false);
   const lastSuccessAtRef = useRef(0);
   const portfolioDetailsRef = useRef<HTMLDetailsElement>(null);
+  const portfolioFetchInFlightRef = useRef(false);
 
   const fetchProviders = useCallback(async (opts?: { background?: boolean }) => {
     const background = opts?.background === true;
@@ -166,10 +174,8 @@ export default function DashboardPage() {
     }
 
     try {
-      const [providersResult, usageResult, projectsResult, subscriptionsResult] = await Promise.allSettled([
-        fetchJson<Provider[]>("/api/providers", "providers"),
-        fetchJson<ExternalUsageSummary>("/api/usage-events?days=30", "app telemetry"),
-        fetchJson<ProjectBudgetResponse>("/api/projects?includeSummary=1", "projects"),
+      const [providersResult, subscriptionsResult] = await Promise.allSettled([
+        fetchJson<Provider[]>("/api/providers?view=dashboard", "providers"),
         fetchJson<SubscriptionRow[]>("/api/subscriptions", "paid services"),
       ]);
 
@@ -182,19 +188,6 @@ export default function DashboardPage() {
         setError(providersResult.reason instanceof Error ? providersResult.reason.message : "Failed to load providers");
       } else {
         nextWarnings.push("Provider data could not be refreshed; showing the last successful result.");
-      }
-
-      if (usageResult.status === "fulfilled") {
-        setUsageSummary(usageResult.value);
-      } else {
-        nextWarnings.push("External app telemetry is temporarily unavailable.");
-      }
-
-      if (projectsResult.status === "fulfilled") {
-        setProjects(projectsResult.value.projects);
-        setProjectSummary(projectsResult.value.summary);
-      } else {
-        nextWarnings.push("Project budgets are temporarily unavailable.");
       }
 
       if (subscriptionsResult.status === "fulfilled") {
@@ -216,6 +209,43 @@ export default function DashboardPage() {
       setLoading(false);
       setRefreshing(false);
       isFetchingRef.current = false;
+    }
+  }, []);
+
+  const fetchPortfolioData = useCallback(async () => {
+    if (portfolioFetchInFlightRef.current) return;
+    portfolioFetchInFlightRef.current = true;
+    setPortfolioLoading(true);
+    setPortfolioError("");
+    const failures: string[] = [];
+    try {
+      try {
+        setUsageSummary(
+          await fetchJson<ExternalUsageSummary>(
+            "/api/usage-events?days=30",
+            "app telemetry"
+          )
+        );
+      } catch {
+        failures.push("External app telemetry is temporarily unavailable.");
+      }
+      // Keep the two raw-telemetry aggregations sequential on SQLite's single
+      // connection instead of starting both expensive reads together.
+      try {
+        const response = await fetchJson<ProjectBudgetResponse>(
+          "/api/projects?includeSummary=1",
+          "projects"
+        );
+        setProjects(response.projects);
+        setProjectSummary(response.summary);
+      } catch {
+        failures.push("Project budgets are temporarily unavailable.");
+      }
+      setPortfolioError(failures.join(" "));
+      setPortfolioLoaded(failures.length === 0);
+    } finally {
+      setPortfolioLoading(false);
+      portfolioFetchInFlightRef.current = false;
     }
   }, []);
 
@@ -257,9 +287,31 @@ export default function DashboardPage() {
   // #attention hash-open effect below and by DashboardSummaryCards' Open Alerts cell so a
   // re-click while the hash is already #attention (and the accordion was re-closed) still works.
   const openAttentionPanel = useCallback(() => {
+    setPortfolioOpen(true);
     if (portfolioDetailsRef.current) portfolioDetailsRef.current.open = true;
-    document.getElementById("attention")?.scrollIntoView({ block: "start" });
+    window.requestAnimationFrame(() => {
+      document.getElementById("attention")?.scrollIntoView({ block: "start" });
+    });
   }, []);
+
+  useEffect(() => {
+    if (!portfolioOpen || window.location.hash !== "#attention") return;
+    window.requestAnimationFrame(() => {
+      document.getElementById("attention")?.scrollIntoView({ block: "start" });
+    });
+  }, [portfolioOpen]);
+
+  useEffect(() => {
+    if (!portfolioOpen) return;
+    if (!document.hidden) void fetchPortfolioData();
+    const interval = window.setInterval(
+      () => {
+        if (!document.hidden) void fetchPortfolioData();
+      },
+      AUTO_REFRESH_INTERVAL_MS
+    );
+    return () => window.clearInterval(interval);
+  }, [fetchPortfolioData, portfolioOpen]);
 
   useEffect(() => {
     const openIfAttentionHash = () => {
@@ -271,40 +323,41 @@ export default function DashboardPage() {
     return () => window.removeEventListener("hashchange", openIfAttentionHash);
   }, [loading, openAttentionPanel]); // re-run after the skeleton is replaced - the details ref is null during loading
 
-  // Deduplicate balance by groupId: only count each group's balance once
-  const seenGroups = new Set<string | null>();
-  const totalBalance = providers.reduce((sum, p) => {
-    const balance = p.latestSnapshot?.balance || 0;
-    if (!p.groupId) {
-      return sum + balance;
+  const refreshDashboard = useCallback(async () => {
+    await fetchProviders();
+    if (portfolioOpen) await fetchPortfolioData();
+  }, [fetchPortfolioData, fetchProviders, portfolioOpen]);
+
+  const totalProviderFunds = sumProviderFunds(providers);
+  const providerGroupCounts = providers.reduce((counts, provider) => {
+    if (provider.groupId) {
+      counts.set(provider.groupId, (counts.get(provider.groupId) ?? 0) + 1);
     }
-    if (seenGroups.has(p.groupId)) {
-      return sum;
-    }
-    seenGroups.add(p.groupId);
-    // Use the first non-null balance in the group
-    const groupProviders = providers.filter((x) => x.groupId === p.groupId);
-    const groupBalance = groupProviders.find((x) => x.latestSnapshot?.balance != null)?.latestSnapshot?.balance;
-    return sum + (groupBalance ?? 0);
-  }, 0);
+    return counts;
+  }, new Map<string, number>());
+  const ambiguousCostGroupIds = new Set(
+    [...providerGroupCounts.entries()]
+      .filter(([, count]) => count > 1)
+      .map(([groupId]) => groupId)
+  );
+  const includeInCostSummary = (provider: Provider) =>
+    provider.groupId == null || !ambiguousCostGroupIds.has(provider.groupId);
   const totalCost = providers.reduce(
-    (sum, p) => sum + (p.spentUsd ?? p.latestSnapshot?.totalCost ?? 0),
+    (sum, p) =>
+      sum +
+      (includeInCostSummary(p)
+        ? p.spentUsd ?? p.latestSnapshot?.totalCost ?? 0
+        : 0),
     0
   );
   const totalProjectedMonthlyCost = providers.reduce(
-    (sum, p) => sum + (p.projectedEomUsd || 0),
+    (sum, p) => sum + (includeInCostSummary(p) ? p.projectedEomUsd || 0 : 0),
     0
   );
+  const ambiguousCostFamilyCount = ambiguousCostGroupIds.size;
   const incompleteCostProviderCount = providers.filter(
     (provider) => provider.isActive && provider.spendCoverage !== "complete"
   ).length;
-  const totalCredits = providers.reduce(
-    (sum, p) => sum + (p.latestSnapshot?.credits || 0),
-    0
-  );
-  const hasAnyCredits = providers.some(
-    (p) => p.latestSnapshot?.credits != null
-  );
   const attentionItems = providers.flatMap((provider) =>
     provider.alerts
       .filter((alert) => alert.severity !== "info")
@@ -372,7 +425,7 @@ export default function DashboardPage() {
           )}
           <button
             type="button"
-            onClick={() => fetchProviders()}
+            onClick={() => void refreshDashboard()}
             disabled={refreshing}
             className="rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-50"
           >
@@ -388,20 +441,26 @@ export default function DashboardPage() {
       )}
 
       <DashboardSummaryCards
-        totalBalance={totalBalance}
+        totalProviderFunds={totalProviderFunds}
         totalProjectedMonthlyCost={totalProjectedMonthlyCost}
         totalCost={totalCost}
         incompleteCostProviderCount={incompleteCostProviderCount}
+        ambiguousCostFamilyCount={ambiguousCostFamilyCount}
         attentionItemsCount={attentionItems.length}
         criticalCount={criticalCount}
-        hasAnyCredits={hasAnyCredits}
-        totalCredits={totalCredits}
         onAlertsNavigate={openAttentionPanel}
       />
 
       <DashboardProviderWorkspace providers={providers} subscriptions={subscriptions} />
 
-      <details ref={portfolioDetailsRef} className="group">
+      <details
+        ref={portfolioDetailsRef}
+        className="group"
+        onToggle={(event) => {
+          const open = event.currentTarget.open;
+          setPortfolioOpen(open);
+        }}
+      >
         <summary className="flex cursor-pointer list-none items-center gap-2 rounded-xl border border-gray-200 bg-white px-6 py-4 text-sm font-semibold text-gray-900 hover:bg-gray-50 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-100 dark:hover:bg-gray-700/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 dark:focus-visible:ring-blue-400 [&::-webkit-details-marker]:hidden">
           <ChevronRight className="h-4 w-4 shrink-0 text-gray-400 transition-transform group-open:rotate-90" aria-hidden="true" />
           Portfolio detail
@@ -409,7 +468,25 @@ export default function DashboardPage() {
             {portfolioSummary}
           </span>
         </summary>
+        {portfolioOpen && (
         <div className="mt-8 space-y-8">
+          {portfolioLoading && !portfolioLoaded && (
+            <div role="status" className="rounded-xl border border-gray-200 bg-white px-6 py-5 text-sm text-gray-500 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-400">
+              Loading portfolio detail…
+            </div>
+          )}
+          {portfolioError && (
+            <div role="status" className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800 dark:border-amber-900 dark:bg-amber-950/30 dark:text-amber-200">
+              <span>{portfolioError}</span>{" "}
+              <button
+                type="button"
+                onClick={() => void fetchPortfolioData()}
+                className="font-semibold underline underline-offset-2"
+              >
+                Retry
+              </button>
+            </div>
+          )}
           <PaidServicesPanel
             providers={providers}
             subscriptions={subscriptions}
@@ -472,6 +549,7 @@ export default function DashboardPage() {
             )}
           </div>
         </div>
+        )}
       </details>
     </div>
   );

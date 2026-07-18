@@ -2,6 +2,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 import fs from "fs";
 import os from "os";
 import path from "path";
+import { NextRequest } from "next/server";
 import { setupPrismaSqliteTestDb } from "@/lib/__tests__/setup-test-db";
 
 // GET /api/providers is the dashboard's (and Settings/Connections') primary
@@ -59,6 +60,97 @@ afterEach(() => {
 });
 
 describe("GET /api/providers - rawData exclusion and cost-coverage caveat", () => {
+  it("omits zero and unused component rows only from the compact dashboard view", async () => {
+    const provider = await prisma.provider.create({
+      data: {
+        name: "twilio",
+        displayName: "Twilio",
+        type: "builtin",
+        refreshIntervalMin: 60,
+        externalBilling: {
+          create: [
+            {
+              source: "twilio-usage-records",
+              externalId: "zero-component",
+              kind: "billing_period",
+              amountUsd: 0,
+              usageQuantity: 0,
+              currentPeriodStart: new Date("2026-07-01T00:00:00.000Z"),
+              currentPeriodEnd: new Date("2026-08-01T00:00:00.000Z"),
+              rollupRole: "component",
+              syncedAt: new Date("2026-07-18T00:00:00.000Z"),
+            },
+            {
+              source: "twilio-usage-records",
+              externalId: "charged-component",
+              kind: "billing_period",
+              amountUsd: 1.5,
+              usageQuantity: 1,
+              rollupRole: "component",
+              syncedAt: new Date("2026-07-18T00:00:00.000Z"),
+            },
+            {
+              source: "twilio-usage-records",
+              externalId: "canonical-total",
+              kind: "billing_period",
+              amountUsd: 0,
+              rollupRole: "canonical",
+              syncedAt: new Date("2026-07-18T00:00:00.000Z"),
+            },
+            {
+              source: "twilio-usage-records",
+              externalId: "depleted-quota",
+              kind: "account",
+              remainingQuantity: 0,
+              rollupRole: "metadata",
+              syncedAt: new Date("2026-07-18T00:00:00.000Z"),
+            },
+            {
+              source: "provider-account",
+              externalId: "active-plan",
+              kind: "plan",
+              planName: "Pro",
+              status: "active",
+              rollupRole: "metadata",
+              syncedAt: new Date("2026-07-18T00:00:00.000Z"),
+            },
+            {
+              source: "legacy-detail",
+              externalId: "legacy-zero",
+              kind: "billing_period",
+              amountUsd: 0,
+              usageQuantity: 0,
+              rollupRole: null,
+              syncedAt: new Date("2026-07-18T00:00:00.000Z"),
+            },
+          ],
+        },
+      },
+    });
+
+    const compactResponse = await GET(
+      new NextRequest("https://usage.jays.services/api/providers?view=dashboard")
+    );
+    const compactBody = await compactResponse.json();
+    const compact = compactBody.find((entry: { id: string }) => entry.id === provider.id);
+
+    expect(compact.externalBilling.map((record: { externalId: string }) => record.externalId)).toEqual([
+      "active-plan",
+      "canonical-total",
+      "charged-component",
+      "depleted-quota",
+    ]);
+    expect(compact.externalBillingHiddenCount).toBe(2);
+
+    const fullResponse = await GET(
+      new NextRequest("http://localhost/api/providers")
+    );
+    const fullBody = await fullResponse.json();
+    const full = fullBody.find((entry: { id: string }) => entry.id === provider.id);
+    expect(full.externalBilling).toHaveLength(6);
+    expect(full.externalBillingHiddenCount).toBe(0);
+  });
+
   it("never ships the rawData blob but still surfaces the derived costCoverageCaveat", async () => {
     // A ~60KB filler blob stands in for a real adapter's raw API response
     // (the thing that made this endpoint's DB read/response heavy at 39
@@ -109,7 +201,7 @@ describe("GET /api/providers - rawData exclusion and cost-coverage caveat", () =
       },
     });
 
-    const response = await GET();
+    const response = await GET(new NextRequest("http://localhost/api/providers"));
     const body = await response.json();
     const serialized = JSON.stringify(body);
 
@@ -151,7 +243,7 @@ describe("GET /api/providers - rawData exclusion and cost-coverage caveat", () =
       data: { name: "fmp", displayName: "FMP", type: "builtin", refreshIntervalMin: 60 },
     });
 
-    const response = await GET();
+    const response = await GET(new NextRequest("http://localhost/api/providers"));
     const body = await response.json();
     const entry = body.find((p: { id: string }) => p.id === provider.id);
 
@@ -249,7 +341,7 @@ describe("GET /api/providers - batched Gemini status (no per-provider N+1)", () 
       data: { name: "anthropic", displayName: "Anthropic", type: "builtin", refreshIntervalMin: 60 },
     });
 
-    const response = await GET();
+    const response = await GET(new NextRequest("http://localhost/api/providers"));
     const body = await response.json();
     const serialized = JSON.stringify(body);
     const entry = body.find((p: { id: string }) => p.id === provider.id);
@@ -351,7 +443,7 @@ describe("GET /api/providers - budget-status Gemini cost-identity quarantine (sc
       },
     });
 
-    const response = await GET();
+    const response = await GET(new NextRequest("http://localhost/api/providers"));
     const body = await response.json();
     const entry = body.find((p: { id: string }) => p.id === provider.id);
 
@@ -440,7 +532,7 @@ describe("GET /api/providers - Gemini rawData reads stay bounded (no re-unboundi
     const findManySpy = vi.spyOn(prisma.usageSnapshot, "findMany");
     const findFirstSpy = vi.spyOn(prisma.usageSnapshot, "findFirst");
 
-    const response = await GET();
+    const response = await GET(new NextRequest("http://localhost/api/providers"));
     const body = await response.json();
     const serialized = JSON.stringify(body);
     const entry = body.find((p: { id: string }) => p.id === provider.id);

@@ -97,7 +97,20 @@ async function batchSnapshotCostCoverageCaveats(
   return result;
 }
 
-export async function GET() {
+const DASHBOARD_EXTERNAL_BILLING_WHERE = {
+  OR: [
+    { rollupRole: { notIn: ["component", "metadata"] } },
+    { AND: [{ amountUsd: { not: null } }, { amountUsd: { not: 0 } }] },
+    { AND: [{ usageQuantity: { not: null } }, { usageQuantity: { not: 0 } }] },
+    { remainingQuantity: { not: null } },
+    { requestLimit: { not: null } },
+    { spendLimitUsd: { not: null } },
+    { kind: { in: ["plan", "subscription", "service_plan"] } },
+  ],
+} satisfies Prisma.ProviderExternalBillingWhereInput;
+
+export async function GET(request: NextRequest) {
+  const dashboardView = request.nextUrl.searchParams.get("view") === "dashboard";
   const [providers, budget] = await Promise.all([prisma.provider.findMany({
     orderBy: { createdAt: "desc" },
     select: {
@@ -135,6 +148,7 @@ export async function GET() {
         },
       },
       externalBilling: {
+        where: dashboardView ? DASHBOARD_EXTERNAL_BILLING_WHERE : undefined,
         orderBy: [{ source: "asc" }, { externalId: "asc" }],
         select: {
           source: true,
@@ -160,6 +174,9 @@ export async function GET() {
           dateKind: true,
           syncedAt: true,
         },
+      },
+      _count: {
+        select: { externalBilling: true },
       },
       snapshots: {
         orderBy: { fetchedAt: "desc" },
@@ -243,7 +260,7 @@ export async function GET() {
 
   // Flatten latest snapshot into the provider object
   const result = providers.map((p) => {
-    const { snapshots, apiKey, config, secretConfig, ...rest } = p;
+    const { snapshots, apiKey, config, secretConfig, _count, ...rest } = p;
     const clientConfig = providerConfigForClient(config, secretConfig);
     const credentialManagement = providerCredentialManagementForClient(
       config,
@@ -332,6 +349,9 @@ export async function GET() {
     return {
       ...rest,
       externalBilling,
+      externalBillingHiddenCount: dashboardView
+        ? Math.max(0, _count.externalBilling - externalBilling.length)
+        : 0,
       ...clientConfig,
       credentialManagement,
       keyPreview: credentialManaged ? null : buildKeyPreview(decryptedKey),

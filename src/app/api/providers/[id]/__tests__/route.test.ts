@@ -567,7 +567,9 @@ describe("GET /api/providers/:id Gemini key status", () => {
       geminiMonitoringConfigFingerprint(billingConfig)
     );
 
-    const collectionResponse = await GET_COLLECTION();
+    const collectionResponse = await GET_COLLECTION(
+      new NextRequest("http://localhost/api/providers")
+    );
     const collectionBody = await collectionResponse.json();
     const collectionSerialized = JSON.stringify(collectionBody);
     const collectionProvider = collectionBody.find(
@@ -624,7 +626,9 @@ describe("GET /api/providers alert visibility", () => {
       ])
     );
 
-    const collectionResponse = await GET_COLLECTION();
+    const collectionResponse = await GET_COLLECTION(
+      new NextRequest("http://localhost/api/providers")
+    );
     const collectionBody = await collectionResponse.json();
     const collectionProvider = collectionBody.find(
       (entry: { id?: unknown }) => entry.id === provider.id
