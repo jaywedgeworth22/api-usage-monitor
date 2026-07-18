@@ -98,6 +98,22 @@ async function batchSnapshotCostCoverageCaveats(
 }
 
 export async function GET() {
+  // TEMPORARY DIAGNOSTIC INSTRUMENTATION (see #397 investigation) - per-step
+  // timing for the ~11.5s production slowdown that survived both an index
+  // addition (#394) and raising connection_limit 1->5, meaning the dominant
+  // cost is a single step, not query serialization. Wrap each awaited DB
+  // operation/major step with Date.now() deltas and emit ONE structured
+  // [providers-timing] log line at the end so production logs reveal exactly
+  // where the time goes. Remove once the slow step is identified and fixed.
+  const handlerStart = Date.now();
+  let providerFindManyMs = -1;
+  let computeBudgetMs = -1;
+  let geminiLoopMs = -1;
+  let caveatBatchMs = -1;
+  let mapLoopMs = -1;
+
+  const providerFindManyStart = Date.now();
+  const computeBudgetStart = Date.now();
   const [providers, budget] = await Promise.all([prisma.provider.findMany({
     orderBy: { createdAt: "desc" },
     select: {
@@ -188,7 +204,13 @@ export async function GET() {
         },
       },
     },
-  }), computeBudgetStatus()]);
+  }).then((r) => {
+    providerFindManyMs = Date.now() - providerFindManyStart;
+    return r;
+  }), computeBudgetStatus().then((r) => {
+    computeBudgetMs = Date.now() - computeBudgetStart;
+    return r;
+  })]);
   const geminiProviders = providers.filter(
     (provider) =>
       provider.type.trim().toLowerCase() === "builtin" &&
@@ -209,6 +231,8 @@ export async function GET() {
   const latestSnapshotIds = providers
     .map((provider) => provider.snapshots[0]?.id)
     .filter((id): id is string => typeof id === "string");
+  const geminiLoopStart = Date.now();
+  const caveatBatchStart = Date.now();
   const [geminiSnapshotEntries, costCoverageCaveatBySnapshotId] =
     await Promise.all([
       Promise.all(
@@ -226,8 +250,14 @@ export async function GET() {
               }),
             ] as const
         )
-      ),
-      batchSnapshotCostCoverageCaveats(latestSnapshotIds),
+      ).then((r) => {
+        geminiLoopMs = Date.now() - geminiLoopStart;
+        return r;
+      }),
+      batchSnapshotCostCoverageCaveats(latestSnapshotIds).then((r) => {
+        caveatBatchMs = Date.now() - caveatBatchStart;
+        return r;
+      }),
     ]);
   const geminiStatusSnapshots = new Map(geminiSnapshotEntries);
   const budgetByProviderId = new Map(
@@ -242,6 +272,7 @@ export async function GET() {
   }
 
   // Flatten latest snapshot into the provider object
+  const mapLoopStart = Date.now();
   const result = providers.map((p) => {
     const { snapshots, apiKey, config, secretConfig, ...rest } = p;
     const clientConfig = providerConfigForClient(config, secretConfig);
@@ -389,6 +420,21 @@ export async function GET() {
           : null,
     };
   });
+  mapLoopMs = Date.now() - mapLoopStart;
+
+  const totalMs = Date.now() - handlerStart;
+  // eslint-disable-next-line no-console -- temporary diagnostic instrumentation, see comment above GET()
+  console.info(
+    "[providers-timing]",
+    JSON.stringify({
+      total: totalMs,
+      providerFindMany: providerFindManyMs,
+      computeBudget: computeBudgetMs,
+      geminiLoop: geminiLoopMs,
+      caveatBatch: caveatBatchMs,
+      mapLoop: mapLoopMs,
+    })
+  );
 
   return NextResponse.json(result);
 }
