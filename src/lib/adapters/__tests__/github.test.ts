@@ -30,6 +30,7 @@ describe("github billing adapter", () => {
             budget_scope: "organization",
             budget_amount: 50,
             prevent_further_usage: true,
+            budget_alerting: { will_alert: true, alert_recipients: ["billing-manager"] },
           }],
           has_next_page: false,
         });
@@ -144,6 +145,33 @@ describe("github billing adapter", () => {
     expect(fetchMock.mock.calls[0][0]).toContain("https://api.octo.ghe.com/enterprises/octo-enterprise/settings/billing/usage/summary?");
   });
 
+  it("never falls back to the incomplete enterprise detailed report", async () => {
+    const fetchMock = vi.fn(async (input: string) => {
+      if (input.includes("/usage/summary?")) return response({ message: "unavailable" }, 404);
+      throw new Error(`unexpected URL: ${input}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(fetchUsage("token", {
+      accountType: "enterprise",
+      account: "octo-enterprise",
+    })).rejects.toMatchObject({ code: "HTTP_ERROR", status: 404 });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock.mock.calls.some(([url]) => String(url).includes("/usage?"))).toBe(false);
+  });
+
+  it("preserves retryable transport failures when summary and fallback both fail", async () => {
+    const fetchMock = vi.fn().mockRejectedValue(new Error("DNS unavailable"));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(fetchUsage("token", { org: "Acme" })).rejects.toMatchObject({
+      code: "TRANSPORT_ERROR",
+      status: null,
+      retryable: true,
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
   it("keeps canonical usage when an optional Copilot response is malformed", async () => {
     const fetchMock = vi.fn(async (input: string) => {
       if (input.includes("/usage/summary?")) return response({ usageItems: [] });
@@ -182,6 +210,82 @@ describe("github billing adapter", () => {
     expect(result.totalCost).toBe(0);
     expect(result.externalBillingSyncs?.some((sync) => sync.source === "github-enhanced-billing-budgets")).toBe(false);
     expect((result.rawData as { capabilities: { budgets: { status: string; errorCode: string } } }).capabilities.budgets).toMatchObject({
+      status: "error",
+      errorCode: "INVALID_RESPONSE",
+    });
+  });
+
+  it("preserves an unknown license-budget unit instead of labeling it USD", async () => {
+    const fetchMock = vi.fn(async (input: string) => {
+      if (input.includes("/usage/summary?")) return response({ usageItems: [] });
+      if (input.includes("/budgets?")) return response({
+        budgets: [{
+          id: "copilot-license-cap",
+          budget_type: "BundlePricing",
+          budget_product_skus: ["copilot_enterprise"],
+          budget_scope: "organization",
+          budget_amount: 25,
+          prevent_further_usage: true,
+          budget_alerting: { will_alert: true, alert_recipients: [] },
+        }],
+        has_next_page: false,
+      });
+      if (input.includes("/ai_credit/usage?")) return response({ usageItems: [] });
+      if (input.includes("/premium_request/usage?")) return response({ usageItems: [] });
+      throw new Error(`unexpected URL: ${input}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await fetchUsage("token", { org: "Acme" });
+    const budget = result.externalBillingSyncs?.find(
+      (sync) => sync.source === "github-enhanced-billing-budgets"
+    )?.records[0];
+
+    expect(budget).toMatchObject({
+      currency: null,
+      spendLimitUsd: null,
+      requestLimit: 25,
+      requestLimitWindow: "provider-defined budget units",
+    });
+  });
+
+  it.each([
+    ["type", { budget_type: "" }],
+    ["scope", { budget_scope: "" }],
+    ["enforcement", { prevent_further_usage: undefined }],
+    ["amount", { budget_amount: -1 }],
+    ["alerting", { budget_alerting: { will_alert: true } }],
+  ])("rejects a partially invalid budget collection with missing %s", async (_field, override) => {
+    const validBudget = {
+      id: "valid-actions-cap",
+      budget_type: "SkuPricing",
+      budget_product_skus: ["actions_linux"],
+      budget_scope: "organization",
+      budget_amount: 50,
+      prevent_further_usage: true,
+      budget_alerting: { will_alert: true, alert_recipients: [] },
+    };
+    const fetchMock = vi.fn(async (input: string) => {
+      if (input.includes("/usage/summary?")) return response({ usageItems: [] });
+      if (input.includes("/budgets?")) return response({
+        budgets: [validBudget, { ...validBudget, id: "invalid", ...override }],
+        has_next_page: false,
+      });
+      if (input.includes("/ai_credit/usage?")) return response({ usageItems: [] });
+      if (input.includes("/premium_request/usage?")) return response({ usageItems: [] });
+      throw new Error(`unexpected URL: ${input}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await fetchUsage("token", { org: "Acme" });
+
+    expect(result.totalCost).toBe(0);
+    expect(result.externalBillingSyncs?.some(
+      (sync) => sync.source === "github-enhanced-billing-budgets"
+    )).toBe(false);
+    expect((result.rawData as {
+      capabilities: { budgets: { status: string; errorCode: string } };
+    }).capabilities.budgets).toMatchObject({
       status: "error",
       errorCode: "INVALID_RESPONSE",
     });

@@ -61,6 +61,28 @@ interface OptionalUsageOutcome {
 
 const GITHUB_API_VERSION = "2026-03-10";
 const MAX_BUDGET_PAGES = 100;
+const MAX_BUDGET_SKUS = 100;
+const BUDGET_TYPES = new Set(["BundlePricing", "ProductPricing", "SkuPricing"]);
+const BUDGET_SCOPES = new Set([
+  "enterprise",
+  "organization",
+  "repository",
+  "cost_center",
+  "multi_user_customer",
+  "user",
+]);
+// GitHub documents these as metered/spend products. Unknown SKUs are kept as
+// provider-defined budget units because budget_amount is a license count for
+// license products and the response has no separate currency/unit field.
+const METERED_BUDGET_SKU_PATTERNS = [
+  /^actions(?:_|$)/,
+  /^packages(?:_|$)/,
+  /^codespaces(?:_|$)/,
+  /^shared_storage(?:_|$)/,
+  /^git_lfs(?:_|$)/,
+  /^ai_credits$/,
+  /^premium_requests?$/,
+];
 
 function adapterError(error: unknown, message: string): AdapterError {
   if (error instanceof AdapterError) return error;
@@ -307,12 +329,25 @@ function budgetProductSkus(budget: GitHubBudget): string[] {
   const values = Array.isArray(budget.budget_product_skus)
     ? budget.budget_product_skus
     : budget.budget_product_sku == null
-      ? []
+      ? null
       : [budget.budget_product_sku];
-  return values
-    .filter((value): value is string => typeof value === "string" && value.trim() !== "")
-    .map((value) => value.trim())
-    .slice(0, 20);
+  if (!values || values.length === 0 || values.length > MAX_BUDGET_SKUS) {
+    throw new AdapterError("GitHub budget omitted its required product SKUs", {
+      code: "INVALID_RESPONSE",
+    });
+  }
+  if (values.some((value) => typeof value !== "string" || value.trim() === "")) {
+    throw new AdapterError("GitHub budget returned invalid product SKUs", {
+      code: "INVALID_RESPONSE",
+    });
+  }
+  return (values as string[]).map((value) => value.trim());
+}
+
+function isUsdBudget(skus: string[]): boolean {
+  return skus.every((sku) =>
+    METERED_BUDGET_SKU_PATTERNS.some((pattern) => pattern.test(sku.toLowerCase()))
+  );
 }
 
 function budgetRecords(budgets: GitHubBudget[]): AdapterExternalBillingRecord[] {
@@ -325,22 +360,54 @@ function budgetRecords(budgets: GitHubBudget[]): AdapterExternalBillingRecord[] 
       });
     }
     seenIds.add(id);
-    const type = configuredString(budget.budget_type) ?? "budget";
-    const scope = configuredString(budget.budget_scope) ?? "account";
+    const type = configuredString(budget.budget_type);
+    const scope = configuredString(budget.budget_scope);
+    if (!type || !BUDGET_TYPES.has(type) || !scope || !BUDGET_SCOPES.has(scope)) {
+      throw new AdapterError("GitHub budget returned an invalid type or scope", {
+        code: "INVALID_RESPONSE",
+      });
+    }
+    if (typeof budget.prevent_further_usage !== "boolean") {
+      throw new AdapterError("GitHub budget omitted its required enforcement state", {
+        code: "INVALID_RESPONSE",
+      });
+    }
+    if (
+      typeof budget.budget_amount !== "number" ||
+      !Number.isFinite(budget.budget_amount) ||
+      budget.budget_amount < 0
+    ) {
+      throw new AdapterError("GitHub budget returned an invalid amount", {
+        code: "INVALID_RESPONSE",
+      });
+    }
+    const alerting = budget.budget_alerting;
+    if (
+      !alerting ||
+      typeof alerting !== "object" ||
+      Array.isArray(alerting) ||
+      typeof alerting.will_alert !== "boolean" ||
+      !Array.isArray(alerting.alert_recipients) ||
+      alerting.alert_recipients.some((recipient) => typeof recipient !== "string")
+    ) {
+      throw new AdapterError("GitHub budget returned invalid alerting metadata", {
+        code: "INVALID_RESPONSE",
+      });
+    }
     const skus = budgetProductSkus(budget);
-    const amount = parseNumber(budget.budget_amount);
-    const licenseBudget = type.toLowerCase().includes("license");
+    const amount = budget.budget_amount;
+    const usdBudget = isUsdBudget(skus);
     return {
       externalId: id,
       kind: "account",
       serviceName: `GitHub ${scope} budget`,
       planName: [type, skus.join(", ")].filter(Boolean).join(" · ") || "GitHub budget",
       status: budget.prevent_further_usage === true ? "enforced" : "active",
-      currency: licenseBudget ? null : "USD",
-      spendLimitUsd: !licenseBudget ? amount : null,
-      spendLimitWindow: !licenseBudget && amount != null ? "GitHub budget" : null,
-      requestLimit: licenseBudget ? amount : null,
-      requestLimitWindow: licenseBudget && amount != null ? "licenses" : null,
+      currency: usdBudget ? "USD" : null,
+      spendLimitUsd: usdBudget ? amount : null,
+      spendLimitWindow: usdBudget ? "GitHub budget" : null,
+      requestLimit: usdBudget ? null : amount,
+      requestLimitWindow: usdBudget ? null : "provider-defined budget units",
       rollupRole: "metadata",
     };
   });
@@ -437,12 +504,20 @@ export async function fetchUsage(
   let primaryOutcome = summaryOutcome;
   let primarySource = "summary";
   if (!summaryOutcome.response?.ok) {
-    primaryOutcome = await get(`${base}/usage?${params}`, headers);
-    primarySource = "detailed_report_fallback";
+    // Enterprise /usage defaults to usage with no cost center, while summary
+    // covers all cost centers. Falling back would silently undercount an
+    // enterprise that uses cost centers, so retain prior spend instead.
+    if (scope !== "enterprise") {
+      primaryOutcome = await get(`${base}/usage?${params}`, headers);
+      primarySource = "detailed_report_fallback";
+    }
   }
   if (!primaryOutcome.response?.ok) {
+    if (!primaryOutcome.response && primaryOutcome.error) {
+      throw primaryOutcome.error;
+    }
     return errorResult(
-      primaryOutcome.response?.status ?? summaryOutcome.response?.status ?? primaryOutcome.error?.status ?? summaryOutcome.error?.status ?? 0,
+      primaryOutcome.response?.status ?? summaryOutcome.response?.status ?? 500,
       {
         note: `GitHub ${scope} enhanced billing usage is unavailable. The token needs the documented billing permission and the account may need the enhanced billing platform.`,
       }

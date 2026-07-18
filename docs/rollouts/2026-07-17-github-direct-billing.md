@@ -10,12 +10,16 @@ For one configured billing boundary it reads:
 
 - Enhanced-billing current-month usage summary (`netAmount`, product/SKU,
   quantity, and unit) as the canonical cash-spend total.
-- The detailed usage report only when the summary preview endpoint is
-  unavailable; repository names in that fallback are never stored.
-- Read-only organization/enterprise spending budgets, including their USD cap
-  or license cap and `prevent_further_usage` setting. GitHub does not document
-  a personal-user budget-list endpoint, so that state is explicitly
-  `not_exposed` for user accounts.
+- The detailed usage report only for organization/personal boundaries when the
+  summary preview endpoint is unavailable; repository names in that fallback
+  are never stored. Enterprise usage never falls back because its summary is
+  the all-cost-center view while the detailed endpoint requires a cost center.
+- Read-only organization/enterprise spending budgets, including amount and
+  `prevent_further_usage` setting. Documented metered SKUs are represented in
+  USD; unknown or license-like SKUs retain provider-defined units instead of
+  being mislabeled as dollars. GitHub does not document a personal-user
+  budget-list endpoint, so that state is explicitly `not_exposed` for user
+  accounts.
 - Copilot AI-credit and premium-request usage as separate product/model
   breakdowns. These are never added to the canonical summary a second time.
 
@@ -31,8 +35,9 @@ allowlisted `https://api.<enterprise>.ghe.com` origin.
   token with **Organization Administration: read**, used by an organization
   admin or billing manager.
 - Personal user: a token with **Plan: read**.
-- Enterprise: GitHub documents enterprise-specific billing authentication;
-  some enterprise routes require a classic PAT.
+- Enterprise: a classic PAT. GitHub explicitly says enterprise billing
+  endpoints do not work with fine-grained PATs or GitHub App user or
+  installation tokens.
 
 An unavailable optional surface is persisted as a bounded capability state:
 `permission_unavailable` (403), `not_available` (404),
@@ -51,4 +56,5 @@ plan metadata or Marketplace publisher endpoints.
 
 - https://docs.github.com/en/rest/billing/usage
 - https://docs.github.com/en/rest/billing/budgets
+- https://docs.github.com/en/billing/reference/product-and-sku-names
 - https://docs.github.com/en/billing/tutorials/automate-usage-reporting
