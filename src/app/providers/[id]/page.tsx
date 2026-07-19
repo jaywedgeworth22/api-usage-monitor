@@ -17,6 +17,10 @@ import { usageUnitLabelForProvider } from "@/lib/provider-definitions";
 import { useDisplayDensity } from "@/lib/display-density";
 import { costCoverageHelpText } from "@/lib/cost-coverage-help";
 import { CostCoverageCaveatBanner, spendCoverageNoteText } from "./cost-coverage-caveat";
+import {
+  ComplianceSummaryPanel,
+  type ProviderComplianceSummaryView,
+} from "./compliance-summary";
 
 interface Provider {
   id: string;
@@ -68,6 +72,7 @@ interface Provider {
   pushedUnclassifiedCostEventCount: number;
   spendCoverage: ProviderCostCoverage;
   costCoverageCaveat?: ProviderCostCoverageCaveat | null;
+  compliance?: ProviderComplianceSummaryView | null;
   subscriptionMonthToDateUsd?: number;
   fixedAccruedUsd?: number;
   linkedFixedDedupeUsd?: number;
@@ -508,6 +513,8 @@ export default function ProviderDetailPage() {
           <p className="mt-4 text-xs text-gray-500 dark:text-gray-400">{provider.plan.notes}</p>
         )}
       </div>
+
+      <ComplianceSummaryPanel compliance={provider.compliance ?? null} />
 
       <details className="rounded-xl border border-gray-200 bg-white dark:border-gray-700 dark:bg-gray-800">
         <summary className="cursor-pointer px-4 py-3 text-sm font-semibold text-gray-700 hover:bg-gray-50 dark:text-gray-200 dark:hover:bg-gray-700/40">
