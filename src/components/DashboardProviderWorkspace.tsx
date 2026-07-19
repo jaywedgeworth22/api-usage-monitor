@@ -1162,7 +1162,7 @@ export default function DashboardProviderWorkspace({
   };
 
   return (
-    <section className="rounded-lg border border-gray-200 bg-white dark:border-gray-700 dark:bg-gray-800" aria-labelledby="provider-workspace-heading">
+    <section className="workspace-container rounded-lg border border-gray-200 bg-white dark:border-gray-700 dark:bg-gray-800" aria-labelledby="provider-workspace-heading">
       <div className="flex flex-wrap items-start justify-between gap-3 border-b border-gray-100 px-4 py-4 dark:border-gray-700 sm:px-6">
         <div>
           <h2 id="provider-workspace-heading" className="text-base font-semibold text-gray-900 dark:text-gray-100">

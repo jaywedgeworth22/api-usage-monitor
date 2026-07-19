@@ -4,7 +4,7 @@ import { prisma } from "@/lib/prisma";
 import { decrypt, encrypt, encryptJson } from "@/lib/crypto";
 import { parseProviderUpdateInput, readJsonBody } from "@/lib/provider-input";
 import { buildProviderAlertState } from "@/lib/provider-alerts";
-import { computeBudgetStatus } from "@/lib/budget-status";
+import { computeBudgetStatus, bustBudgetStatusCache } from "@/lib/budget-status";
 import { toPrismaProviderPlanData } from "@/lib/provider-plan";
 import { canonicalProviderKey } from "@/lib/provider-identity";
 import { buildKeyPreview } from "@/lib/provider-key-preview";
@@ -524,6 +524,8 @@ export async function PUT(
     },
   });
 
+  bustBudgetStatusCache();
+
   return NextResponse.json(provider);
 }
 
@@ -550,5 +552,6 @@ export async function DELETE(
   }
 
   await prisma.provider.delete({ where: { id } });
+  bustBudgetStatusCache();
   return NextResponse.json({ success: true });
 }

@@ -170,7 +170,7 @@ export default function ProviderCard({
 
   return (
     <div
-      className="relative block rounded-xl border border-gray-200 bg-white p-6 transition-all duration-200 hover:-translate-y-0.5 hover:border-gray-300 hover:shadow-md dark:border-gray-700 dark:bg-gray-800 dark:hover:border-gray-600"
+      className="provider-card relative block rounded-xl border border-gray-200 bg-white p-6 transition-all duration-200 hover:-translate-y-0.5 hover:border-gray-300 hover:shadow-md dark:border-gray-700 dark:bg-gray-800 dark:hover:border-gray-600"
     >
       <div className="flex items-center gap-3 mb-4">
         <div className={`w-3 h-3 rounded-full ${dotColor} flex-shrink-0`} />

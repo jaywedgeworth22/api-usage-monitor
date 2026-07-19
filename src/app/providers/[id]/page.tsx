@@ -255,7 +255,7 @@ export default function ProviderDetailPage() {
   );
 
   return (
-    <div className="space-y-6">
+    <div className="provider-details space-y-6">
       <div className="flex items-center gap-2 text-sm text-gray-500 dark:text-gray-400">
         <Link href="/" className="hover:text-gray-900 dark:hover:text-gray-100">
           Dashboard

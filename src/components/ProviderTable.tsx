@@ -311,13 +311,13 @@ export default function ProviderTable({
   // (columns hide per breakpoint; stacks to cards under 640px), so clip never
   // actually hides content.
   return (
-    <div className="overflow-x-clip rounded-xl border border-gray-200 bg-white dark:border-gray-700 dark:bg-gray-800">
+    <div className="provider-table overflow-x-clip rounded-xl border border-gray-200 bg-white dark:border-gray-700 dark:bg-gray-800">
       <table className="responsive-table w-full text-sm">
         <caption className="sr-only">Configured API providers</caption>
         <thead>
           {/* Keep column headings visible while scrolling the list. Each <th>
-              gets its own opaque bg + sticky top-0 so rows scroll underneath. */}
-          <tr className="border-b border-gray-100 bg-gray-50 dark:border-gray-700 dark:bg-gray-900/60 [&>th]:sticky [&>th]:top-0 [&>th]:z-20 [&>th]:bg-gray-50 dark:[&>th]:bg-gray-900">
+              gets its own opaque bg + sticky top-28 so rows scroll underneath. */}
+          <tr className="border-b border-gray-100 bg-gray-50 dark:border-gray-700 dark:bg-gray-900/60 [&>th]:sticky [&>th]:top-28 [&>th]:z-20 [&>th]:bg-gray-50 dark:[&>th]:bg-gray-900">
             <SortHeader {...sortHeaderProps} field="name" label="Name" />
             <SortHeader {...sortHeaderProps} field="type" label="Tracking" className="hidden sm:table-cell" />
             <SortHeader {...sortHeaderProps} field="status" label="Status" className="hidden sm:table-cell" />

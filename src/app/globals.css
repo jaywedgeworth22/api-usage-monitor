@@ -116,3 +116,75 @@ body {
     --chart-tooltip-bg: #111827;
     --chart-tooltip-text: #f3f4f6;
   }
+
+/* ==========================================================================
+   Display Density (Compact Mode) Adjustments
+   ========================================================================== */
+
+/* 1. Global table row/cell height reductions */
+.density-compact .responsive-table th,
+.density-compact .responsive-table td {
+  padding-top: 0.35rem !important;
+  padding-bottom: 0.35rem !important;
+}
+
+/* 2. ProviderTable specific */
+.density-compact .provider-table td[data-label="Name"] p.text-xs,
+.density-compact .provider-table td[data-label="Name"] p.font-mono,
+.density-compact .provider-table td[data-label="Spend / Budget"] span.mt-1,
+.density-compact .provider-table td[data-label="Spend / Budget"] p.text-xs {
+  display: none !important;
+}
+
+/* 3. ProviderCard specific */
+.density-compact .provider-card {
+  padding: 0.875rem 1rem !important;
+}
+.density-compact .provider-card .mb-4 {
+  margin-bottom: 0.5rem !important;
+}
+.density-compact .provider-card .grid-cols-2 {
+  gap: 0.5rem !important;
+}
+.density-compact .provider-card h3 {
+  font-size: 0.95rem !important;
+}
+.density-compact .provider-card p.text-xs,
+.density-compact .provider-card p.text-\[10px\],
+.density-compact .provider-card p.mt-1.text-\[10px\],
+.density-compact .provider-card p.mt-3.text-xs,
+.density-compact .provider-card span.font-normal {
+  display: none !important;
+}
+.density-compact .provider-card .mt-3 {
+  margin-top: 0.5rem !important;
+}
+
+/* 4. DashboardProviderWorkspace specific */
+.density-compact .workspace-container td[data-label="Provider family"] p.text-xs,
+.density-compact .workspace-container td[data-label="Spend"] p.text-[10px],
+.density-compact .workspace-container td[data-label="Spend"] span.font-normal,
+.density-compact .workspace-container td[data-label="Last sync"] p.text-[10px],
+.density-compact .workspace-container td[data-label="Last sync"] p.mt-1 {
+  display: none !important;
+}
+.density-compact .workspace-container .table-group-cell .px-3.py-3 {
+  padding: 0.5rem 0.75rem !important;
+}
+.density-compact .workspace-container .table-group-cell .gap-3 {
+  gap: 0.5rem !important;
+}
+
+/* 5. Provider details page specific */
+.density-compact .provider-details .grid-cols-1,
+.density-compact .provider-details .grid-cols-2 {
+  gap: 0.5rem !important;
+}
+.density-compact .provider-details .p-4 {
+  padding: 0.75rem !important;
+}
+.density-compact .provider-details p.text-\[10px\],
+.density-compact .provider-details dd.text-\[10px\],
+.density-compact .provider-details dl dd + dd.text-\[10px\] {
+  display: none !important;
+}

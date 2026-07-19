@@ -4,7 +4,7 @@ import { prisma } from "@/lib/prisma";
 import { encrypt, decrypt, encryptJson } from "@/lib/crypto";
 import { parseProviderCreateInput, readJsonBody } from "@/lib/provider-input";
 import { buildProviderAlertState } from "@/lib/provider-alerts";
-import { computeBudgetStatus } from "@/lib/budget-status";
+import { computeBudgetStatus, bustBudgetStatusCache } from "@/lib/budget-status";
 import { toPrismaProviderPlanData } from "@/lib/provider-plan";
 import { canonicalProviderKey } from "@/lib/provider-identity";
 import { buildKeyPreview } from "@/lib/provider-key-preview";
@@ -554,6 +554,8 @@ export async function POST(request: NextRequest) {
       createdAt: true,
     },
   });
+
+  bustBudgetStatusCache();
 
   return NextResponse.json(provider, { status: 201 });
 }

@@ -297,11 +297,11 @@ export default function PaidServicesPanel({
           )}
         </div>
       ) : (
-        <div className="overflow-x-auto">
+        <div className="overflow-x-clip">
           <table className="responsive-table w-full text-sm">
             <caption className="sr-only">Paid services, subscription tiers, usage, quota, renewal, and billing sources</caption>
             <thead>
-              <tr className="border-b border-gray-100 bg-gray-50 dark:border-gray-700 dark:bg-gray-900/60">
+              <tr className={`border-b border-gray-100 bg-gray-50 dark:border-gray-700 dark:bg-gray-900/60 [&>th]:sticky [&>th]:z-20 [&>th]:bg-gray-50 dark:[&>th]:bg-gray-900 ${variant === "settings" ? "[&>th]:top-28" : "[&>th]:top-16"}`}>
                 <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 sm:px-6">Service</th>
                 <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400">Plan / tier</th>
                 <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400">Cost</th>

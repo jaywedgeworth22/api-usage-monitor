@@ -3,6 +3,7 @@ import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { readJsonBody } from "@/lib/provider-input";
 import { canonicalProjectKey } from "@/lib/provider-identity";
+import { bustBudgetStatusCache } from "@/lib/budget-status";
 
 function cleanOptionalString(value: unknown): string | undefined {
   if (typeof value !== "string") return undefined;
@@ -78,6 +79,7 @@ export async function PUT(
       where: { id },
       data: updateData,
     });
+    bustBudgetStatusCache();
     return NextResponse.json(project);
   } catch (error) {
     if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002") {
@@ -99,5 +101,6 @@ export async function DELETE(
   }
 
   await prisma.project.delete({ where: { id } });
+  bustBudgetStatusCache();
   return NextResponse.json({ success: true });
 }

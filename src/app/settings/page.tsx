@@ -397,18 +397,60 @@ function SettingsPageContent() {
     <div className="space-y-6">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <h1 className="text-2xl font-bold text-gray-900 dark:text-gray-100">Settings</h1>
-        {activeTab === "connections" ? (
-          <button
-            type="button"
-            onClick={() => {
-              setEditProvider(null);
-              setModalOpen(true);
-            }}
-            className="px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700 transition-colors"
+      </div>
+
+      <div className="sticky top-16 z-30 bg-gray-50 dark:bg-gray-900 pt-2 pb-px border-b border-gray-200 dark:border-gray-800 flex items-center justify-between gap-4">
+        <nav aria-label="Settings sections" className="flex overflow-x-auto min-w-0 flex-1">
+          <Link
+            href="/settings?tab=connections"
+            id="settings-tab-connections"
+            aria-current={activeTab === "connections" ? "page" : undefined}
+            className={`pb-2.5 px-4 text-sm font-medium border-b-2 transition-colors whitespace-nowrap ${
+              activeTab === "connections"
+                ? "border-blue-500 text-blue-600 dark:text-blue-400"
+                : "border-transparent text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200"
+            }`}
           >
-            Add provider
-          </button>
-        ) : activeTab === "services" ? (
+            Connections
+          </Link>
+          <Link
+            href="/settings?tab=services"
+            id="settings-tab-services"
+            aria-current={activeTab === "services" ? "page" : undefined}
+            className={`pb-2.5 px-4 text-sm font-medium border-b-2 transition-colors whitespace-nowrap ${
+              activeTab === "services"
+                ? "border-blue-500 text-blue-600 dark:text-blue-400"
+                : "border-transparent text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200"
+            }`}
+          >
+            Paid services
+          </Link>
+          <Link
+            href="/settings?tab=projects"
+            id="settings-tab-projects"
+            aria-current={activeTab === "projects" ? "page" : undefined}
+            className={`pb-2.5 px-4 text-sm font-medium border-b-2 transition-colors whitespace-nowrap ${
+              activeTab === "projects"
+                ? "border-blue-500 text-blue-600 dark:text-blue-400"
+                : "border-transparent text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200"
+            }`}
+          >
+            Projects
+          </Link>
+        </nav>
+        <div className="flex-shrink-0 pb-2">
+          {activeTab === "connections" ? (
+            <button
+              type="button"
+              onClick={() => {
+                setEditProvider(null);
+                setModalOpen(true);
+              }}
+              className="px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700 transition-colors"
+            >
+              Add provider
+            </button>
+          ) : activeTab === "services" ? (
             <button
               type="button"
               onClick={() => {
@@ -419,58 +461,20 @@ function SettingsPageContent() {
             >
               Track paid service
             </button>
-        ) : activeTab === "projects" ? (
-          <button
-            type="button"
-            onClick={() => {
-              setEditProject(null);
-              setProjectModalOpen(true);
-            }}
-            className="px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700 transition-colors"
-          >
-            Add project
-          </button>
-        ) : null}
+          ) : activeTab === "projects" ? (
+            <button
+              type="button"
+              onClick={() => {
+                setEditProject(null);
+                setProjectModalOpen(true);
+              }}
+              className="px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700 transition-colors"
+            >
+              Add project
+            </button>
+          ) : null}
+        </div>
       </div>
-
-      <nav aria-label="Settings sections" className="flex overflow-x-auto border-b border-gray-200 dark:border-gray-800">
-        <Link
-          href="/settings?tab=connections"
-          id="settings-tab-connections"
-          aria-current={activeTab === "connections" ? "page" : undefined}
-          className={`pb-3 px-4 text-sm font-medium border-b-2 transition-colors whitespace-nowrap ${
-            activeTab === "connections"
-              ? "border-blue-500 text-blue-600 dark:text-blue-400"
-              : "border-transparent text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200"
-          }`}
-        >
-          Connections
-        </Link>
-        <Link
-          href="/settings?tab=services"
-          id="settings-tab-services"
-          aria-current={activeTab === "services" ? "page" : undefined}
-          className={`pb-3 px-4 text-sm font-medium border-b-2 transition-colors whitespace-nowrap ${
-            activeTab === "services"
-              ? "border-blue-500 text-blue-600 dark:text-blue-400"
-              : "border-transparent text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200"
-          }`}
-        >
-          Paid services
-        </Link>
-        <Link
-          href="/settings?tab=projects"
-          id="settings-tab-projects"
-          aria-current={activeTab === "projects" ? "page" : undefined}
-          className={`pb-3 px-4 text-sm font-medium border-b-2 transition-colors whitespace-nowrap ${
-            activeTab === "projects"
-              ? "border-blue-500 text-blue-600 dark:text-blue-400"
-              : "border-transparent text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200"
-          }`}
-        >
-          Projects
-        </Link>
-      </nav>
 
       {error && (
         <p role="alert" className="text-sm text-red-600 bg-red-50 rounded-lg px-4 py-3">

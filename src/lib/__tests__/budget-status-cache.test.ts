@@ -39,6 +39,7 @@ let __resetBudgetStatusCacheForTests: typeof import("../budget-status").__resetB
 let __setProjectBudgetStatusCacheOverrideForTests: typeof import("../budget-status").__setProjectBudgetStatusCacheOverrideForTests;
 let __resetProjectBudgetStatusCacheForTests: typeof import("../budget-status").__resetProjectBudgetStatusCacheForTests;
 let budgetStatusCacheTtlMs: typeof import("../budget-status").budgetStatusCacheTtlMs;
+let bustBudgetStatusCache: typeof import("../budget-status").bustBudgetStatusCache;
 
 let testDir: string;
 
@@ -71,6 +72,7 @@ beforeAll(async () => {
     __setProjectBudgetStatusCacheOverrideForTests,
     __resetProjectBudgetStatusCacheForTests,
     budgetStatusCacheTtlMs,
+    bustBudgetStatusCache,
   } = await import("../budget-status"));
 }, 60_000);
 
@@ -496,10 +498,48 @@ describe("computeProjectBudgetStatus stale-while-revalidate cache", () => {
       where: { providerId: provider.id },
       data: { totalCost: 9 },
     });
-    await new Promise((resolve) => setTimeout(resolve, 30)); // past TTL again
     await waitUntil(async () => {
       const probe = await computeProjectBudgetStatus(NOW);
       return probe.providers.find((p) => p.id === provider.id)?.spentUsd === 9;
+    });
+  });
+
+  describe("bustBudgetStatusCache", () => {
+    it("should invalidate computeBudgetStatus and computeProjectBudgetStatus caches", async () => {
+      const NOW = new Date("2026-11-10T12:00:00.000Z");
+      const provider = await createProviderWithCost(
+        "bust-cache-test-provider",
+        15,
+        new Date("2026-11-10T10:00:00.000Z")
+      );
+
+      // Warm up both caches
+      const firstBudget = await computeBudgetStatus(NOW);
+      const firstProject = await computeProjectBudgetStatus(NOW);
+
+      expect(firstBudget.providers.find((p) => p.id === provider.id)?.spentUsd).toBe(15);
+      expect(firstProject.providers.find((p) => p.id === provider.id)?.spentUsd).toBe(15);
+
+      // Directly update the DB without waiting for TTL
+      await prisma.usageSnapshot.updateMany({
+        where: { providerId: provider.id },
+        data: { totalCost: 35 },
+      });
+
+      // Assert that cache still returns stale values (15) because it hasn't expired yet
+      const secondBudget = await computeBudgetStatus(NOW);
+      const secondProject = await computeProjectBudgetStatus(NOW);
+      expect(secondBudget.providers.find((p) => p.id === provider.id)?.spentUsd).toBe(15);
+      expect(secondProject.providers.find((p) => p.id === provider.id)?.spentUsd).toBe(15);
+
+      // Now bust the cache!
+      bustBudgetStatusCache();
+
+      // Assert that fresh call returns updated values (35) immediately
+      const thirdBudget = await computeBudgetStatus(NOW);
+      const thirdProject = await computeProjectBudgetStatus(NOW);
+      expect(thirdBudget.providers.find((p) => p.id === provider.id)?.spentUsd).toBe(35);
+      expect(thirdProject.providers.find((p) => p.id === provider.id)?.spentUsd).toBe(35);
     });
   });
 });
