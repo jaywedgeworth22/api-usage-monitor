@@ -4,7 +4,7 @@ import { prisma } from "@/lib/prisma";
 import { decrypt, encrypt, encryptJson } from "@/lib/crypto";
 import { parseProviderUpdateInput, readJsonBody } from "@/lib/provider-input";
 import { buildProviderAlertState } from "@/lib/provider-alerts";
-import { computeBudgetStatus } from "@/lib/budget-status";
+import { computeBudgetStatus, bustBudgetStatusCache } from "@/lib/budget-status";
 import { toPrismaProviderPlanData } from "@/lib/provider-plan";
 import { canonicalProviderKey } from "@/lib/provider-identity";
 import { buildKeyPreview } from "@/lib/provider-key-preview";
@@ -33,6 +33,11 @@ import {
   providerCredentialManagementForClient,
 } from "@/lib/managed-provider-credential";
 import { snapshotCostCoverageCaveat } from "@/lib/snapshot-sync-status";
+import {
+  authoritativeProviderBillingCredential,
+  hashProviderBillingAccountId,
+  projectProviderBillingAccountMatches,
+} from "@/lib/provider-billing-account";
 
 function decryptKey(encryptedKey: string | null): string | null {
   if (!encryptedKey) return null;
@@ -73,6 +78,7 @@ export async function GET(
       secretConfig: true,
       refreshIntervalMin: true,
       groupId: true,
+      billingAccountIdentity: true,
       label: true,
       allocations: {
         select: {
@@ -148,7 +154,14 @@ export async function GET(
         })
       : null;
 
-  const { snapshots, apiKey, config, secretConfig, ...rest } = provider;
+  const {
+    snapshots,
+    apiKey,
+    config,
+    secretConfig,
+    billingAccountIdentity,
+    ...rest
+  } = provider;
   const clientConfig = providerConfigForClient(config, secretConfig);
   const credentialManagement = providerCredentialManagementForClient(
     config,
@@ -182,6 +195,18 @@ export async function GET(
   );
   const decryptedKey = decryptKey(apiKey);
   const adapterConfig = serverConfig(config, secretConfig);
+  const billingAccount = projectProviderBillingAccountMatches([
+    {
+      id: provider.id,
+      name: provider.name,
+      billingAccountIdentity,
+      decryptedCredential: authoritativeProviderBillingCredential({
+        providerName: provider.name,
+        primaryCredential: decryptedKey,
+        serverConfig: adapterConfig,
+      }),
+    },
+  ]).get(provider.id) ?? null;
   const geminiBillingStatus = deriveGeminiBillingStatus({
     providerName: provider.name,
     providerType: provider.type,
@@ -241,6 +266,8 @@ export async function GET(
     externalBilling,
     ...clientConfig,
     credentialManagement,
+    billingAccount,
+    billingAccountIdentityConfigured: billingAccountIdentity != null,
     // A client-safe preview identifies this individual validated managed key
     // without exposing the full key or the source list it came from. A
     // malformed/unreadable ownership envelope must stay fully redacted.
@@ -268,6 +295,9 @@ export async function GET(
     snapshotCostUsd:
       canonicalBudget?.snapshotCostUsd ?? latestSnapshot?.totalCost ?? null,
     snapshotCostFetchedAt: canonicalBudget?.snapshotCostFetchedAt ?? null,
+    snapshotCostWindowStart: canonicalBudget?.snapshotCostWindowStart ?? null,
+    snapshotCostWindowEnd: canonicalBudget?.snapshotCostWindowEnd ?? null,
+    snapshotCostScope: canonicalBudget?.snapshotCostScope ?? null,
     snapshotFixedCostIncludedUsd:
       canonicalBudget?.snapshotFixedCostIncludedUsd ?? 0,
     snapshotCostIncludesUnknownFixed:
@@ -431,6 +461,11 @@ export async function PUT(
     updateData.refreshIntervalMin = input.refreshIntervalMin;
   }
   if (input.groupId !== undefined) updateData.groupId = input.groupId;
+  if (input.billingAccountId !== undefined) {
+    updateData.billingAccountIdentity = input.billingAccountId
+      ? hashProviderBillingAccountId(existing.name, input.billingAccountId)
+      : null;
+  }
   if (input.label !== undefined) updateData.label = input.label;
   if (input.apiKey !== undefined) {
     updateData.apiKey = input.apiKey === null ? null : encrypt(input.apiKey);
@@ -489,6 +524,8 @@ export async function PUT(
     },
   });
 
+  bustBudgetStatusCache();
+
   return NextResponse.json(provider);
 }
 
@@ -515,5 +552,6 @@ export async function DELETE(
   }
 
   await prisma.provider.delete({ where: { id } });
+  bustBudgetStatusCache();
   return NextResponse.json({ success: true });
 }

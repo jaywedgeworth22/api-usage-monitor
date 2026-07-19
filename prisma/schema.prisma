@@ -28,6 +28,11 @@ model Provider {
   credits               Float                       @default(0)
   refreshIntervalMin    Int                         @default(60)
   groupId               String?
+  // Keyed digest of an operator-confirmed provider account/org identifier.
+  // The raw identifier is never stored or returned. When absent, the read
+  // path can still prove same-account rows that use the exact same decrypted
+  // credential; different credentials are not treated as different accounts.
+  billingAccountIdentity String?
   label                 String?
   createdAt             DateTime                    @default(now())
   plan                  ProviderPlan?

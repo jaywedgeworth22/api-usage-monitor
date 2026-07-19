@@ -1180,7 +1180,9 @@ export default function AddProviderModal({
                     ? ((extraFields.authMode || (originalConfig.accountEmail ? "global_key" : "api_token")) === "global_key"
                         ? "Global API key"
                         : "API token (Account Billing Read)")
-                    : "API Key"}
+                    : selectedDef?.name === "xai"
+                      ? "Management API key"
+                      : "API Key"}
                 </label>
                 <div className="relative">
                   <input
@@ -1189,7 +1191,15 @@ export default function AddProviderModal({
                     value={apiKey}
                     onChange={(e) => setApiKey(e.target.value)}
                     disabled={Boolean(credentialManaged)}
-                    placeholder={credentialManaged ? "Managed by Infisical" : editProvider ? "Leave blank to keep current" : "Your API key"}
+                    placeholder={
+                      credentialManaged
+                        ? "Managed by Infisical"
+                        : editProvider
+                          ? "Leave blank to keep current"
+                          : selectedDef?.name === "xai"
+                            ? "Management API key"
+                            : "Your API key"
+                    }
                     className="w-full px-3 py-2 pr-10 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 disabled:cursor-not-allowed disabled:bg-gray-100 dark:border-gray-600 dark:bg-gray-900 dark:text-gray-100 dark:disabled:bg-gray-800 dark:disabled:text-gray-400"
                   />
                   {!credentialManaged && (

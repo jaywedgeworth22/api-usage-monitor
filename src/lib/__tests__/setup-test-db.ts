@@ -16,6 +16,7 @@ CREATE TABLE "Provider" (
   "credits" REAL NOT NULL DEFAULT 0,
   "refreshIntervalMin" INTEGER NOT NULL DEFAULT 60,
   "groupId" TEXT,
+  "billingAccountIdentity" TEXT,
   "category" TEXT NOT NULL DEFAULT 'api',
   "label" TEXT,
   "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP

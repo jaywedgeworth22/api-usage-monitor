@@ -99,6 +99,8 @@ interface SourceRead {
   values: Map<string, string>;
   missing: Set<string>;
   errors: Map<string, string>;
+  /** All secret names visible in this scope (from the preflight list). */
+  allSecretNames: Set<string>;
   result: InfisicalCredentialSyncSourceResult;
 }
 
@@ -452,6 +454,96 @@ const CREDENTIAL_MAPPINGS: readonly CredentialMapping[] = [
     }),
   },
 ] as const;
+
+// ---------------------------------------------------------------------------
+// Auto-discovery: maps secret-key naming patterns to built-in provider names.
+// This mapping is intentionally broader than CREDENTIAL_MAPPINGS — it covers
+// every BuiltInProviderName so the discovery audit can flag new secrets even
+// for providers that haven't been wired into the static sync yet. Entries
+// whose secret name already appears in CREDENTIAL_MAPPINGS are harmless
+// duplicates; discoverUnmappedSecrets filters them out.
+// ---------------------------------------------------------------------------
+const SECRET_NAME_TO_PROVIDER: ReadonlyMap<string, string> = new Map<string, string>([
+  // LLM / AI
+  ["OPENAI_API_KEY", "openai"],
+  ["OPENAI_ADMIN_KEY", "openai"],
+  ["ANTHROPIC_API_KEY", "anthropic"],
+  ["ANTHROPIC_ADMIN_KEY", "anthropic"],
+  ["GEMINI_API_KEY", "google-ai"],
+  ["GOOGLE_AI_API_KEY", "google-ai"],
+  ["GOOGLE_SERVICE_ACCOUNT_JSON", "google-ai"],
+  ["DEEPSEEK_API_KEY", "deepseek"],
+  ["XAI_API_KEY", "xai"],
+  ["GROK_API_KEY", "xai"],
+  ["MISTRAL_API_KEY", "mistral"],
+  ["OPENROUTER_API_KEY", "openrouter"],
+  // Developer Platform
+  ["GITHUB_TOKEN", "github"],
+  ["GITHUB_API_TOKEN", "github"],
+  ["GITHUB_PAT", "github"],
+  ["VERCEL_API_TOKEN", "vercel"],
+  ["VERCEL_TOKEN", "vercel"],
+  // Infrastructure
+  ["RENDER_API_KEY", "render"],
+  ["RENDER_API_TOKEN", "render"],
+  ["HETZNER_API_TOKEN", "hetzner"],
+  ["HETZNER_API_KEY", "hetzner"],
+  ["CLOUDFLARE_API_TOKEN", "cloudflare"],
+  ["CLOUDFLARE_API_KEY", "cloudflare"],
+  ["CLOUDFLARE_GLOBAL_API_KEY", "cloudflare"],
+  // Oracle Cloud (multi-key)
+  ["OCI_TENANCY_OCID", "oracle"],
+  ["OCI_USER_OCID", "oracle"],
+  ["OCI_API_KEY_FINGERPRINT", "oracle"],
+  ["OCI_API_SIGNING_PRIVATE_KEY", "oracle"],
+  ["OCI_REGION", "oracle"],
+  ["OCI_COMPARTMENT_OCID", "oracle"],
+  // Vector DB
+  ["PINECONE_API_KEY", "pinecone"],
+  ["VOYAGE_API_KEY", "voyage"],
+  // Market Data
+  ["FMP_API_KEY", "fmp"],
+  ["FINNHUB_API_KEY", "finnhub"],
+  ["ALPHAVANTAGE_API_KEY", "alphavantage"],
+  ["ALPHA_VANTAGE_API_KEY", "alphavantage"],
+  ["TRADIER_API_TOKEN", "tradier"],
+  ["TRADIER_ACCESS_TOKEN", "tradier"],
+  ["MARKETSTACK_API_KEY", "marketstack"],
+  ["INTRINIO_API_KEY", "intrinio"],
+  ["TIINGO_API_KEY", "tiingo"],
+  ["TWELVEDATA_API_KEY", "twelvedata"],
+  ["TWELVE_DATA_API_KEY", "twelvedata"],
+  ["FINTECH_STUDIOS_API_KEY", "fintech-studios"],
+  ["MASSIVE_API_KEY", "massive"],
+  ["FRED_API_KEY", "fred"],
+  ["QUIVER_QUANT_API_KEY", "quiver-quant"],
+  ["UNUSUAL_WHALES_API_KEY", "unusual-whales"],
+  // Observability
+  ["SENTRY_AUTH_TOKEN", "sentry"],
+  ["SENTRY_API_KEY", "sentry"],
+  ["LANGFUSE_PUBLIC_KEY", "langfuse"],
+  ["LANGFUSE_SECRET_KEY", "langfuse"],
+  // Notifications
+  ["TWILIO_AUTH_TOKEN", "twilio"],
+  ["TWILIO_ACCOUNT_SID", "twilio"],
+  ["TWILIO_API_KEY", "twilio"],
+  ["RESEND_API_KEY", "resend"],
+  ["PUSHOVER_API_TOKEN", "pushover"],
+  ["PUSHOVER_APP_TOKEN", "pushover"],
+  // Data
+  ["APIFY_API_TOKEN", "apify"],
+  ["APIFY_TOKEN", "apify"],
+  ["FIRECRAWL_API_KEY", "firecrawl"],
+  ["LLAMAPARSE_API_KEY", "llamaindex"],
+  ["LLAMA_CLOUD_API_KEY", "llamaindex"],
+  ["LLAMAINDEX_API_KEY", "llamaindex"],
+  // Payments
+  ["STRIPE_SECRET_KEY", "stripe"],
+  ["STRIPE_API_KEY", "stripe"],
+  // Brokerage
+  ["ALPACA_API_KEY", "alpaca"],
+  ["ALPACA_API_SECRET", "alpaca"],
+]);
 
 const PROJECT_NAMES: Readonly<Record<"st" | "ct", string>> = {
   st: "SocraticTrade.com",
@@ -912,6 +1004,7 @@ async function readSource(
       values: new Map(),
       missing: new Set(),
       errors: new Map(),
+      allSecretNames: new Set(),
       result: {
         source: source.source,
         configured: false,
@@ -929,6 +1022,7 @@ async function readSource(
       values: new Map(),
       missing: new Set(),
       errors: new Map(names.map((name) => [name, "incomplete_credentials"])),
+      allSecretNames: new Set(),
       result: {
         source: source.source,
         configured: false,
@@ -942,9 +1036,10 @@ async function readSource(
   }
 
   let token: string;
+  let scopeNames: Set<string>;
   try {
     token = await login(baseUrl, source);
-    await preflightSourceScope(baseUrl, source, token);
+    scopeNames = await preflightSourceScope(baseUrl, source, token);
   } catch (error) {
     const code = error instanceof InfisicalSyncError ? error.code : "auth_failed";
     return {
@@ -953,6 +1048,7 @@ async function readSource(
       values: new Map(),
       missing: new Set(),
       errors: new Map(names.map((name) => [name, code])),
+      allSecretNames: new Set(),
       result: {
         source: source.source,
         configured: true,
@@ -993,6 +1089,7 @@ async function readSource(
     values,
     missing,
     errors,
+    allSecretNames: scopeNames,
     result: {
       source: source.source,
       configured: true,
@@ -2273,6 +2370,71 @@ async function applyStPrimaryBridge(read: StPrimaryBridgeRead): Promise<{
   });
 }
 
+// ---------------------------------------------------------------------------
+// Informational discovery: log Infisical secrets that match a known provider
+// pattern but are not wired into the static CREDENTIAL_MAPPINGS. This never
+// creates providers or mutates credentials — it only logs for operator
+// visibility so new services can be manually added to the allowlist.
+// ---------------------------------------------------------------------------
+
+/** Secret names already covered by at least one CREDENTIAL_MAPPINGS entry. */
+function mappedSecretNames(): Set<string> {
+  const names = new Set<string>();
+  for (const mapping of CREDENTIAL_MAPPINGS) {
+    for (const attempt of mapping.attempts) {
+      for (const name of attempt.required) names.add(name);
+      for (const name of attempt.optional ?? []) names.add(name);
+    }
+  }
+  return names;
+}
+
+/**
+ * Cross-reference every secret name visible in authenticated Infisical scopes
+ * against SECRET_NAME_TO_PROVIDER. Any match that is NOT already covered by
+ * CREDENTIAL_MAPPINGS is logged as an unmapped discovery. The function is
+ * deliberately fire-and-forget: errors are swallowed so discovery can never
+ * break the sync cycle.
+ */
+function discoverUnmappedSecrets(
+  reads: ReadonlyMap<InfisicalCredentialScope, SourceRead>
+): void {
+  try {
+    const alreadyMapped = mappedSecretNames();
+    const discovered: Array<{
+      source: InfisicalCredentialScope;
+      secretName: string;
+      providerName: string;
+    }> = [];
+
+    for (const [source, read] of reads) {
+      if (!read.authenticated || read.allSecretNames.size === 0) continue;
+      for (const secretName of read.allSecretNames) {
+        if (alreadyMapped.has(secretName)) continue;
+        const providerName = SECRET_NAME_TO_PROVIDER.get(secretName);
+        if (providerName) {
+          discovered.push({ source, secretName, providerName });
+        }
+      }
+    }
+
+    if (discovered.length === 0) return;
+
+    console.info(
+      `[infisical-discovery] ${JSON.stringify({
+        unmappedSecrets: discovered.length,
+        details: discovered.map(({ source, secretName, providerName }) => ({
+          source,
+          secretName,
+          providerName,
+        })),
+      })}`
+    );
+  } catch {
+    // Discovery is best-effort. A failure here must never affect the sync.
+  }
+}
+
 async function syncRootOnce(
   options: InfisicalCredentialSyncOptions
 ): Promise<InfisicalCredentialSyncResult> {
@@ -2341,6 +2503,8 @@ async function syncRootOnce(
     result.unchanged = applied.unchanged;
     result.failed += applied.failed;
   }
+
+  discoverUnmappedSecrets(reads);
   return result;
 }
 

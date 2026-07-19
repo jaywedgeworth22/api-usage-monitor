@@ -2053,6 +2053,11 @@ export async function deliverProviderAlerts(options: {
         take: 1,
         select: { balance: true, totalCost: true, totalRequests: true, credits: true, fetchedAt: true },
       },
+      usageReconciliations: {
+        orderBy: { createdAt: "desc" },
+        take: 1,
+        select: { deltaUsd: true, status: true },
+      },
     },
   });
   // Production delivery uses the same canonical poll+pushed+subscription
@@ -2075,13 +2080,17 @@ export async function deliverProviderAlerts(options: {
         snapshotExpected: providerPollSnapshotExpected(provider),
         plan: provider.plan,
         latestSnapshot: provider.snapshots[0] ?? null,
+        reconciliationDiscrepancyUsd: provider.usageReconciliations?.[0]?.status === "discrepancy" ? provider.usageReconciliations[0].deltaUsd : null,
       },
       now
     );
     const canonical = canonicalByProviderId.get(provider.id);
     if (canonical && provider.isActive) {
       const nonBudgetAlerts = alertState.alerts.filter(
-        (alert) => alert.code !== "budget_exceeded" && alert.code !== "budget_warning"
+        (alert) =>
+          alert.code !== "budget_exceeded" &&
+          alert.code !== "budget_warning" &&
+          alert.code !== "usage_reconciliation_discrepancy"
       );
       alertState.alerts = [...nonBudgetAlerts, ...canonical.alerts];
     }

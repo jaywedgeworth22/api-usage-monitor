@@ -19,6 +19,10 @@
     "repair:claude-cost": "node scripts/repair-claude-cumulative-cost.mjs",
     "repair:anthropic-funding": "node scripts/repair-anthropic-funding.mjs",
     "import:billing-receipts": "node scripts/import-private-billing-receipts.mjs",
+    "receipt-inbox:verify-lifecycle": "node scripts/verify-receipt-inbox-lifecycle.mjs",
+    "receipt-inbox:deploy-auditor": "npm run receipt-inbox:verify-lifecycle && wrangler deploy --config workers/receipt-lifecycle-auditor/wrangler.jsonc",
+    "receipt-inbox:deploy": "npm run receipt-inbox:deploy-auditor && wrangler deploy --config workers/receipt-inbox/wrangler.jsonc",
+    "receipt-inbox:rules": "wrangler email routing rules list jays.services",
     "import:subscription-adjustments": "node scripts/import-manual-subscription-events.mjs",
     "audit:subscription-currency": "node scripts/audit-subscription-currency.mjs",
     "migrate:provider-secrets": "node scripts/migrate-provider-config-secrets.mjs",
@@ -26,17 +30,19 @@
     "audit:subscription-links": "node scripts/audit-subscription-links.mjs",
     "ensure:subscription-link-index": "node scripts/ensure-subscription-link-unique-index.mjs",
     "test": "vitest run",
+    "test:receipt-inbox-worker": "vitest run --config workers/receipt-inbox/vitest.config.mjs",
     "test:migrate-safe": "node scripts/test-migrate-safe-repro.mjs",
     "test:sqlite-backup": "node scripts/test-sqlite-pre-migration-backup.mjs",
     "test:startup-config": "node scripts/test-startup-config.mjs",
     "test:oracle-deploy": "node scripts/test-oracle-deploy-config.mjs",
-    "verify": "npm run lint && npm run typecheck && npm test && npm run test:migrate-safe && npm run test:sqlite-backup && npm run test:startup-config && npm run test:oracle-deploy && npm run build"
+    "verify": "npm run lint && npm run typecheck && npm test && npm run test:receipt-inbox-worker && npm run test:migrate-safe && npm run test:sqlite-backup && npm run test:startup-config && npm run test:oracle-deploy && npm run build"
   },
   "dependencies": {
     "@prisma/client": "^6.0.0",
     "lucide-react": "^1.24.0",
     "next": "^15.5.19",
     "next-themes": "^0.4.6",
+    "postal-mime": "^2.7.5",
     "protobufjs": "^8.7.1",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
@@ -45,6 +51,7 @@
     "uuid": "^11.0.0"
   },
   "devDependencies": {
+    "@cloudflare/vitest-pool-workers": "0.18.6",
     "@eslint/eslintrc": "^3.3.6",
     "@types/node": "^22.0.0",
     "@types/pg": "^8.20.0",
@@ -60,7 +67,8 @@
     "prisma": "^6.0.0",
     "tailwindcss": "^3.4.19",
     "typescript": "^5.9.3",
-    "vitest": "^4.1.10"
+    "vitest": "^4.1.10",
+    "wrangler": "4.112.0"
   },
   "overrides": {
     "postcss": "^8.5.10"

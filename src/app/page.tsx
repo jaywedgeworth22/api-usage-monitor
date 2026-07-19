@@ -16,7 +16,9 @@ import type { ExternalBillingRecord } from "@/components/ExternalBillingDetails"
 import PaidServicesPanel from "@/components/PaidServicesPanel";
 import type { SubscriptionRow } from "@/components/SubscriptionsPanel";
 import DashboardProviderWorkspace from "@/components/DashboardProviderWorkspace";
+import OperationsOverview from "@/components/OperationsOverview";
 import { sumProviderFunds } from "@/lib/provider-financial-semantics";
+import { aggregateProviderPortfolioMoney } from "@/lib/provider-money-aggregation";
 
 interface Provider {
   id: string;
@@ -26,6 +28,10 @@ interface Provider {
   refreshIntervalMin: number;
   isActive: boolean;
   groupId: string | null;
+  billingAccount: {
+    matchKey: string;
+    evidence: "explicit_account" | "shared_credential";
+  } | null;
   label: string | null;
   keyPreview?: string | null;
   anthropicAdminApiConfigured?: boolean;
@@ -58,8 +64,18 @@ interface Provider {
   receiptCashPaidUsd?: number;
   receiptCashEventCount?: number;
   observedVariableUsageUsd?: number;
+  snapshotCostUsd?: number | null;
+  pushedMonthToDateUsd?: number;
+  subscriptionMonthToDateUsd?: number;
+  fixedMonthlyCostUsd?: number;
+  linkedFixedDedupeUsd?: number;
+  forecastedSubscriptionRenewalsUsd?: number;
+  snapshotFixedCostIncludedUsd?: number;
   estimatedApiEquivalentUsd?: number;
   snapshotCostFetchedAt?: string | null;
+  snapshotCostWindowStart?: string | null;
+  snapshotCostWindowEnd?: string | null;
+  snapshotCostScope?: string | null;
   spendCoverage: ProviderCostCoverage;
   costCoverageCaveat?: ProviderCostCoverageCaveat | null;
   pushedCostCoverage: ProviderCostCoverage;
@@ -329,32 +345,11 @@ export default function DashboardPage() {
   }, [fetchPortfolioData, fetchProviders, portfolioOpen]);
 
   const totalProviderFunds = sumProviderFunds(providers);
-  const providerGroupCounts = providers.reduce((counts, provider) => {
-    if (provider.groupId) {
-      counts.set(provider.groupId, (counts.get(provider.groupId) ?? 0) + 1);
-    }
-    return counts;
-  }, new Map<string, number>());
-  const ambiguousCostGroupIds = new Set(
-    [...providerGroupCounts.entries()]
-      .filter(([, count]) => count > 1)
-      .map(([groupId]) => groupId)
-  );
-  const includeInCostSummary = (provider: Provider) =>
-    provider.groupId == null || !ambiguousCostGroupIds.has(provider.groupId);
-  const totalCost = providers.reduce(
-    (sum, p) =>
-      sum +
-      (includeInCostSummary(p)
-        ? p.spentUsd ?? p.latestSnapshot?.totalCost ?? 0
-        : 0),
-    0
-  );
-  const totalProjectedMonthlyCost = providers.reduce(
-    (sum, p) => sum + (includeInCostSummary(p) ? p.projectedEomUsd || 0 : 0),
-    0
-  );
-  const ambiguousCostFamilyCount = ambiguousCostGroupIds.size;
+  const {
+    totalCost,
+    totalProjectedMonthlyCost,
+    ambiguousCostFamilyCount,
+  } = aggregateProviderPortfolioMoney(providers);
   const incompleteCostProviderCount = providers.filter(
     (provider) => provider.isActive && provider.spendCoverage !== "complete"
   ).length;
@@ -452,6 +447,8 @@ export default function DashboardPage() {
       />
 
       <DashboardProviderWorkspace providers={providers} subscriptions={subscriptions} />
+
+      <OperationsOverview />
 
       <details
         ref={portfolioDetailsRef}

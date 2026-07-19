@@ -54,6 +54,9 @@ export interface ProviderBudgetStatus {
   fixedMonthlyCostUsd: number;
   snapshotCostUsd: number | null;
   snapshotCostFetchedAt: string | null;
+  snapshotCostWindowStart: string | null;
+  snapshotCostWindowEnd: string | null;
+  snapshotCostScope: string | null;
   snapshotFixedCostIncludedUsd: number;
   snapshotCostIncludesUnknownFixed: boolean;
   pushedMonthToDateUsd: number;
@@ -272,6 +275,11 @@ async function computeBudgetStatusUncached(now: Date): Promise<BudgetStatusRespo
             rollupRole: true,
             syncedAt: true,
           },
+        },
+        usageReconciliations: {
+          orderBy: { createdAt: "desc" },
+          take: 1,
+          select: { deltaUsd: true, status: true },
         },
       },
     }),
@@ -845,11 +853,15 @@ async function computeBudgetStatusUncached(now: Date): Promise<BudgetStatusRespo
         },
         trackedSpendUsd: spentUsd,
         fixedAccruedUsd,
+        reconciliationDiscrepancyUsd: p.usageReconciliations?.[0]?.status === "discrepancy" ? p.usageReconciliations[0].deltaUsd : null,
       },
       now
     );
     const budgetAlerts = alertState.alerts.filter(
-      (a) => a.code === "budget_exceeded" || a.code === "budget_warning"
+      (a) =>
+        a.code === "budget_exceeded" ||
+        a.code === "budget_warning" ||
+        a.code === "usage_reconciliation_discrepancy"
     );
     if (fixedCostConflict) {
       budgetAlerts.push({
@@ -908,6 +920,15 @@ async function computeBudgetStatusUncached(now: Date): Promise<BudgetStatusRespo
       snapshotCostFetchedAt: billingSnapshotQuarantined
         ? null
         : latestCostSnapshot?.fetchedAt.toISOString() ?? null,
+      snapshotCostWindowStart: billingSnapshotQuarantined
+        ? null
+        : latestCostSnapshot?.costWindowStart?.toISOString() ?? null,
+      snapshotCostWindowEnd: billingSnapshotQuarantined
+        ? null
+        : latestCostSnapshot?.costWindowEnd?.toISOString() ?? null,
+      snapshotCostScope: billingSnapshotQuarantined
+        ? null
+        : latestCostSnapshot?.costScope ?? null,
       snapshotFixedCostIncludedUsd,
       snapshotCostIncludesUnknownFixed,
       pushedMonthToDateUsd,
@@ -1202,6 +1223,12 @@ export function __setBudgetStatusCacheOverrideForTests(enabled: boolean | null):
 /** Test-only: drop any cached value/in-flight refresh so the next call recomputes from scratch. */
 export function __resetBudgetStatusCacheForTests(): void {
   budgetStatusSwrCache.resetForTests();
+}
+
+/** Invalidate/bust the computeBudgetStatus and computeProjectBudgetStatus caches. */
+export function bustBudgetStatusCache(): void {
+  budgetStatusSwrCache.resetForTests();
+  projectBudgetStatusSwrCache.resetForTests();
 }
 
 export async function computeBudgetStatus(now: Date = new Date()): Promise<BudgetStatusResponse> {

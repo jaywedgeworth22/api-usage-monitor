@@ -53,3 +53,34 @@ describe("provider secret config operations", () => {
     ).toThrow(/only supported when updating/);
   });
 });
+
+describe("provider billing account identity input", () => {
+  it("accepts a trimmed optional identifier on create and explicit clear on update", () => {
+    expect(
+      parseProviderCreateInput({
+        name: "openai",
+        displayName: "OpenAI",
+        billingAccountId: "  org_exact_123  ",
+      }).billingAccountId
+    ).toBe("org_exact_123");
+    expect(
+      parseProviderUpdateInput({ billingAccountId: null }).billingAccountId
+    ).toBeNull();
+    expect(
+      parseProviderUpdateInput({ billingAccountId: "   " }).billingAccountId
+    ).toBeNull();
+  });
+
+  it("rejects oversized or control-bearing identifiers without echoing them", () => {
+    expect(() =>
+      parseProviderCreateInput({
+        name: "openai",
+        displayName: "OpenAI",
+        billingAccountId: "x".repeat(257),
+      })
+    ).toThrow("billingAccountId must be at most 256 characters");
+    expect(() =>
+      parseProviderUpdateInput({ billingAccountId: "org\u0000secret" })
+    ).toThrow("billingAccountId cannot contain control characters");
+  });
+});

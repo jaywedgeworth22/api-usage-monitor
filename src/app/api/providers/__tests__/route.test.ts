@@ -61,6 +61,97 @@ afterEach(() => {
 });
 
 describe("GET /api/providers - rawData exclusion and cost-coverage caveat", () => {
+  it("matches distinct OpenAI operational keys only when their authoritative Admin billing key matches", async () => {
+    const sharedAdminKey = "sk-admin-shared-organization";
+    const first = await prisma.provider.create({
+      data: {
+        name: "openai",
+        displayName: "OpenAI (Socratic Trade)",
+        type: "builtin",
+        apiKey: encrypt("sk-project-socratic"),
+        secretConfig: encryptJson({ adminApiKey: sharedAdminKey }),
+        groupId: "openai",
+      },
+    });
+    const second = await prisma.provider.create({
+      data: {
+        name: "openai",
+        displayName: "OpenAI (Congress.Trade)",
+        type: "builtin",
+        apiKey: encrypt("sk-project-congress"),
+        secretConfig: encryptJson({ adminApiKey: sharedAdminKey }),
+        groupId: "openai",
+      },
+    });
+    const distinct = await prisma.provider.create({
+      data: {
+        name: "openai",
+        displayName: "OpenAI (Other org)",
+        type: "builtin",
+        apiKey: encrypt("sk-project-other"),
+        secretConfig: encryptJson({ adminApiKey: "sk-admin-other-org" }),
+        groupId: "openai",
+      },
+    });
+    const sameOperationalDifferentAdmin = await prisma.provider.create({
+      data: {
+        name: "openai",
+        displayName: "OpenAI (Same project key, other org)",
+        type: "builtin",
+        apiKey: encrypt("sk-project-socratic"),
+        secretConfig: encryptJson({ adminApiKey: "sk-admin-third-org" }),
+        groupId: "openai",
+      },
+    });
+    const unreadable = await prisma.provider.create({
+      data: {
+        name: "openai",
+        displayName: "OpenAI (Unreadable config)",
+        type: "builtin",
+        apiKey: encrypt("sk-project-socratic"),
+        secretConfig: "not-an-encrypted-envelope",
+        groupId: "openai",
+      },
+    });
+
+    const response = await GET(new NextRequest("http://localhost/api/providers"));
+    const body = await response.json();
+    const byId = new Map(body.map((entry: { id: string }) => [entry.id, entry]));
+    const firstMatch = (byId.get(first.id) as { billingAccount: unknown }).billingAccount;
+    const secondMatch = (byId.get(second.id) as { billingAccount: unknown }).billingAccount;
+    const distinctMatch = (byId.get(distinct.id) as { billingAccount: unknown }).billingAccount;
+    const sameOperationalDifferentAdminMatch = (
+      byId.get(sameOperationalDifferentAdmin.id) as { billingAccount: unknown }
+    ).billingAccount;
+    const unreadableMatch = (
+      byId.get(unreadable.id) as { billingAccount: unknown }
+    ).billingAccount;
+    const serialized = JSON.stringify(body);
+
+    expect(firstMatch).toEqual(secondMatch);
+    expect(firstMatch).toEqual(
+      expect.objectContaining({ evidence: "shared_credential" })
+    );
+    expect(distinctMatch).not.toEqual(firstMatch);
+    expect(sameOperationalDifferentAdminMatch).not.toEqual(firstMatch);
+    expect(unreadableMatch).toBeNull();
+    expect(serialized).not.toContain(sharedAdminKey);
+    expect(serialized).not.toContain("sk-project-");
+    expect(serialized).not.toMatch(/hmac-sha256:[0-9a-f]{64}/);
+
+    const secondResponse = await GET(
+      new NextRequest("http://localhost/api/providers")
+    );
+    const secondBody = await secondResponse.json();
+    const secondById = new Map(
+      secondBody.map((entry: { id: string }) => [entry.id, entry])
+    );
+    expect(
+      (secondById.get(first.id) as { billingAccount: { matchKey: string } })
+        .billingAccount.matchKey
+    ).not.toBe((firstMatch as { matchKey: string }).matchKey);
+  });
+
   it("omits zero and unused component rows only from the compact dashboard view", async () => {
     const provider = await prisma.provider.create({
       data: {
