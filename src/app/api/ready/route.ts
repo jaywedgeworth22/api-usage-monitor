@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
+import { createRateLimiter, getClientIp } from "@/lib/rate-limit";
 import {
   getBackupRuntimeStatus,
   getRuntimeIdentity,
@@ -13,6 +14,24 @@ export const dynamic = "force-dynamic";
 const DATABASE_TIMEOUT_MS = 2_000;
 const DATABASE_COLD_START_GRACE_MS = 5 * 60 * 1_000;
 const DATABASE_FAILURE_RETRY_MS = 60 * 1_000;
+
+// ---------------------------------------------------------------------------
+// Per-IP rate limiting: max 30 requests per 60-second window.
+// ---------------------------------------------------------------------------
+const RATE_LIMIT_WINDOW_MS = 60_000;
+const RATE_LIMIT_MAX_REQUESTS = 30;
+const readyRateLimiter = createRateLimiter(
+  RATE_LIMIT_WINDOW_MS,
+  RATE_LIMIT_MAX_REQUESTS
+);
+
+// ---------------------------------------------------------------------------
+// Short-lived success cache: avoids re-querying SQLite when identical probes
+// arrive within a brief window. Only successful responses are cached; failures
+// and "starting" states always run live so callers see recovery immediately.
+// ---------------------------------------------------------------------------
+const SUCCESS_CACHE_TTL_MS = 5_000;
+let successResponseCache: { body: object; expiresAt: number } | null = null;
 
 type DatabaseCheck = {
   ok: boolean;
@@ -152,6 +171,48 @@ function skippedDatabaseCheck(): DatabaseCheck {
 }
 
 export async function GET(request: Request) {
+  // -----------------------------------------------------------------------
+  // Per-IP rate limiting — reject excessive polling before doing any work.
+  // -----------------------------------------------------------------------
+  const clientIp = getClientIp(request);
+  if (process.env.NODE_ENV !== "test" && !readyRateLimiter.check(clientIp)) {
+    const retryAfterSeconds = Math.ceil(RATE_LIMIT_WINDOW_MS / 1_000);
+    return NextResponse.json(
+      {
+        error: "Too Many Requests",
+        retryAfterSeconds,
+      },
+      {
+        status: 429,
+        headers: {
+          "Retry-After": String(retryAfterSeconds),
+        },
+      }
+    );
+  }
+
+  // -----------------------------------------------------------------------
+  // Success cache — serve the most recent successful response for a short
+  // TTL to avoid redundant SQLite probes from rapid polling.
+  // -----------------------------------------------------------------------
+  const strictTransport =
+    new URL(request.url).searchParams.get("strict") === "1";
+
+  if (
+    process.env.NODE_ENV !== "test" &&
+    successResponseCache &&
+    Date.now() < successResponseCache.expiresAt
+  ) {
+    return NextResponse.json(successResponseCache.body, {
+      status: 200,
+      headers: {
+        "Cache-Control": "no-store",
+        "X-Readiness-Status": "ready",
+        "X-Response-Cached": "true",
+      },
+    });
+  }
+
   // Live evidence showed a native Prisma query could outlive JavaScript's
   // timeout and the host continued polling this route even after its service
   // metadata named /api/health. The temporary flag keeps strict diagnostics
@@ -199,62 +260,67 @@ export async function GET(request: Request) {
   // failure semantics. `?strict=1` is public and returns 503 whenever the
   // dependency body says not ready; it adds no extra database work because it
   // reuses this request's already-bounded probe result.
-  const strictTransport =
-    new URL(request.url).searchParams.get("strict") === "1";
 
-  return NextResponse.json(
-    {
-      ok,
-      status,
-      ...getRuntimeIdentity(),
-      checkedAt: new Date().toISOString(),
-      checks: {
-        database: {
-          ...database,
-          coldStartGraceActive: databaseColdStartGraceActive,
-        },
-        scheduler: {
-          ok: schedulerReady,
-          required: schedulerRequired,
-          readinessReason: schedulerRequired
-            ? schedulerReadiness.reason
-            : "disabled",
-          staleAfterMs: schedulerReadiness.staleAfterMs,
-          failureThreshold: schedulerReadiness.failureThreshold,
-          // Provider-fetch degradation (most attempted provider polls
-          // failing) never flips `ok` above - this app is still serving,
-          // the outage is upstream. It's surfaced here so a monitor can
-          // alert on it independently of readiness.
-          providerFetchDegraded: schedulerReadiness.providerFetchDegraded,
-          providerFetchDegradedTickThreshold:
-            schedulerReadiness.providerFetchDegradedTickThreshold,
-          ...scheduler,
-        },
-        backup: {
-          ok: backupReady,
-          ...backup,
-        },
-        startup: {
-          ok: startupReady,
-          ...startup,
-        },
+  const body = {
+    ok,
+    status,
+    ...getRuntimeIdentity(),
+    checkedAt: new Date().toISOString(),
+    checks: {
+      database: {
+        ...database,
+        coldStartGraceActive: databaseColdStartGraceActive,
+      },
+      scheduler: {
+        ok: schedulerReady,
+        required: schedulerRequired,
+        readinessReason: schedulerRequired
+          ? schedulerReadiness.reason
+          : "disabled",
+        staleAfterMs: schedulerReadiness.staleAfterMs,
+        failureThreshold: schedulerReadiness.failureThreshold,
+        // Provider-fetch degradation (most attempted provider polls
+        // failing) never flips `ok` above - this app is still serving,
+        // the outage is upstream. It's surfaced here so a monitor can
+        // alert on it independently of readiness.
+        providerFetchDegraded: schedulerReadiness.providerFetchDegraded,
+        providerFetchDegradedTickThreshold:
+          schedulerReadiness.providerFetchDegradedTickThreshold,
+        ...scheduler,
+      },
+      backup: {
+        ok: backupReady,
+        ...backup,
+      },
+      startup: {
+        ok: startupReady,
+        ...startup,
       },
     },
-    {
-      // Render's live service configuration still points its process health
-      // check at /api/ready even though render.yaml now names /api/health.
-      // A dependency-level 503 here therefore kills the only SQLite process
-      // and can turn a temporary lock into a restart loop. Keep the body
-      // semantically strict (`ok`, `status`, and every check) while making the
-      // transport status liveness-safe until Render applies the configured
-      // health-check path.
-      status: strictTransport && !ok ? 503 : 200,
-      headers: {
-        "Cache-Control": "no-store",
-        "X-Readiness-Status": status,
-      },
-    }
-  );
+  };
+
+  // Cache successful responses for a short TTL to absorb rapid polling.
+  if (ok) {
+    successResponseCache = {
+      body,
+      expiresAt: Date.now() + SUCCESS_CACHE_TTL_MS,
+    };
+  }
+
+  return NextResponse.json(body, {
+    // Render's live service configuration still points its process health
+    // check at /api/ready even though render.yaml now names /api/health.
+    // A dependency-level 503 here therefore kills the only SQLite process
+    // and can turn a temporary lock into a restart loop. Keep the body
+    // semantically strict (`ok`, `status`, and every check) while making the
+    // transport status liveness-safe until Render applies the configured
+    // health-check path.
+    status: strictTransport && !ok ? 503 : 200,
+    headers: {
+      "Cache-Control": "no-store",
+      "X-Readiness-Status": status,
+    },
+  });
 }
 
 if (process.env.NODE_ENV === "test") {
@@ -262,5 +328,6 @@ if (process.env.NODE_ENV === "test") {
     databaseProbeInFlight = null;
     databaseProbeHasSucceeded = false;
     databaseFailureCache = null;
+    successResponseCache = null;
   };
 }
