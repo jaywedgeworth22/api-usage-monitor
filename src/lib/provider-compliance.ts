@@ -60,6 +60,17 @@ export function isVerifiableVisibility(visibility: string): boolean {
 }
 
 /**
+ * Share of permanently-failed events above which a provider may no longer be
+ * called "Verified". Event-level "unverifiable" is written ONLY by the
+ * verification worker's retry-exhausted branch, i.e. a check was attempted
+ * MAX_VERIFICATION_ATTEMPTS times and failed every time (expired/foreign
+ * generation id, sustained 429/5xx). That is a verification FAILURE, not a
+ * benign "not applicable" — so a material population of them must visibly
+ * degrade the badge instead of being quietly discounted.
+ */
+const MAX_EXHAUSTED_SHARE_FOR_VERIFIED = 0.05;
+
+/**
  * Derives the badge state. Ordering is deliberate: a real money disagreement
  * outranks incomplete coverage, and "unverifiable" is never allowed to read as
  * healthy — an unverifiable provider is explicitly labelled, never silently ok.
@@ -69,6 +80,7 @@ export function deriveComplianceState(input: {
   verifiableEventCount: number;
   verifiedEventCount: number;
   discrepancyEventCount: number;
+  unverifiableEventCount: number;
   periodStatus: string | null;
 }): ComplianceState {
   if (!input.verifiable) return "unverifiable";
@@ -77,10 +89,25 @@ export function deriveComplianceState(input: {
   }
   if (input.periodStatus === "unverifiable") return "unverifiable";
   if (input.verifiableEventCount === 0) {
+    // Nothing can settle. If the period had calls and every one of them
+    // exhausted its retries, say so rather than implying a check is still
+    // coming — or, worse, reporting a clean period as "verified".
+    if (input.unverifiableEventCount > 0) return "unverifiable";
     return input.periodStatus === "ok" ? "verified" : "pending";
   }
   if (input.verifiedEventCount === 0) return "pending";
   if (input.verifiedEventCount < input.verifiableEventCount) return "partial";
+  // Every event that could settle did settle — but a material share of this
+  // provider's calls exhausted their retries and were never checked at all.
+  // Claiming "Verified" here would be exactly the silent-OK this initiative
+  // exists to prevent.
+  if (
+    input.unverifiableEventCount >
+    (input.verifiableEventCount + input.unverifiableEventCount) *
+      MAX_EXHAUSTED_SHARE_FOR_VERIFIED
+  ) {
+    return "partial";
+  }
   return "verified";
 }
 
@@ -145,17 +172,22 @@ export async function getProviderComplianceSummary(
   const verifiedEventCount = matchedEventCount + discrepancyEventCount;
   const verifiableEventCount =
     verifiedEventCount + pendingEventCount + unverifiableEventCount;
-  // Exhausted/unverifiable events are excluded from the denominator: they can
-  // never be verified, so counting them would permanently cap coverage below
-  // 100% and make a fully-verified provider look incomplete forever.
-  const coverageDenominator = verifiedEventCount + pendingEventCount;
+  // Coverage is reported over EVERY event carrying a generation id, including
+  // the retry-exhausted ones. An earlier revision excluded them on the theory
+  // that they were a benign "n/a" bucket — they are not: the only writer of
+  // event-level "unverifiable" is the worker's exhausted-retry branch, so each
+  // one is a check that was attempted and permanently failed. Excluding them
+  // let 1 success alongside 99 failures render as "100% verified".
+  const coverageDenominator =
+    verifiedEventCount + pendingEventCount + unverifiableEventCount;
 
   return {
     state: deriveComplianceState({
       verifiable,
-      verifiableEventCount: coverageDenominator,
+      verifiableEventCount: verifiedEventCount + pendingEventCount,
       verifiedEventCount,
       discrepancyEventCount,
+      unverifiableEventCount,
       periodStatus: reconciliation?.status ?? null,
     }),
     verifiedCoverage:
@@ -170,7 +202,17 @@ export async function getProviderComplianceSummary(
     periodReportedCostUsd: reconciliation?.reportedCostUsd ?? null,
     periodVerifiedCostUsd: reconciliation?.verifiedCostUsd ?? null,
     periodStatus: reconciliation?.status ?? null,
-    unverifiableReason: verifiable ? null : UNVERIFIABLE_REASONS[visibility] ?? null,
+    // An "unverifiable" badge must always carry its explanation, whichever way
+    // it was reached: provider billing visibility, an ambiguous period
+    // attribution (two active rows sharing a canonical provider key), or every
+    // generation id in the period exhausting its retries.
+    unverifiableReason: !verifiable
+      ? UNVERIFIABLE_REASONS[visibility] ?? null
+      : reconciliation?.status === "unverifiable"
+        ? "This period could not be attributed to a single provider record — more than one active provider shares this identity, so its pushed usage cannot be split between them."
+        : verifiedEventCount === 0 && unverifiableEventCount > 0
+          ? "Every recorded call this period exhausted its verification retries — the provider could not confirm any of them."
+          : null,
     checkedAt: reconciliation?.checkedAt ?? null,
   };
 }

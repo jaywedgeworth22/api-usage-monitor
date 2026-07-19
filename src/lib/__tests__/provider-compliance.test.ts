@@ -47,6 +47,7 @@ describe("deriveComplianceState", () => {
     verifiableEventCount: 10,
     verifiedEventCount: 10,
     discrepancyEventCount: 0,
+    unverifiableEventCount: 0,
     periodStatus: "ok" as string | null,
   };
 
@@ -88,6 +89,45 @@ describe("deriveComplianceState", () => {
 
   it("reports verified only when coverage is complete", () => {
     expect(deriveComplianceState(base)).toBe("verified");
+  });
+
+  it("refuses 'verified' when a material share of calls failed verification", () => {
+    // REGRESSION (P1): event-level "unverifiable" is written ONLY by the
+    // verification worker's retry-exhausted branch, so each one is a check that
+    // was attempted MAX_VERIFICATION_ATTEMPTS times and failed. An earlier
+    // revision discounted them entirely, so 1 success alongside 99 permanent
+    // failures rendered a green "Verified / 100%" badge.
+    expect(
+      deriveComplianceState({
+        ...base,
+        verifiableEventCount: 1,
+        verifiedEventCount: 1,
+        unverifiableEventCount: 99,
+      })
+    ).toBe("partial");
+  });
+
+  it("tolerates a negligible exhausted population", () => {
+    expect(
+      deriveComplianceState({
+        ...base,
+        verifiableEventCount: 100,
+        verifiedEventCount: 100,
+        unverifiableEventCount: 1,
+      })
+    ).toBe("verified");
+  });
+
+  it("says unverifiable when every call permanently failed verification", () => {
+    expect(
+      deriveComplianceState({
+        ...base,
+        verifiableEventCount: 0,
+        verifiedEventCount: 0,
+        unverifiableEventCount: 5,
+        periodStatus: null,
+      })
+    ).toBe("unverifiable");
   });
 });
 
@@ -143,18 +183,32 @@ describe("getProviderComplianceSummary", () => {
     expect(summary.state).toBe("discrepancy");
   });
 
-  it("excludes permanently-unverifiable events from the coverage denominator", async () => {
-    // Otherwise a provider with a few dead generation ids could never reach
-    // 100% and would look incomplete forever.
+  it("counts permanently-failed events in coverage instead of discounting them", async () => {
+    // REGRESSION (P1): these are retry-exhausted verification FAILURES, not a
+    // benign n/a bucket. Discounting them let a provider whose calls almost all
+    // failed render as fully verified.
     const provider = await seedProvider("openrouter");
     await seedEvent("openrouter", "match");
     await seedEvent("openrouter", "unverifiable");
 
     const summary = await getProviderComplianceSummary(provider);
 
-    expect(summary.verifiedCoverage).toBe(1);
+    expect(summary.verifiedCoverage).toBe(0.5);
     expect(summary.unverifiableEventCount).toBe(1);
-    expect(summary.state).toBe("verified");
+    expect(summary.state).toBe("partial");
+  });
+
+  it("never shows a green badge when nearly every call failed verification", async () => {
+    const provider = await seedProvider("openrouter");
+    await seedEvent("openrouter", "match");
+    for (let i = 0; i < 9; i += 1) {
+      await seedEvent("openrouter", "unverifiable");
+    }
+
+    const summary = await getProviderComplianceSummary(provider);
+
+    expect(summary.state).not.toBe("verified");
+    expect(summary.verifiedCoverage).toBeCloseTo(0.1);
   });
 
   it("labels a structurally unverifiable provider with a reason", async () => {

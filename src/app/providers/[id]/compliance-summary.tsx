@@ -48,7 +48,13 @@ function formatUsd(value: number): string {
 }
 
 function formatPercent(ratio: number): string {
-  return `${(ratio * 100).toFixed(ratio >= 0.995 || ratio === 0 ? 0 : 1)}%`;
+  // FLOOR, never round: 99,600/100,000 must not render as "100%". A reassuring
+  // rounded 100% over incomplete verification is precisely the silent-OK this
+  // panel exists to prevent, so 100% is reserved for genuinely complete
+  // coverage.
+  if (ratio >= 1) return "100%";
+  const floored = Math.floor(ratio * 1000) / 10;
+  return `${floored % 1 === 0 ? floored.toFixed(0) : floored.toFixed(1)}%`;
 }
 
 const STATE_PRESENTATION: Record<
@@ -145,7 +151,11 @@ export function ComplianceSummaryPanel({
                 {formatPercent(verifiedCoverage)}{" "}
                 <span className="text-xs text-gray-500 dark:text-gray-400">
                   ({verifiedEventCount} verified
-                  {pendingEventCount > 0 ? `, ${pendingEventCount} pending` : ""})
+                  {pendingEventCount > 0 ? `, ${pendingEventCount} pending` : ""}
+                  {unverifiableEventCount > 0
+                    ? `, ${unverifiableEventCount} failed`
+                    : ""}
+                  )
                 </span>
               </>
             )}
@@ -199,7 +209,7 @@ export function ComplianceSummaryPanel({
 
         {unverifiableEventCount > 0 ? (
           <div className="flex items-baseline justify-between gap-3">
-            <dt className="text-xs text-gray-500 dark:text-gray-400">Not verifiable</dt>
+            <dt className="text-xs text-gray-500 dark:text-gray-400">Verification failed</dt>
             <dd className="text-sm tabular-nums text-gray-500 dark:text-gray-400">
               {unverifiableEventCount}
             </dd>
