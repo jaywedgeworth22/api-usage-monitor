@@ -276,6 +276,11 @@ async function computeBudgetStatusUncached(now: Date): Promise<BudgetStatusRespo
             syncedAt: true,
           },
         },
+        usageReconciliations: {
+          orderBy: { createdAt: "desc" },
+          take: 1,
+          select: { deltaUsd: true, status: true },
+        },
       },
     }),
     sumMonthToDateExternalCostByProvider(monthStart, rawCutoff),
@@ -848,11 +853,15 @@ async function computeBudgetStatusUncached(now: Date): Promise<BudgetStatusRespo
         },
         trackedSpendUsd: spentUsd,
         fixedAccruedUsd,
+        reconciliationDiscrepancyUsd: p.usageReconciliations?.[0]?.status === "discrepancy" ? p.usageReconciliations[0].deltaUsd : null,
       },
       now
     );
     const budgetAlerts = alertState.alerts.filter(
-      (a) => a.code === "budget_exceeded" || a.code === "budget_warning"
+      (a) =>
+        a.code === "budget_exceeded" ||
+        a.code === "budget_warning" ||
+        a.code === "usage_reconciliation_discrepancy"
     );
     if (fixedCostConflict) {
       budgetAlerts.push({
