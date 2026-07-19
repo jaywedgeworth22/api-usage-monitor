@@ -5,6 +5,7 @@ import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useTheme } from "next-themes";
 import { Moon, Sun } from "lucide-react";
+import { useDisplayDensity, setStoredDisplayDensity } from "@/lib/display-density";
 
 export default function Nav() {
   const pathname = usePathname();
@@ -15,26 +16,14 @@ export default function Nav() {
 
   const { theme, setTheme } = useTheme();
   const [mounted, setMounted] = useState(false);
-  const [density, setDensity] = useState<"compact" | "comfortable">("comfortable");
+  const density = useDisplayDensity();
 
   useEffect(() => {
     setMounted(true);
-    const stored = localStorage.getItem("display-density");
-    if (stored === "compact" || stored === "comfortable") {
-      setDensity(stored);
-      document.documentElement.classList.add(`density-${stored}`);
-      document.documentElement.classList.remove(`density-${stored === "compact" ? "comfortable" : "compact"}`);
-    } else {
-      document.documentElement.classList.add("density-comfortable");
-    }
   }, []);
 
   const toggleDensity = () => {
-    const next = density === "comfortable" ? "compact" : "comfortable";
-    setDensity(next);
-    localStorage.setItem("display-density", next);
-    document.documentElement.classList.add(`density-${next}`);
-    document.documentElement.classList.remove(`density-${density}`);
+    setStoredDisplayDensity(density === "comfortable" ? "compact" : "comfortable");
   };
 
   const links = [
