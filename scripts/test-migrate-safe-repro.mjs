@@ -4,21 +4,25 @@
  *
  * Exercises the real script (unmodified, invoked the same way
  * start-with-litestream.sh does) against real SQLite DB files, covering the
- * four cases that matter for safe startup schema synchronization:
+ * cases that matter for safe startup schema synchronization:
  *
- *   1. Additive-only diff: an old-shape DB (schema.prisma from an earlier
+ *   1. Fresh database: a missing DB file must be created successfully.
+ *   2. Additive-only diff: an old-shape DB (schema.prisma from an earlier
  *      git revision) pushed against the current schema.prisma — must exit 0
  *      and apply the new tables/columns.
- *   2. Litestream-owned tables: additive schema synchronization must preserve
+ *   3. Litestream-owned tables: additive schema synchronization must preserve
  *      arbitrary `_litestream_seq`/`_litestream_lock` schemas and data.
- *   3. Already-in-sync: re-running against the now-current DB — must exit 0
+ *   4. Already-in-sync: re-running against the now-current DB — must exit 0
  *      as a no-op.
- *   4. Destructive diff with real data: a DB with actual rows in a
+ *   5. Destructive diff with real data: a DB with actual rows in a
  *      table/column that a schema change would drop — must exit non-zero,
  *      leave the DB file byte-for-byte unchanged, and print manual
  *      --accept-data-loss instructions.
+ *   6. Every production migration push disables Prisma client generation;
+ *      both generated-client trees must remain byte- and metadata-identical
+ *      across fresh, additive, no-op, and rejected destructive pushes.
  *
- * Scenario 4 needs a schema that's destructive *relative to the current
+ * Scenario 5 needs a schema that's destructive *relative to the current
  * schema.prisma*, and migrate-safe.mjs always reads the default
  * prisma/schema.prisma path (it takes no --schema flag, matching how it's
  * actually invoked at deploy time) — so this script temporarily overwrites
@@ -33,7 +37,11 @@
 
 import { execFileSync } from "child_process";
 import {
+  existsSync,
+  lstatSync,
   mkdtempSync,
+  readdirSync,
+  readlinkSync,
   writeFileSync,
   copyFileSync,
   rmSync,
@@ -49,6 +57,10 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, "..");
 const SCHEMA_PATH = path.join(REPO_ROOT, "prisma/schema.prisma");
 const MIGRATE_SAFE = path.join(REPO_ROOT, "scripts/migrate-safe.mjs");
+const GENERATED_CLIENT_PATHS = [
+  path.join(REPO_ROOT, "node_modules/.prisma/client"),
+  path.join(REPO_ROOT, "node_modules/@prisma/client"),
+];
 
 // An earlier commit whose prisma/schema.prisma predates the Project /
 // Subscription / ProviderProjectAllocation models — gives a genuinely
@@ -68,6 +80,112 @@ function fail(msg) {
 
 function hashFile(file) {
   return createHash("sha256").update(readFileSync(file)).digest("hex");
+}
+
+function snapshotGeneratedClients() {
+  const entries = [];
+
+  function visit(root, absolutePath, relativePath) {
+    const stat = lstatSync(absolutePath, { bigint: true });
+    const common = {
+      root: path.relative(REPO_ROOT, root),
+      path: relativePath,
+      mode: stat.mode.toString(8),
+      size: stat.size.toString(),
+      mtimeNs: stat.mtimeNs.toString(),
+    };
+
+    if (stat.isDirectory()) {
+      entries.push({ ...common, kind: "directory" });
+      for (const name of readdirSync(absolutePath).sort()) {
+        visit(root, path.join(absolutePath, name), path.join(relativePath, name));
+      }
+      return;
+    }
+
+    if (stat.isSymbolicLink()) {
+      entries.push({
+        ...common,
+        kind: "symlink",
+        target: readlinkSync(absolutePath),
+      });
+      return;
+    }
+
+    entries.push({
+      ...common,
+      kind: "file",
+      sha256: hashFile(absolutePath),
+    });
+  }
+
+  for (const root of GENERATED_CLIENT_PATHS) {
+    if (!existsSync(root)) {
+      throw new Error(
+        `generated Prisma client path is missing: ${path.relative(REPO_ROOT, root)}`
+      );
+    }
+    visit(root, root, ".");
+  }
+
+  return JSON.stringify(entries);
+}
+
+function assertGeneratedClientsUnchanged(before, phase) {
+  const after = snapshotGeneratedClients();
+  if (after !== before) {
+    fail(`generated Prisma client content or metadata changed during ${phase}`);
+  } else {
+    log(`  PASS — generated Prisma clients unchanged during ${phase}`);
+  }
+}
+
+function readDatabaseSummary(dbFile) {
+  const db = new DatabaseSync(dbFile, { readOnly: true });
+  try {
+    return {
+      quickCheck: db.prepare("PRAGMA quick_check").get()?.quick_check ?? null,
+      tableCount: Number(
+        db
+          .prepare(
+            "SELECT COUNT(*) AS count FROM sqlite_schema WHERE type = 'table' AND name NOT LIKE 'sqlite_%'"
+          )
+          .get()?.count ?? 0
+      ),
+    };
+  } finally {
+    db.close();
+  }
+}
+
+function assertMigrationNeverGeneratesClient() {
+  const source = readFileSync(MIGRATE_SAFE, "utf8");
+  const commands = [
+    ...source.matchAll(/\brun\("([^"]*npx prisma db push[^"]*)"\)/g),
+  ].map((match) => match[1]);
+
+  if (
+    commands.length !== 2 ||
+    commands.some(
+      (command) => !command.split(/\s+/).includes("--skip-generate")
+    )
+  ) {
+    fail(
+      "every migrate-safe prisma db push invocation must include --skip-generate"
+    );
+    return;
+  }
+
+  if (
+    !source.includes(
+      "npx prisma db push --accept-data-loss --skip-generate"
+    )
+  ) {
+    fail("manual data-loss guidance must preserve --skip-generate");
+    return;
+  }
+
+  log("Client generation invariant: PASS — every migration push skips generation");
 }
 
 function seedLitestreamState(dbFile) {
@@ -196,6 +314,8 @@ function toDestructiveSchema(source) {
 }
 
 async function main() {
+  assertMigrationNeverGeneratesClient();
+
   const dirty = execFileSync("git", ["status", "--porcelain", "--", "prisma/schema.prisma"], {
     cwd: REPO_ROOT,
     encoding: "utf8",
@@ -212,10 +332,34 @@ async function main() {
   log(`working dir: ${work}`);
   const schemaBackup = path.join(work, "schema.prisma.orig-backup");
   copyFileSync(SCHEMA_PATH, schemaBackup);
+  const generatedClientsBefore = snapshotGeneratedClients();
 
   try {
-    // --- Scenario 1: additive-only diff ---
-    log(`Scenario 1: additive-only diff (schema.prisma@${OLD_SCHEMA_REV} -> current)`);
+    // --- Scenario 1: fresh database ---
+    log("Scenario 1: fresh database creation");
+    const freshDb = path.join(work, "fresh.db");
+    const freshScenario = runMigrateSafe(freshDb);
+    const freshSummary = existsSync(freshDb)
+      ? readDatabaseSummary(freshDb)
+      : { quickCheck: null, tableCount: 0 };
+    if (
+      freshScenario.code === 0 &&
+      freshSummary.quickCheck === "ok" &&
+      freshSummary.tableCount > 0
+    ) {
+      log(
+        `  PASS — fresh DB created with integrity ok and ${freshSummary.tableCount} application tables`
+      );
+    } else {
+      fail(
+        `fresh scenario failed: exit=${freshScenario.code}, quickCheck=${freshSummary.quickCheck}, ` +
+          `tableCount=${freshSummary.tableCount}\n${freshScenario.stdout}\n${freshScenario.stderr}`
+      );
+    }
+    assertGeneratedClientsUnchanged(generatedClientsBefore, "fresh DB creation");
+
+    // --- Scenario 2: additive-only diff ---
+    log(`Scenario 2: additive-only diff (schema.prisma@${OLD_SCHEMA_REV} -> current)`);
     const oldSchemaPath = path.join(work, "old-schema.prisma");
     writeFileSync(oldSchemaPath, gitShow(OLD_SCHEMA_REV, "prisma/schema.prisma"));
     const additiveDb = path.join(work, "additive.db");
@@ -229,9 +373,10 @@ async function main() {
     } else {
       fail(`additive scenario exited ${scenario1.code}\n${scenario1.stdout}\n${scenario1.stderr}`);
     }
+    assertGeneratedClientsUnchanged(generatedClientsBefore, "additive migration");
 
-    // --- Scenario 2: externally-managed Litestream state survives ---
-    log("Scenario 2: Litestream external tables survive schema synchronization");
+    // --- Scenario 3: externally-managed Litestream state survives ---
+    log("Scenario 3: Litestream external tables survive schema synchronization");
     const litestreamStateAfter = readLitestreamState(additiveDb);
     if (JSON.stringify(litestreamStateAfter) === JSON.stringify(litestreamStateBefore)) {
       log("  PASS — external table schemas and opaque rows were preserved exactly");
@@ -243,17 +388,18 @@ async function main() {
       );
     }
 
-    // --- Scenario 3: already in sync (no-op) ---
-    log("Scenario 3: already-in-sync re-run");
+    // --- Scenario 4: already in sync (no-op) ---
+    log("Scenario 4: already-in-sync re-run");
     const scenario2 = runMigrateSafe(additiveDb);
     if (scenario2.code === 0) {
       log("  PASS — no-op re-run, exit 0");
     } else {
       fail(`already-in-sync scenario exited ${scenario2.code}\n${scenario2.stdout}\n${scenario2.stderr}`);
     }
+    assertGeneratedClientsUnchanged(generatedClientsBefore, "no-op migration");
 
-    // --- Scenario 4: destructive diff with real data ---
-    log("Scenario 4: destructive diff with real data present");
+    // --- Scenario 5: destructive diff with real data ---
+    log("Scenario 5: destructive diff with real data present");
     const destructiveDb = path.join(work, "destructive.db");
     copyFileSync(additiveDb, destructiveDb);
 
@@ -294,6 +440,10 @@ async function main() {
           `dbChanged=${beforeHash !== afterHash}\n${scenario3.stdout}\n${scenario3.stderr}`
       );
     }
+    assertGeneratedClientsUnchanged(
+      generatedClientsBefore,
+      "rejected destructive migration"
+    );
   } finally {
     // Always restore the real schema.prisma, even if an assertion above threw.
     copyFileSync(schemaBackup, SCHEMA_PATH);
