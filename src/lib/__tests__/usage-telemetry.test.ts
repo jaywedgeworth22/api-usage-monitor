@@ -246,6 +246,90 @@ describe("deriveIdempotencyKey", () => {
       /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
     );
   });
+
+  // ---- providerRequestId is NOT part of the idempotency-key basis -------
+  // Regression guard for DESIGN §0b/§3b: the idempotency key derivation
+  // (sourceApp + provider + metricType + keyRef + occurredAt) must stay
+  // byte-identical whether or not the event carries a providerRequestId.
+
+  it("derives the identical idempotency key for a fixed event with and without providerRequestId", () => {
+    const base = {
+      sourceApp: "congress-trade",
+      provider: "openrouter",
+      metricType: "cost",
+      keyRef: "primary-key",
+      occurredAt: "2026-07-18T00:00:00.000Z",
+    };
+    const withoutId = parseUsageTelemetryBatch(base)[0].idempotencyKey;
+    const withId = parseUsageTelemetryBatch({
+      ...base,
+      providerRequestId: "gen-1a2b3c4d5e6f",
+    })[0].idempotencyKey;
+
+    expect(withId).toBe(withoutId);
+    // Also pin the exact vector so any future change to the basis algorithm
+    // that accidentally starts including providerRequestId is caught even if
+    // the equality assertion above were weakened.
+    expect(withoutId).toBe(
+      parseUsageTelemetryBatch({ ...base, providerRequestId: "an-entirely-different-id" })[0]
+        .idempotencyKey
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// providerRequestId parsing (DESIGN §3b: accepted, optional, bounded length)
+// ---------------------------------------------------------------------------
+
+describe("parseUsageTelemetryBatch providerRequestId", () => {
+  it("parses a valid providerRequestId", () => {
+    const events = parseUsageTelemetryBatch({
+      sourceApp: "socratic-trade",
+      provider: "openrouter",
+      metricType: "cost",
+      costUsd: 0.01,
+      occurredAt: "2026-07-18T00:00:00.000Z",
+      providerRequestId: "gen-1234567890",
+    });
+    expect(events[0].providerRequestId).toBe("gen-1234567890");
+  });
+
+  it("leaves providerRequestId undefined when omitted", () => {
+    const events = parseUsageTelemetryBatch({
+      sourceApp: "socratic-trade",
+      provider: "openrouter",
+      metricType: "cost",
+      costUsd: 0.01,
+      occurredAt: "2026-07-18T00:00:00.000Z",
+    });
+    expect(events[0].providerRequestId).toBeUndefined();
+  });
+
+  it("rejects a providerRequestId longer than 200 characters", () => {
+    expect(() =>
+      parseUsageTelemetryBatch({
+        sourceApp: "socratic-trade",
+        provider: "openrouter",
+        metricType: "cost",
+        costUsd: 0.01,
+        occurredAt: "2026-07-18T00:00:00.000Z",
+        providerRequestId: "g".repeat(201),
+      })
+    ).toThrow("providerRequestId must be 200 characters or fewer");
+  });
+
+  it("rejects a non-string providerRequestId", () => {
+    expect(() =>
+      parseUsageTelemetryBatch({
+        sourceApp: "socratic-trade",
+        provider: "openrouter",
+        metricType: "cost",
+        costUsd: 0.01,
+        occurredAt: "2026-07-18T00:00:00.000Z",
+        providerRequestId: 12345,
+      })
+    ).toThrow("providerRequestId must be a string");
+  });
 });
 
 // ---------------------------------------------------------------------------

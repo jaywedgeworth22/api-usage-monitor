@@ -43,6 +43,16 @@ export interface ExternalUsageEventInput {
   windowEnd?: Date;
   occurredAt: Date;
   metadata?: Prisma.InputJsonObject;
+  // Provider-side call/generation identifier from the producer (see
+  // usage-telemetry.ts's ParsedUsageTelemetryEvent). Written only at ingest;
+  // the verification fields it enables (verifiedCostUsd/verifiedAt/
+  // verificationStatus/verifiedSource) are written later by the monitor-side
+  // verification worker, never here. Deliberately excluded from
+  // comparableEvent below: a replay under the same idempotencyKey with a
+  // different providerRequestId (e.g. a producer that couldn't attach it on
+  // the first attempt) still dedupes rather than being treated as a
+  // collision — same category as the idempotency-key basis itself.
+  providerRequestId?: string;
 }
 
 export interface PersistExternalUsageEventsResult {
@@ -167,6 +177,10 @@ function toCreateData(event: ExternalUsageEventInput): Prisma.ExternalUsageEvent
     windowEnd: event.windowEnd,
     occurredAt: event.occurredAt,
     metadata: event.metadata,
+    providerRequestId: event.providerRequestId,
+    // Verification fields are deliberately absent here: ingest never sets
+    // them, so they take the column default (null) on insert. Only the
+    // later verification worker updates them.
   };
 }
 
@@ -219,6 +233,10 @@ function metadataWithoutStringProject(value: unknown): unknown {
   return Object.keys(rest).length > 0 ? rest : null;
 }
 
+// NOTE: providerRequestId is deliberately NOT a field here (see its doc
+// comment on ExternalUsageEventInput above) — a replay with a different
+// providerRequestId under the same idempotencyKey must still dedupe, not
+// throw ExternalUsageIdempotencyCollisionError.
 function comparableEvent(event: ExternalUsageEventInput | ExistingExternalUsageEvent) {
   const value = event as ExternalUsageEventInput & ExistingExternalUsageEvent;
   const iso = (date: Date | undefined | null) => date?.toISOString() ?? null;

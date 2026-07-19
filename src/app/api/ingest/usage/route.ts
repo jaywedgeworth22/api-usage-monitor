@@ -227,6 +227,7 @@ export async function POST(request: NextRequest) {
             windowEnd: event.windowEnd,
             occurredAt: event.occurredAt,
             metadata: metadata as Prisma.InputJsonObject | undefined,
+            providerRequestId: event.providerRequestId,
           };
         })
       );

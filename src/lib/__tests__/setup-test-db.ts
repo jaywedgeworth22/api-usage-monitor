@@ -204,6 +204,11 @@ CREATE TABLE "ExternalUsageEvent" (
   "occurredAt" DATETIME NOT NULL,
   "metadata" JSONB,
   "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  "providerRequestId" TEXT,
+  "verifiedCostUsd" REAL,
+  "verifiedAt" DATETIME,
+  "verificationStatus" TEXT,
+  "verifiedSource" TEXT,
   "projectId" TEXT,
   CONSTRAINT "ExternalUsageEvent_projectId_fkey" FOREIGN KEY ("projectId") REFERENCES "Project" ("id") ON DELETE SET NULL ON UPDATE CASCADE
 );
@@ -243,6 +248,24 @@ CREATE TABLE "ExternalUsageEventTombstone" (
   "idempotencyKey" TEXT NOT NULL PRIMARY KEY,
   "occurredAt" DATETIME NOT NULL,
   "prunedAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE "ProviderUsageReconciliation" (
+  "id" TEXT NOT NULL PRIMARY KEY,
+  "providerId" TEXT NOT NULL,
+  "periodStart" DATETIME NOT NULL,
+  "periodEnd" DATETIME NOT NULL,
+  "keyRef" TEXT,
+  "reportedCostUsd" REAL NOT NULL,
+  "reportedEventCount" INTEGER NOT NULL,
+  "verifiedCostUsd" REAL,
+  "verifiedSource" TEXT,
+  "deltaUsd" REAL,
+  "deltaRatio" REAL,
+  "status" TEXT NOT NULL,
+  "checkedAt" DATETIME NOT NULL,
+  "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  CONSTRAINT "ProviderUsageReconciliation_providerId_fkey" FOREIGN KEY ("providerId") REFERENCES "Provider" ("id") ON DELETE CASCADE ON UPDATE CASCADE
 );
 
 CREATE TABLE "OtlpMetricState" (
@@ -334,6 +357,8 @@ CREATE INDEX "ExternalUsageEvent_sourceApp_occurredAt_idx" ON "ExternalUsageEven
 CREATE INDEX "ExternalUsageEvent_provider_occurredAt_idx" ON "ExternalUsageEvent"("provider", "occurredAt");
 CREATE INDEX "ExternalUsageEvent_keyRef_occurredAt_idx" ON "ExternalUsageEvent"("keyRef", "occurredAt");
 CREATE INDEX "ExternalUsageEvent_projectId_occurredAt_idx" ON "ExternalUsageEvent"("projectId", "occurredAt");
+CREATE INDEX "ExternalUsageEvent_provider_verificationStatus_idx" ON "ExternalUsageEvent"("provider", "verificationStatus");
+CREATE INDEX "ExternalUsageEvent_provider_providerRequestId_idx" ON "ExternalUsageEvent"("provider", "providerRequestId");
 CREATE INDEX "ExternalUsageEventDailyRollup_sourceApp_day_idx" ON "ExternalUsageEventDailyRollup"("sourceApp", "day");
 CREATE INDEX "ExternalUsageEventDailyRollup_provider_day_idx" ON "ExternalUsageEventDailyRollup"("provider", "day");
 CREATE INDEX "ExternalUsageEventDailyRollup_projectId_day_idx" ON "ExternalUsageEventDailyRollup"("projectId", "day");
@@ -348,6 +373,8 @@ CREATE INDEX "ExternalBillingChargeCorrection_providerId_originalPeriodStart_idx
 CREATE INDEX "ExternalBillingChargeCorrection_providerId_correctedGuardKey_idx" ON "ExternalBillingChargeCorrection"("providerId", "correctedGuardKey");
 CREATE INDEX "ExternalUsageEventTombstone_occurredAt_idx" ON "ExternalUsageEventTombstone"("occurredAt");
 CREATE INDEX "ExternalUsageEventTombstone_prunedAt_idx" ON "ExternalUsageEventTombstone"("prunedAt");
+CREATE UNIQUE INDEX "ProviderUsageReconciliation_providerId_periodStart_periodEnd_keyRef_key" ON "ProviderUsageReconciliation"("providerId", "periodStart", "periodEnd", "keyRef");
+CREATE INDEX "ProviderUsageReconciliation_providerId_status_idx" ON "ProviderUsageReconciliation"("providerId", "status");
 CREATE INDEX "OtlpMetricState_updatedAt_idx" ON "OtlpMetricState"("updatedAt");
 CREATE UNIQUE INDEX "ProviderAlertNotification_stateKey_key" ON "ProviderAlertNotification"("stateKey");
 CREATE INDEX "ProviderAlertNotification_providerId_resolvedAt_idx" ON "ProviderAlertNotification"("providerId", "resolvedAt");

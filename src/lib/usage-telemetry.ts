@@ -67,6 +67,12 @@ export interface ParsedUsageTelemetryEvent {
   windowEnd?: Date;
   occurredAt: Date;
   metadata?: Record<string, string | number | boolean | null>;
+  // Provider-side call/generation identifier (e.g. an OpenRouter completion
+  // response's `id`), used by the monitor-side verification worker (a later
+  // wave — see /Users/jay/apps/DESIGN-usage-compliance-classifier.md §3c).
+  // Deliberately NOT part of the idempotency-key basis — see
+  // deriveIdempotencyKey's CONTRACT comment below.
+  providerRequestId?: string;
   idempotencyKey: string;
 }
 
@@ -292,6 +298,11 @@ function parseEvent(value: unknown): ParsedUsageTelemetryEvent {
     windowEnd: readDate(record, "windowEnd"),
     occurredAt,
     metadata: readMetadata(record),
+    // NOT included in the idempotency-key basis below — see the field's
+    // CONTRACT comment on ParsedUsageTelemetryEvent and on
+    // deriveIdempotencyKey. A producer resending the same logical event with
+    // providerRequestId newly available (or omitted) must not change the key.
+    providerRequestId: readString(record, "providerRequestId", { max: 200 }),
     idempotencyKey: deriveIdempotencyKey(record, {
       sourceApp,
       provider,

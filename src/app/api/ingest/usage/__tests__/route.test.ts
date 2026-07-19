@@ -407,6 +407,34 @@ describe("POST /api/ingest/usage admission", () => {
     expect(externalUsageMocks.persist).toHaveBeenCalled();
   });
 
+  it("passes providerRequestId through to persistExternalUsageEvents when supplied", async () => {
+    const response = await POST(
+      nextRequest(
+        {
+          sourceApp: "socratic-trade",
+          provider: "openrouter",
+          metricType: "cost",
+          costUsd: 0.01,
+          occurredAt: "2026-07-18T00:00:00.000Z",
+          providerRequestId: "gen-route-test-1",
+        },
+        USAGE_TOKEN
+      )
+    );
+    expect(response.status).toBe(202);
+    expect(externalUsageMocks.persist).toHaveBeenCalledWith([
+      expect.objectContaining({ providerRequestId: "gen-route-test-1" }),
+    ]);
+  });
+
+  it("omits providerRequestId onto persistExternalUsageEvents when not supplied", async () => {
+    const response = await POST(ordinaryRequest());
+    expect(response.status).toBe(202);
+    expect(externalUsageMocks.persist).toHaveBeenCalledWith([
+      expect.objectContaining({ providerRequestId: undefined }),
+    ]);
+  });
+
   it("validates every provider ID/name pair in a receipt batch", async () => {
     const response = await POST(
       nextRequest(
