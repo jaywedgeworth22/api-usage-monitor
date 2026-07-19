@@ -1,28 +1,55 @@
-# API Usage Monitor Sync Extension
+# Usage Monitor Launcher (browser extension)
 
-This Chrome Extension automatically syncs API keys, usage tokens, and active session identifiers from provider dashboards (e.g., Anthropic Console, OpenAI Platform) directly to your local or hosted API Usage Monitor.
+A minimal, least-privilege browser extension that opens your self-hosted
+Usage Monitor dashboard in a new tab. It stores only the dashboard URL you type
+in. **It reads no page content, cookies, `localStorage`, or credentials from any
+site, and it transmits nothing to any endpoint.**
 
 ## Installation (Unpacked)
 
-Since this extension handles sensitive API keys, it is not published to the Chrome Web Store. You must load it locally.
-
 1. Open Google Chrome.
 2. Navigate to `chrome://extensions/`.
-3. Enable **Developer mode** using the toggle switch in the top right corner.
-4. Click the **Load unpacked** button.
-5. Select the `chrome-extension/` directory located inside your `API-usage-monitor` repository.
+3. Enable **Developer mode** (toggle in the top-right corner).
+4. Click **Load unpacked**.
+5. Select the `chrome-extension/` directory inside your `Usage-Monitor` repository.
 
-## Configuration
+## Configuration & use
 
-1. Click the **API Usage Monitor Sync** extension icon in your Chrome toolbar.
-2. Enter your **Monitor API URL** (e.g., `http://localhost:4103` for local development, or your production Render URL like `https://usage.jays.services`).
-3. Enter your **USAGE_INGEST_TOKEN** (the same token configured in your `.env` or Render environment variables).
-4. Click **Save Configuration**.
+1. Click the **Usage Monitor** icon in your toolbar.
+2. Enter your **Dashboard URL** (e.g. `http://localhost:4103` for local dev, or
+   your hosted URL such as `https://usage.jays.services`).
+3. Click **Save URL** to remember it, or **Open Dashboard** to open it now.
 
-## How it Works
+No token is required or accepted — the extension only opens the dashboard, where
+you authenticate normally.
 
-Once configured, the extension will automatically inject scripts when you visit supported provider dashboards (currently `console.anthropic.com` and `platform.openai.com`).
+## Permissions
 
-The scripts will extract your active session tokens or API keys and securely `POST` them to your API Usage Monitor's `/api/ingest/keys` endpoint. The backend will automatically upsert the tokens into your provider's configuration.
+- `storage` — to remember the non-secret dashboard URL between sessions.
 
-You can verify it worked by checking the `config` JSON in your `Provider` settings on your API Usage Monitor dashboard.
+That is the extension's entire permission footprint: no host permissions, no
+content scripts, no `scripting`/`activeTab`, and no background worker.
+
+## Security notice — behavior change in v2.0.0
+
+Earlier builds (v1.0.0) of this extension were **unsafe and have been removed**.
+That version:
+
+- requested the `<all_urls>` host permission,
+- injected content scripts into `console.anthropic.com` and
+  `platform.openai.com` that automatically read your session cookies and the
+  entire page `localStorage` a few seconds after load, and
+- POSTed those values, together with a stored monitor bearer token, to a
+  `/api/ingest/keys` endpoint (which never existed in the Usage Monitor backend).
+
+None of that scraping or transmission code remains. If you ever loaded the v1.0.0
+build:
+
+1. Remove/reload the extension so the old content scripts stop running.
+2. As a precaution, sign out and back in (or rotate the session) on any
+   Anthropic or OpenAI dashboard you visited while it was installed, since those
+   session identifiers were read locally by the old content scripts.
+
+There is no server-side `/api/ingest/keys` route, so no scraped data was ever
+accepted by the Usage Monitor backend; this change removes the client-side
+collection path entirely.

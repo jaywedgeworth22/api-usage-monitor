@@ -698,7 +698,112 @@ export async function fetchUsage(
     };
   }
 
-  // 5. D1 database metrics
+  // 5. D1 GraphQL Analytics for Usage estimation
+  try {
+    const graphqlRes = await fetchJson("https://api.cloudflare.com/client/v4/graphql", {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        query: `
+          query ($accountTag: string, $datetimeStart: string, $datetimeEnd: string) {
+            viewer {
+              accounts(filter: {accountTag: $accountTag}) {
+                d1AnalyticsAdaptiveGroups(limit: 10000, filter: {datetime_geq: $datetimeStart, datetime_leq: $datetimeEnd}) {
+                  sum {
+                    readRowCounts
+                    writeRowCounts
+                  }
+                }
+                d1StorageAdaptiveGroups(limit: 10000, filter: {datetime_geq: $datetimeStart, datetime_leq: $datetimeEnd}) {
+                  sum {
+                    databaseSizeBytes
+                  }
+                }
+              }
+            }
+          }
+        `,
+        variables: {
+          accountTag: accountId,
+          datetimeStart: new Date(accountingMonthStartMs).toISOString(),
+          datetimeEnd: accountingTime.toISOString(),
+        }
+      })
+    });
+    if (graphqlRes.ok) {
+      successfulCalls++;
+      const data = graphqlRes.data as any;
+      const accounts = data?.data?.viewer?.accounts;
+      if (Array.isArray(accounts) && accounts.length > 0) {
+        const account = accounts[0];
+        let rowsRead = 0;
+        let rowsWritten = 0;
+        if (Array.isArray(account.d1AnalyticsAdaptiveGroups)) {
+          for (const group of account.d1AnalyticsAdaptiveGroups) {
+            rowsRead += parseNumber(group.sum?.readRowCounts) ?? 0;
+            rowsWritten += parseNumber(group.sum?.writeRowCounts) ?? 0;
+          }
+        }
+        let maxStorageBytes = 0;
+        if (Array.isArray(account.d1StorageAdaptiveGroups)) {
+          for (const group of account.d1StorageAdaptiveGroups) {
+            const bytes = parseNumber(group.sum?.databaseSizeBytes) ?? 0;
+            if (bytes > maxStorageBytes) maxStorageBytes = bytes;
+          }
+        }
+
+        const readM = rowsRead / 1_000_000;
+        const billableReadM = Math.max(0, readM - 5);
+        const readCost = billableReadM * 0.001;
+
+        const writeM = rowsWritten / 1_000_000;
+        const billableWriteM = Math.max(0, writeM - 0.1);
+        const writeCost = billableWriteM * 1.00;
+
+        const storageGB = maxStorageBytes / (1024 * 1024 * 1024);
+        const billableStorageGB = Math.max(0, storageGB - 5);
+        const storageCost = billableStorageGB * 0.75;
+
+        const estimatedD1Cost = readCost + writeCost + storageCost;
+
+        rawData.d1EstimatedUsage = {
+          rowsRead,
+          rowsWritten,
+          maxStorageBytes,
+          estimatedReadCostUsd: readCost,
+          estimatedWriteCostUsd: writeCost,
+          estimatedStorageCostUsd: storageCost,
+          estimatedTotalCostUsd: estimatedD1Cost
+        };
+
+        billingSyncs.push({
+          source: "cloudflare-d1-graphql-estimate",
+          authoritative: false,
+          records: [
+            {
+              externalId: `${accountId}:${new Date(accountingMonthStartMs).toISOString().slice(0, 7)}:d1-estimate`,
+              kind: "billing_period",
+              serviceName: "Cloudflare D1",
+              planName: "Estimated Usage (Non-cash)",
+              status: "open",
+              amountUsd: estimatedD1Cost,
+              currency: "USD",
+              currentPeriodStart: new Date(accountingMonthStartMs).toISOString(),
+              currentPeriodEnd: accountingTime.toISOString(),
+              rollupRole: "metadata",
+              dateKind: "period_end",
+            }
+          ]
+        });
+      }
+    } else {
+      rawData.d1GraphQLError = `HTTP ${graphqlRes.status}`;
+    }
+  } catch (err) {
+    rawData.d1GraphQLError = err instanceof Error ? err.message : "Failed";
+  }
+
+  // 6. D1 database metrics
   const databaseId = config?.databaseId as string | undefined;
   if (databaseId) {
     try {

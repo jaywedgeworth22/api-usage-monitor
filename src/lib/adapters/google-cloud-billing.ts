@@ -385,7 +385,7 @@ export async function fetchGoogleCloudBilling(
       projectCount: 0,
       rows: [],
       externalBilling: {
-        source: "google-cloud-billing-export",
+        source: `google-cloud-billing-export:${projectId ?? "pending"}`,
         authoritative: false,
         records: [
           {
@@ -464,7 +464,7 @@ export async function fetchGoogleCloudBilling(
     projectCount: observedProjects.size,
     rows,
     externalBilling: {
-      source: "google-cloud-billing-export",
+      source: `google-cloud-billing-export:${scopeId}`,
       // A successfully completed query is a complete inventory even when the
       // export has not populated any rows yet. Keep the spend unknown/pending,
       // but allow reconciliation to prune stale project identities and

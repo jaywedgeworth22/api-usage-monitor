@@ -409,7 +409,18 @@ export async function PUT(
       incoming.secretConfig
     );
     for (const operation of input.secretConfigOperations ?? []) {
-      delete mergedSecrets[operation.path[0]];
+      let current: Record<string, unknown> | undefined = mergedSecrets;
+      for (let i = 0; i < operation.path.length - 1; i++) {
+        if (current && typeof current === "object" && !Array.isArray(current)) {
+          current = current[operation.path[i]] as Record<string, unknown> | undefined;
+        } else {
+          current = undefined;
+          break;
+        }
+      }
+      if (current && typeof current === "object" && !Array.isArray(current)) {
+        delete current[operation.path[operation.path.length - 1]];
+      }
     }
     updateData.secretConfig = hasProviderSecrets(mergedSecrets)
       ? encryptJson(mergedSecrets)
@@ -422,7 +433,7 @@ export async function PUT(
   if (input.groupId !== undefined) updateData.groupId = input.groupId;
   if (input.label !== undefined) updateData.label = input.label;
   if (input.apiKey !== undefined) {
-    updateData.apiKey = encrypt(input.apiKey);
+    updateData.apiKey = input.apiKey === null ? null : encrypt(input.apiKey);
   }
   if (input.plan !== undefined) {
     const planData = toPrismaProviderPlanData(input.plan);

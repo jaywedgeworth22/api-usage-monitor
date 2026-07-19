@@ -247,28 +247,68 @@ function roundCatalogAmount(amount: number): number {
   return Math.round((amount + Number.EPSILON) * 100_000_000) / 100_000_000;
 }
 
-export async function fetchUsage(apiKey: string): Promise<UsageResult> {
-  const headers = { Authorization: `Bearer ${apiKey}` };
-  // Each list is independently paginated. Await every class before producing
-  // an authoritative reconciliation so a transient failure cannot delete a
-  // class of resources from the previous good inventory.
-  const [servers, volumes, floatingIps, primaryIps, loadBalancers, images, pricingResponse] =
-    await Promise.all([
+export async function fetchUsage(
+  apiKey: string,
+  config?: Record<string, unknown>
+): Promise<UsageResult> {
+  const projectTokens: Record<string, string> = {};
+  if (config && isRecord(config.projectTokens)) {
+    for (const [projectName, token] of Object.entries(config.projectTokens)) {
+      if (typeof token === "string") {
+        projectTokens[projectName] = token;
+      }
+    }
+  }
+  if (Object.keys(projectTokens).length === 0 && apiKey) {
+    const keys = apiKey.split(",").map((k) => k.trim()).filter(Boolean);
+    keys.forEach((key, i) => {
+      projectTokens[keys.length === 1 ? "default" : `project_${i}`] = key;
+    });
+  }
+
+  const tokens = Object.values(projectTokens);
+  if (tokens.length === 0) {
+    invalidResponse("No Hetzner project tokens provided");
+  }
+
+  let servers: HetznerServer[] = [];
+  let volumes: HetznerVolume[] = [];
+  let floatingIps: HetznerFloatingIp[] = [];
+  let primaryIps: HetznerPrimaryIp[] = [];
+  let loadBalancers: HetznerLoadBalancer[] = [];
+  let images: HetznerImage[] = [];
+
+  for (const token of tokens) {
+    const headers = { Authorization: `Bearer ${token}` };
+    const [
+      tokenServers,
+      tokenVolumes,
+      tokenFloatingIps,
+      tokenPrimaryIps,
+      tokenLoadBalancers,
+      tokenImages,
+    ] = await Promise.all([
       fetchAllResources<HetznerServer>("/servers", "servers", headers),
       fetchAllResources<HetznerVolume>("/volumes", "volumes", headers),
       fetchAllResources<HetznerFloatingIp>("/floating_ips", "floating_ips", headers),
       fetchAllResources<HetznerPrimaryIp>("/primary_ips", "primary_ips", headers),
-      fetchAllResources<HetznerLoadBalancer>(
-        "/load_balancers",
-        "load_balancers",
-        headers
-      ),
+      fetchAllResources<HetznerLoadBalancer>("/load_balancers", "load_balancers", headers),
       fetchAllResources<HetznerImage>("/images", "images", headers, [
         ["type", "snapshot"],
         ["type", "backup"],
       ]),
-      fetchJson("https://api.hetzner.cloud/v1/pricing", { headers }),
     ]);
+    servers = servers.concat(tokenServers);
+    volumes = volumes.concat(tokenVolumes);
+    floatingIps = floatingIps.concat(tokenFloatingIps);
+    primaryIps = primaryIps.concat(tokenPrimaryIps);
+    loadBalancers = loadBalancers.concat(tokenLoadBalancers);
+    images = images.concat(tokenImages);
+  }
+
+  const pricingResponse = await fetchJson("https://api.hetzner.cloud/v1/pricing", {
+    headers: { Authorization: `Bearer ${tokens[0]}` },
+  });
 
   if (!pricingResponse.ok) return errorResult(pricingResponse.status);
   if (!pricingResponse.data || typeof pricingResponse.data !== "object") {
@@ -369,7 +409,7 @@ export async function fetchUsage(apiKey: string): Promise<UsageResult> {
         status: server.status ?? "unknown",
         amountUsd: convertedMonthlyPrice,
         currency,
-        rollupRole: "canonical",
+        rollupRole: "metadata",
       });
     }
     if (server.id != null && backupEnabled && convertedBackupMonthlyPrice != null && convertedBackupMonthlyPrice > 0) {
@@ -381,7 +421,7 @@ export async function fetchUsage(apiKey: string): Promise<UsageResult> {
         status: "active",
         amountUsd: convertedBackupMonthlyPrice,
         currency,
-        rollupRole: "component",
+        rollupRole: "metadata",
       });
     }
     return {
@@ -418,7 +458,7 @@ export async function fetchUsage(apiKey: string): Promise<UsageResult> {
         currency,
         usageQuantity: volume.size ?? null,
         usageUnit: "GB",
-        rollupRole: volume.server == null ? "canonical" : "component",
+        rollupRole: volume.server == null ? "metadata" : "metadata",
       });
     }
     return {
@@ -451,7 +491,7 @@ export async function fetchUsage(apiKey: string): Promise<UsageResult> {
         status: ip.blocked ? "blocked" : "active",
         amountUsd: convertedMonthlyPrice,
         currency,
-        rollupRole: ip.server == null ? "canonical" : "component",
+        rollupRole: ip.server == null ? "metadata" : "metadata",
       });
     }
     return {
@@ -481,7 +521,7 @@ export async function fetchUsage(apiKey: string): Promise<UsageResult> {
         status: ip.blocked ? "blocked" : "active",
         amountUsd: convertedMonthlyPrice,
         currency,
-        rollupRole: ip.assignee_id == null ? "canonical" : "component",
+        rollupRole: ip.assignee_id == null ? "metadata" : "metadata",
       });
     }
     return {
@@ -515,7 +555,7 @@ export async function fetchUsage(apiKey: string): Promise<UsageResult> {
         status: "active",
         amountUsd: convertedMonthlyPrice,
         currency,
-        rollupRole: "canonical",
+        rollupRole: "metadata",
       });
     }
     return {
@@ -556,7 +596,7 @@ export async function fetchUsage(apiKey: string): Promise<UsageResult> {
         currency,
         usageQuantity: image.image_size,
         usageUnit: "GB",
-        rollupRole: "canonical",
+        rollupRole: "metadata",
       });
     }
     return {

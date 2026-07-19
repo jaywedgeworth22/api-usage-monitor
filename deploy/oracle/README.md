@@ -22,6 +22,30 @@ Verify both `tailscale ping <coolify-ip>` and `curl --resolve` against the
 Garage endpoint before relying on the private route. Public port 9443 is only a
 source-IP-restricted break-glass path; do not expose Garage broadly.
 
+## Backup monitoring
+
+The machine-level singleton at
+`/Users/jay/apps/fleet-sentry-monitor/monitor.py` verifies this backup path
+without adding another daemon or another alert credential to either server.
+Every 15 minutes it:
+
+- SSHes to Oracle and runs authenticated `litestream ltx -level all` plus a
+  no-write `litestream restore -dry-run` against the Garage replica.
+- Enforces a one-hour maximum replica-object age only after
+  `USAGE_SCHEDULER_ENABLED=true`; staging with its scheduler disabled still
+  verifies authentication and restorability without false stale alerts.
+- Confirms the Garage container is running and healthy and checks free space
+  on Coolify's Docker filesystem (warning below 15 GiB, error below 8 GiB).
+- Reports a separate Sentry Cron check-in named
+  `usage-monitor-garage-backup`; the existing `fleet-host-monitor` check-in
+  detects absence when the Mac-side singleton itself stops.
+
+Once a week the same singleton restores to the fixed Oracle scratch path
+`/data/.garage-backup-monitor-restore.db` with Litestream's `full` integrity
+check, then removes the database and SQLite sidecars in a trap. It never
+overwrites `/data/prod.db` or writes backup objects. Persistent failures are
+fingerprint-deduplicated to one Sentry event per hour.
+
 The candidate starts with `USAGE_SCHEDULER_ENABLED=false` and a separate
 Litestream target. Keep Render live until the candidate passes:
 

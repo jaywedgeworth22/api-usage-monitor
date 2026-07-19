@@ -1,25 +1,59 @@
+/* global chrome */
+// Usage Monitor launcher popup.
+// Stores only a non-secret dashboard URL and opens it in a new tab.
+// It never reads cookies, site storage, page content, or any credential,
+// and it never transmits data to any endpoint.
+
 document.addEventListener('DOMContentLoaded', () => {
-  const apiUrlInput = document.getElementById('apiUrl');
-  const apiTokenInput = document.getElementById('apiToken');
+  const urlInput = document.getElementById('dashboardUrl');
+  const openBtn = document.getElementById('openBtn');
   const saveBtn = document.getElementById('saveBtn');
   const statusDiv = document.getElementById('status');
 
-  // Load existing configuration
-  chrome.storage.local.get(['apiUrl', 'apiToken'], (result) => {
-    if (result.apiUrl) apiUrlInput.value = result.apiUrl;
-    if (result.apiToken) apiTokenInput.value = result.apiToken;
+  function setStatus(message) {
+    statusDiv.textContent = message;
+    statusDiv.style.display = 'block';
+    setTimeout(() => {
+      statusDiv.style.display = 'none';
+    }, 2000);
+  }
+
+  // Accept only http(s) origins; reject javascript:/data:/file: and garbage.
+  function normalizeUrl(raw) {
+    const trimmed = (raw || '').trim();
+    if (!trimmed) return '';
+    try {
+      const parsed = new URL(trimmed);
+      if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return '';
+      return (parsed.origin + parsed.pathname).replace(/\/+$/, '');
+    } catch {
+      return '';
+    }
+  }
+
+  chrome.storage.local.get(['dashboardUrl'], (result) => {
+    if (result.dashboardUrl) urlInput.value = result.dashboardUrl;
   });
 
-  // Save configuration
   saveBtn.addEventListener('click', () => {
-    const apiUrl = apiUrlInput.value.trim().replace(/\/$/, ''); // Remove trailing slash
-    const apiToken = apiTokenInput.value.trim();
+    const url = normalizeUrl(urlInput.value);
+    if (!url) {
+      setStatus('Enter a valid http(s) URL');
+      return;
+    }
+    urlInput.value = url;
+    chrome.storage.local.set({ dashboardUrl: url }, () => setStatus('Saved'));
+  });
 
-    chrome.storage.local.set({ apiUrl, apiToken }, () => {
-      statusDiv.style.display = 'block';
-      setTimeout(() => {
-        statusDiv.style.display = 'none';
-      }, 2000);
+  openBtn.addEventListener('click', () => {
+    const url = normalizeUrl(urlInput.value);
+    if (!url) {
+      setStatus('Enter a valid http(s) URL');
+      return;
+    }
+    chrome.storage.local.set({ dashboardUrl: url }, () => {
+      chrome.tabs.create({ url });
+      window.close();
     });
   });
 });
