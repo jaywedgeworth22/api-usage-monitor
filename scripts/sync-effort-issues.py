@@ -71,11 +71,13 @@ Reconciliation
   - Idempotent: if title/body/labels/state already match, no API call is
     made beyond the initial list. Existing issues are only updated when
     something actually changed.
-  - Never deletes issues. An item that disappears from the board (row
-    removed/merged into another) leaves its mirrored issue in place,
-    untouched, with whatever state it last had — a human can close it
-    manually if desired. This script does not guess intent for vanished
-    rows.
+  - Never deletes issues. After every current row reconciles successfully, a
+    vanished non-historical marker issue is retired with `state:orphaned`; open
+    issues are also closed, while closed historical Completed/Deployed issues
+    stay as-is. This is reversible: if the same key returns, normal
+    reconciliation restores its board state. Orphan retirement is skipped
+    unless at least half of all previously mirrored keys still appear, so empty
+    or truncated boards cannot mass-close the mirror.
   - Hand-made issues without the `effort-key` marker are ignored entirely
     (never edited, never closed, never relabeled).
 
@@ -141,6 +143,10 @@ RATE_LIMIT_RETRY_BUDGET_SECONDS = 300.0
 # Backoff for rate-limited requests when the server sends no Retry-After.
 RATE_LIMIT_BACKOFF_BASE_SECONDS = 15.0
 RATE_LIMIT_BACKOFF_MAX_SECONDS = 120.0
+# A board must retain at least this fraction of existing mirrored keys before
+# disappeared keys are retired. This treats large sudden key loss as probable
+# truncation/parser drift and requires a later healthy sync instead.
+ORPHAN_RETIREMENT_MIN_EXISTING_KEY_COVERAGE = 0.5
 
 MIRROR_LABEL = "effort-board"
 STATE_LABELS = {
@@ -149,6 +155,7 @@ STATE_LABELS = {
     "completed": "state:completed",
     "deployed": "state:deployed",
 }
+ORPHANED_LABEL = "state:orphaned"
 OPEN_BUCKETS = {"planned", "in-progress"}
 CLOSED_BUCKETS = {"completed", "deployed"}
 
@@ -158,6 +165,7 @@ LABEL_DEFS = {
     "state:in-progress": ("fbca04", "Effort board state: In Progress"),
     "state:completed": ("0e8a16", "Effort board state: Completed (merged to main)"),
     "state:deployed": ("0e8a16", "Effort board state: Deployed (released to production)"),
+    ORPHANED_LABEL: ("6e7781", "Effort board row removed or reworded; issue retired from the mirror"),
 }
 
 MARKER_RE = re.compile(r"<!--\s*effort-key:\s*([0-9a-f]{40})\s*-->")
@@ -178,7 +186,13 @@ SECTION_KEYWORDS = [
 ]
 
 PLACEHOLDER_RE = re.compile(
-    r"^\(?\s*(none|n/?a\b.*|seeded empty.*|add rows here.*|record the.*|see rollout notes.*)\s*\)?\.?$",
+    r"^\(?\s*(none|n/?a\b.*|seeded empty.*|add rows here.*)\s*\)?\.?$",
+    re.IGNORECASE,
+)
+# Broad imperative prefixes count as empty-section scaffolding only when
+# parenthesized. Bare "Record ..." / "See rollout ..." bullets are real rows.
+PLACEHOLDER_PARENS_RE = re.compile(
+    r"^\(\s*(record the.*|see rollout notes.*)\s*\)\.?$",
     re.IGNORECASE,
 )
 
@@ -249,7 +263,7 @@ def parse_board(text: str) -> list[BoardItem]:
                 items.append(current_item)
                 current_item = None
             content = bullet_match.group(1).strip()
-            if PLACEHOLDER_RE.match(content):
+            if PLACEHOLDER_RE.match(content) or PLACEHOLDER_PARENS_RE.match(content):
                 continue  # "(none)" etc. — not a real item.
             current_item = BoardItem(bucket=current_bucket, first_line=content)
             continue
@@ -453,7 +467,15 @@ def issue_label_names(issue: dict) -> set[str]:
 
 
 def reconcile(items: list[BoardItem], client: GitHubClient, repo: str, ref: str, assignee: str | None) -> dict:
-    stats = {"created": 0, "updated": 0, "unchanged": 0, "reopened": 0, "closed": 0, "partial": None}
+    stats = {
+        "created": 0,
+        "updated": 0,
+        "unchanged": 0,
+        "reopened": 0,
+        "closed": 0,
+        "orphaned": 0,
+        "partial": None,
+    }
 
     by_key: dict[str, dict] = {}
     seen_keys: set[str] = set()
@@ -466,19 +488,63 @@ def reconcile(items: list[BoardItem], client: GitHubClient, repo: str, ref: str,
             if key:
                 by_key[key] = issue
         _reconcile_items(items, client, repo, ref, assignee, by_key, seen_keys, stats)
+        matched_existing = len(set(by_key) & seen_keys)
+        existing_coverage = matched_existing / len(by_key) if by_key else 1.0
+        if items and existing_coverage >= ORPHAN_RETIREMENT_MIN_EXISTING_KEY_COVERAGE:
+            _reconcile_orphans(client, by_key, seen_keys, stats)
+        elif by_key:
+            print(
+                "warning: current board matches only "
+                f"{matched_existing}/{len(by_key)} existing mirrored key(s) "
+                f"({existing_coverage:.1%}); skipping orphan retirement below the "
+                f"{ORPHAN_RETIREMENT_MIN_EXISTING_KEY_COVERAGE:.0%} safety threshold"
+            )
     except RateLimitBudgetExhausted as e:
         stats["partial"] = str(e)
-        # Skip the orphan report: items not yet processed this run would look
-        # like orphans and produce a misleading note.
         return stats
 
-    orphaned = [k for k in by_key if k not in seen_keys]
-    if orphaned:
-        print(f"note: {len(orphaned)} previously-mirrored issue(s) no longer match a board row "
-              f"(row removed/reworded) — left untouched: "
-              f"{', '.join('#' + str(by_key[k]['number']) for k in orphaned)}")
-
     return stats
+
+
+def _reconcile_orphans(
+    client: GitHubClient,
+    by_key: dict[str, dict],
+    seen_keys: set[str],
+    stats: dict,
+) -> None:
+    orphaned = sorted(
+        (issue for key, issue in by_key.items() if key not in seen_keys),
+        key=lambda issue: int(issue["number"]),
+    )
+    for issue in orphaned:
+        number = int(issue["number"])
+        current_labels = issue_label_names(issue)
+        current_state_labels = {label for label in current_labels if label.startswith("state:")}
+
+        # Preserve closed release/history receipts exactly as recorded.
+        if issue.get("state") == "closed" and current_state_labels & {
+            STATE_LABELS["completed"],
+            STATE_LABELS["deployed"],
+        }:
+            continue
+
+        preserved = {
+            label for label in current_labels
+            if label != MIRROR_LABEL and not label.startswith("state:")
+        }
+        target_labels = sorted({MIRROR_LABEL, ORPHANED_LABEL, *preserved})
+        fields: dict = {}
+        if current_labels != set(target_labels):
+            fields["labels"] = target_labels
+        if issue.get("state") != "closed":
+            fields["state"] = "closed"
+            stats["closed"] += 1
+
+        if fields:
+            client.update_issue(number, fields)
+            print(f"retired orphaned effort issue #{number} ({', '.join(fields.keys())})")
+            stats["updated"] += 1
+            stats["orphaned"] += 1
 
 
 def _reconcile_items(
@@ -515,6 +581,7 @@ def _reconcile_items(
             stats["created"] += 1
             if desired_state == "closed" and created.get("number", -1) != -1:
                 client.update_issue(created["number"], {"state": "closed"})
+                stats["closed"] += 1
             continue
 
         number = existing["number"]
@@ -589,7 +656,8 @@ def main() -> int:
     stats = reconcile(items, client, repo, ref, assignee)
     summary = (
         f"created={stats['created']} updated={stats['updated']} "
-        f"unchanged={stats['unchanged']} reopened={stats['reopened']} closed={stats['closed']}"
+        f"unchanged={stats['unchanged']} reopened={stats['reopened']} "
+        f"closed={stats['closed']} orphaned={stats['orphaned']}"
     )
     if stats["partial"]:
         print(f"PARTIAL SYNC — rate-limit retry budget exhausted: {stats['partial']}")
