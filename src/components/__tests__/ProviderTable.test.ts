@@ -134,6 +134,14 @@ describe("ProviderTable cost coverage", () => {
         type: "custom",
       }),
     ]);
+    const manualProviderHtml = renderTable([
+      provider({
+        id: "manual_provider",
+        name: "openai",
+        displayName: "OpenAI",
+        type: "manual_provider",
+      }),
+    ]);
 
     expect(manualHtml).not.toContain("Fetch Now");
     expect(manualHtml).toContain("Push / manual");
@@ -141,6 +149,8 @@ describe("ProviderTable cost coverage", () => {
     expect(pushHtml).toContain("Push / manual");
     expect(customHtml).toContain("Fetch Now");
     expect(customHtml).toContain(">Active<");
+    expect(manualProviderHtml).not.toContain("Fetch Now");
+    expect(manualProviderHtml).toContain("Push / manual");
   });
 
   it("shows Gemini key health separately from billing availability", () => {
