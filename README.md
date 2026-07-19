@@ -1,4 +1,4 @@
-# API Usage Monitor
+# Usage Monitor
 
 Tracks API usage and cost across providers via **poller snapshots**, **pushed telemetry**, and **Claude Code OTLP metrics**, with **per-project cost attribution** and **recurring-subscription tracking**. Deployed at `usage.jays.services`.
 

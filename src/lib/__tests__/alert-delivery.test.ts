@@ -3096,7 +3096,7 @@ describe("alert delivery", () => {
     expect(body.dedup_key).toBe(
       `api-usage-monitor:${provider.id}:balance_low:incident-1`
     );
-    expect(body.payload.source).toBe("API Usage Monitor");
+    expect(body.payload.source).toBe("Usage Monitor");
     expect(body.payload.component).toBe("test_pd");
     expect(body.payload.severity).toBe("warning"); // The default balance low is warning
 
