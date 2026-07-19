@@ -9,12 +9,13 @@ ConditionPathIsMountPoint=/data
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-WorkingDirectory=/opt/Usage-Monitor/deploy/oracle
+WorkingDirectory=/etc/usage-monitor
 EnvironmentFile=/etc/usage-monitor/host.env
 ExecStartPre=/usr/bin/chown 1000:1000 /data
 ExecStartPre=/usr/bin/chmod 0750 /data
-ExecStart=/usr/bin/docker compose up --detach --remove-orphans
-ExecStop=/usr/bin/docker compose stop --timeout 60
+ExecStart=/usr/bin/docker compose --project-name oracle --env-file /etc/usage-monitor/host.env --file /etc/usage-monitor/compose.yaml up --detach --no-build --remove-orphans
+ExecStartPost=/usr/bin/docker update --restart=no oracle-app-1
+ExecStop=/usr/bin/docker compose --project-name oracle --env-file /etc/usage-monitor/host.env --file /etc/usage-monitor/compose.yaml stop --timeout 60
 TimeoutStartSec=1800
 TimeoutStopSec=120
 

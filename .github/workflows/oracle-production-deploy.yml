@@ -1,0 +1,103 @@
+name: Oracle Production Deploy
+
+on:
+  # Oracle performs the mutation from its root-owned timer. This workflow is
+  # the GitHub-visible receipt: it starts only after exact-main CI succeeds and
+  # fails unless production reaches that exact revision.
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      revision:
+        description: Current main SHA to verify (defaults to the dispatch SHA)
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+# A newer main revision supersedes an older observer. Host-side mutation is
+# independently serialized by flock and never uses cancellation semantics.
+concurrency:
+  group: oracle-production-deploy
+  cancel-in-progress: true
+
+jobs:
+  verify-production:
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.event == 'push' &&
+       github.event.workflow_run.head_branch == 'main' &&
+       github.event.workflow_run.conclusion == 'success')
+    runs-on: ubuntu-latest
+    timeout-minutes: 130
+    environment:
+      name: oracle-production
+      url: https://usage.jays.services
+    env:
+      TARGET_SHA: ${{ github.event.workflow_run.head_sha || inputs.revision || github.sha }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Validate exact main revision
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ ! "$TARGET_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::Invalid target SHA."
+            exit 1
+          fi
+          main_sha=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq '.object.sha')
+          if [[ "$main_sha" != "$TARGET_SHA" ]]; then
+            echo "Revision $TARGET_SHA was superseded by $main_sha before observation began."
+            echo "superseded=true" >> "$GITHUB_ENV"
+          else
+            echo "superseded=false" >> "$GITHUB_ENV"
+          fi
+
+      - name: Wait for exact Oracle production revision
+        if: env.superseded != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          ready_url='https://usage.jays.services/api/ready?strict=1'
+          for attempt in $(seq 1 720); do
+            if (( attempt % 6 == 0 )); then
+              main_sha=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq '.object.sha')
+              if [[ "$main_sha" != "$TARGET_SHA" ]]; then
+                echo "Revision $TARGET_SHA was superseded by $main_sha while waiting."
+                exit 0
+              fi
+            fi
+
+            if body=$(curl -fsS --max-time 15 "$ready_url" 2>/dev/null) &&
+              jq -e --arg revision "$TARGET_SHA" '
+                .status == "ready" and
+                .revision == $revision and
+                .checks.database.ok == true and
+                .checks.backup.ok == true and
+                .checks.backup.required == true and
+                .checks.backup.active == true and
+                .checks.startup.active == true and
+                .checks.scheduler.ok == true and
+                .checks.scheduler.required == true and
+                .checks.scheduler.lastTickSucceeded == true and
+                .checks.scheduler.lastTickCompletedAt != null
+              ' >/dev/null <<<"$body"; then
+              echo "Oracle production is ready at exact revision $TARGET_SHA."
+              {
+                echo '### Oracle production deployment'
+                echo
+                printf '%s\n' "- Revision: \`$TARGET_SHA\`"
+                echo '- Database: healthy'
+                echo '- Garage backup: required and active'
+                echo '- Scheduler: required with a successful tick'
+                echo '- Public TLS/readiness: healthy'
+              } >> "$GITHUB_STEP_SUMMARY"
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "::error::Oracle production did not reach exact revision $TARGET_SHA within 120 minutes."
+          exit 1

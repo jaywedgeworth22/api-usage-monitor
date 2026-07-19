@@ -4,7 +4,7 @@ import { ThemeProvider } from "@/components/ThemeProvider";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "API Usage Monitor",
+  title: "Usage Monitor",
   description: "Monitor usage and balance across multiple API providers",
   robots: {
     index: false,
