@@ -1,7 +1,10 @@
 import { prisma } from "@/lib/prisma";
 import { sumMonthToDateExternalCostByProvider } from "@/lib/external-usage-events";
 import { getProviderIntegrationProfile } from "@/lib/provider-integration-catalog";
-import { canonicalProviderKey } from "@/lib/provider-identity";
+import {
+  canonicalProviderKey,
+  resolveProviderIdentity,
+} from "@/lib/provider-identity";
 import { withInternalUsageWriteAdmission } from "@/lib/ingest-admission";
 
 /**
@@ -152,10 +155,51 @@ export async function reconcileProviderUsage(
   let unverifiable = 0;
   let pending = 0;
 
+  // A pushed-cost bucket is canonical-key scoped, but several ACTIVE Provider
+  // rows can share one canonical key (Provider.name has no unique constraint;
+  // alias spellings collapse too). Attributing the whole bucket to each row
+  // would report the same pushed dollars N times and manufacture false
+  // discrepancies on a perfectly reconciled month. Resolve one OWNER per key
+  // using the repo's existing identity tie-break; siblings get no pushed cost
+  // and are recorded as unverifiable rather than given a bogus delta.
+  // Keyed off the PROVIDER ROWS, not the pushed buckets: two same-key rows are
+  // ambiguous whether or not any telemetry has been pushed yet, and a bucket
+  // that arrives later must not suddenly be double-counted.
+  const rowsByCanonicalKey = new Map<string, string[]>();
   for (const provider of providers) {
-    const pushed = pushedByCanonicalKey.get(
-      canonicalProviderKey(provider.name)
-    ) ?? { usagePushed: 0, eventCount: 0 };
+    const key = canonicalProviderKey(provider.name);
+    const bucket = rowsByCanonicalKey.get(key);
+    if (bucket) bucket.push(provider.id);
+    else rowsByCanonicalKey.set(key, [provider.id]);
+  }
+  const ownerIdByCanonicalKey = new Map<string, string>();
+  for (const [key, ids] of rowsByCanonicalKey.entries()) {
+    if (ids.length === 1) {
+      ownerIdByCanonicalKey.set(key, ids[0]);
+      continue;
+    }
+    const owner = resolveProviderIdentity(
+      key,
+      providers.map((provider) => ({ id: provider.id, name: provider.name }))
+    );
+    // Deterministic fallback if no candidate resolves, so ownership is never
+    // arbitrary across passes.
+    ownerIdByCanonicalKey.set(key, owner?.id ?? [...ids].sort()[0]);
+  }
+
+  for (const provider of providers) {
+    const canonicalKey = canonicalProviderKey(provider.name);
+    const ownerId = ownerIdByCanonicalKey.get(canonicalKey);
+    // Only the owning row is credited with the bucket. A sibling sharing the
+    // key is "ambiguous" — its own pushed slice cannot be separated here.
+    const ambiguousAttribution = ownerId != null && ownerId !== provider.id;
+    const pushed =
+      ambiguousAttribution || ownerId == null
+        ? { usagePushed: 0, eventCount: 0 }
+        : pushedByCanonicalKey.get(canonicalKey) ?? {
+            usagePushed: 0,
+            eventCount: 0,
+          };
     const reportedCostUsd = pushed.usagePushed;
     const reportedEventCount = pushed.eventCount;
 
@@ -170,7 +214,11 @@ export async function reconcileProviderUsage(
     let deltaUsd: number | null = null;
     let deltaRatio: number | null = null;
 
-    if (!isReconcilableVisibility(visibility)) {
+    if (ambiguousAttribution) {
+      // Explicit, never a silent skip and never a computed delta.
+      status = "unverifiable";
+      unverifiable += 1;
+    } else if (!isReconcilableVisibility(visibility)) {
       // metadata | manual | none — structurally not verifiable. Recorded
       // EXPLICITLY so the dashboard can say "unverifiable" instead of implying
       // this provider was checked and found fine.

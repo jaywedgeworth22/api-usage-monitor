@@ -20,7 +20,16 @@ import { withInternalUsageWriteAdmission } from "@/lib/ingest-admission";
  *     discipline alert-delivery uses) so verification can never stall ingest;
  *   - already-settled events ("match"/"discrepancy") are never re-fetched;
  *   - a transient failure records "error" and is retried on a later pass, up to
- *     MAX_VERIFICATION_ATTEMPTS, after which the event is left alone.
+ *     MAX_VERIFICATION_ATTEMPTS, after which the event is parked in the
+ *     TERMINAL "unverifiable" state so it can never be re-selected.
+ *
+ * The terminal state matters: "error" is a RETRYABLE status that the due-scan
+ * selects. Parking an exhausted event as "error" would let it be picked up
+ * forever — and because the exhausted marker is not an attempt marker, its
+ * attempt counter would reset to 0 on every re-selection, yielding a permanent
+ * 5-pass cycle. Since the scan is ordered oldest-first, a pile of permanently
+ * dead ids (e.g. generations OpenRouter has pruned) would fill every batch and
+ * starve newly-ingested events indefinitely while burning API calls.
  */
 
 const MAX_EVENTS_PER_PASS = 25;
@@ -252,7 +261,11 @@ export async function verifyOpenRouterGenerations(): Promise<OpenRouterVerificat
         updates.push({
           id: event.id,
           data: {
-            verificationStatus: "error",
+            // TERMINAL — deliberately NOT "error". "error" is retryable and
+            // would re-select this row every pass forever (see the header
+            // comment): its attempt counter resets, so it would cycle 1..5
+            // indefinitely, consume a batch slot, and starve fresh events.
+            verificationStatus: "unverifiable",
             verifiedSource: EXHAUSTED_SOURCE,
           },
         });

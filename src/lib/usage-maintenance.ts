@@ -87,7 +87,11 @@ export function isUsageMaintenanceHealthy(result: UsageMaintenanceResult): boole
       result.subscriptionAdoption.cloudflareLegacyHandoff
     ) &&
     result.alerts.deferredError === null &&
-    result.alerts.persistenceDegraded.length === 0
+    result.alerts.persistenceDegraded.length === 0 &&
+    // A key that cannot read generations (401/403) silently disables the
+    // per-call audit layer. Reporting healthy in that state would recreate
+    // exactly the blind spot §3c exists to remove.
+    result.openrouterVerification?.degraded !== true
   );
 }
 

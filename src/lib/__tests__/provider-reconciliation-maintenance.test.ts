@@ -201,6 +201,32 @@ describe("verifyOpenRouterGenerations", () => {
     expect(fetchSpy).toHaveBeenCalledTimes(1);
   });
 
+  it("parks a permanently-dead generation id in a TERMINAL state instead of cycling forever", async () => {
+    const event = await seedEvent({ providerRequestId: "gen-dead" });
+    // A generation OpenRouter has pruned: 404s on every attempt, forever.
+    mockGeneration({ "gen-dead": { status: 404 } });
+
+    // Burn the retry budget.
+    for (let pass = 0; pass < 5; pass += 1) {
+      await verifyOpenRouterGenerations();
+    }
+    const parked = await prisma.externalUsageEvent.findUniqueOrThrow({
+      where: { id: event.id },
+    });
+    expect(parked.verificationStatus).toBe("unverifiable");
+    expect(parked.verifiedSource).toBe("openrouter-generation-exhausted");
+
+    // The next pass must NOT re-select it. If the terminal state were the
+    // retryable "error", this row would be picked up again and its attempt
+    // counter would reset — a permanent cycle that fills every batch (the scan
+    // is oldest-first) and starves newly-ingested events.
+    const fetchSpy = vi.spyOn(helpers, "fetchJson");
+    fetchSpy.mockClear(); // drop the 5 calls the retry budget already made
+    const after = await verifyOpenRouterGenerations();
+    expect(after.examined).toBe(0);
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
   it("never re-fetches an already-settled event", async () => {
     await seedEvent({
       providerRequestId: "gen-settled",
@@ -278,6 +304,28 @@ describe("reconcileProviderUsage", () => {
     });
     expect(row.status).toBe("pending");
     expect(row.verifiedCostUsd).toBeNull();
+  });
+
+  it("never attributes one pushed-cost bucket to several same-key provider rows", async () => {
+    // Two ACTIVE rows sharing a canonical key — Provider.name has no unique
+    // constraint, so this is reachable (e.g. two OpenAI accounts).
+    const first = await seedProvider("openai", { totalCost: 60 });
+    const second = await seedProvider("openai", { totalCost: 40 });
+
+    await reconcileProviderUsage();
+
+    const rows = await prisma.providerUsageReconciliation.findMany({
+      where: { providerId: { in: [first.id, second.id] } },
+    });
+    expect(rows).toHaveLength(2);
+    // Exactly one row may own the bucket; the sibling must NOT be handed the
+    // same pushed dollars a second time (that would fabricate a discrepancy on
+    // a perfectly reconciled month).
+    const credited = rows.filter((row) => row.reportedCostUsd > 0);
+    expect(credited.length).toBeLessThanOrEqual(1);
+    const ambiguous = rows.filter((row) => row.status === "unverifiable");
+    expect(ambiguous).toHaveLength(1);
+    expect(ambiguous[0].deltaUsd).toBeNull();
   });
 
   it("records a discrepancy when provider-reported cost exceeds pushed telemetry", async () => {
