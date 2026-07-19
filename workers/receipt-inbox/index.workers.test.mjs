@@ -50,10 +50,11 @@ describe("receipt inbox Durable Object in workerd", () => {
   });
 
   it("lists committed receipts newest first and never lists pending reservations", async () => {
+    const baseTime = Date.now();
     const times = [
-      "2026-07-18T10:00:00.000Z",
-      "2026-07-18T12:00:00.000Z",
-      "2026-07-18T11:00:00.000Z",
+      new Date(baseTime - 3 * 3600 * 1000).toISOString(),
+      new Date(baseTime - 1 * 3600 * 1000).toISOString(),
+      new Date(baseTime - 2 * 3600 * 1000).toISOString(),
     ];
     for (let number = 1; number <= 3; number += 1) {
       await request("/reserve", "POST", metadata(number, times[number - 1]));

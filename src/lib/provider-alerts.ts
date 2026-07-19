@@ -18,7 +18,8 @@ export interface ProviderAlert {
     | "missing_balance_visibility"
     | "stale_snapshot"
     | "missing_snapshot"
-    | "unconfigured_budget";
+    | "unconfigured_budget"
+    | "usage_reconciliation_discrepancy";
   severity: AlertSeverity;
   message: string;
 }
@@ -57,6 +58,7 @@ export interface ProviderAlertInput {
   // Portion of trackedSpendUsd that is already a discrete/fixed charge and
   // must not be linearly extrapolated to month end.
   fixedAccruedUsd?: number;
+  reconciliationDiscrepancyUsd?: number | null;
 }
 
 export interface ProviderAlertState {
@@ -252,6 +254,14 @@ export function buildProviderAlertState(
         }.`,
       });
     }
+  }
+
+  if (input.reconciliationDiscrepancyUsd != null && Math.abs(input.reconciliationDiscrepancyUsd) > 0.01) {
+    alerts.push({
+      code: "usage_reconciliation_discrepancy",
+      severity: "warning",
+      message: `Usage reconciliation discrepancy of ${formatUsd(input.reconciliationDiscrepancyUsd)} detected.`,
+    });
   }
 
   return { alerts, estimatedMonthlyCostUsd, projectedEomUsd, billingMode };
