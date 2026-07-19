@@ -55,6 +55,9 @@ jobs:
       - name: Test startup configuration
         run: npm run test:startup-config
 
+      - name: Test Oracle deployment circuit breakers
+        run: npm run test:oracle-deploy
+
       - name: Audit high-severity dependencies
         run: npm audit --audit-level=high
 
