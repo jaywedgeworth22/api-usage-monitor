@@ -122,8 +122,9 @@ export default function ProviderIntegrationDrawer({
     (instanceState?.anthropicAdminApiConfigured ?? false);
   const anthropicWithoutAdmin =
     profile.name === "anthropic" && !anthropicAdminConfigured;
+  const isManualProvider = providerType === "manual_provider" || providerType === "generic";
   const pollingNotApplicable =
-    profile.mode === "manual" || profile.mode === "push-only";
+    profile.mode === "manual" || profile.mode === "push-only" || isManualProvider;
   const geminiKeyStatus =
     profile.name === "google-ai" ? instanceState?.geminiKeyStatus ?? null : null;
   const geminiBillingStatus =
@@ -322,6 +323,15 @@ export default function ProviderIntegrationDrawer({
               Project allocations share attribution percentages, not provider data.
             </p>
           </div>
+
+          {isManualProvider && (
+            <div className="mt-4 rounded-xl border border-gray-200 bg-gray-50 p-4 text-sm leading-6 text-gray-700 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-300">
+              <p className="font-semibold">No API Configuration</p>
+              <p className="mt-1">
+                This provider is currently running as a manual/no-op service because no API credentials have been configured. Fetch actions are disabled.
+              </p>
+            </div>
+          )}
 
           {instanceState ? (
             <Section title="Current configured state">
