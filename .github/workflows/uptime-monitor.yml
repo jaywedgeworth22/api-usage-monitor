@@ -25,7 +25,13 @@ jobs:
   # e.g. a PagerDuty "resolve" curl failing after a SUCCESSFUL check would
   # conclude the run as failure and be miscounted later as downtime.
   ping:
-    runs-on: ubuntu-latest
+    # Self-hosted CI with hosted fallback; dependabot forced hosted. See ci.yml
+    # for the full rationale/runbook. Clear UM_CI_RUNNER for instant fallback.
+    # This 5-minute cron is the steady hosted-minutes drain, so moving it is the
+    # main saving. It relies on curl + jq (readiness probe) and gh (incident
+    # issue/streak steps, all continue-on-error); confirm those exist on the
+    # runner during the proving dispatch — the readiness gate needs only curl+jq.
+    runs-on: ${{ (github.actor != 'dependabot[bot]' && vars.UM_CI_RUNNER) || 'ubuntu-latest' }}
     timeout-minutes: 5
     env:
       # Consecutive failed 5-minute checks required before this fires a

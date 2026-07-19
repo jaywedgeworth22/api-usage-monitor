@@ -40,7 +40,9 @@ permissions:
 
 jobs:
   sync:
-    runs-on: ubuntu-latest
+    # Self-hosted CI with hosted fallback; dependabot forced hosted. See ci.yml
+    # for the full rationale/runbook. Clear UM_CI_RUNNER for instant fallback.
+    runs-on: ${{ (github.actor != 'dependabot[bot]' && vars.UM_CI_RUNNER) || 'ubuntu-latest' }}
     steps:
       - name: Checkout
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7

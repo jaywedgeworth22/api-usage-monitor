@@ -7,10 +7,13 @@ on:
       - main
   schedule:
     - cron: "41 10 * * 1"
+  workflow_dispatch: {}
 
 jobs:
   gitleaks:
-    runs-on: ubuntu-latest
+    # Self-hosted CI with hosted fallback; dependabot forced hosted. See ci.yml
+    # for the full rationale/runbook. Clear UM_CI_RUNNER for instant fallback.
+    runs-on: ${{ (github.actor != 'dependabot[bot]' && vars.UM_CI_RUNNER) || 'ubuntu-latest' }}
     permissions:
       contents: read
       pull-requests: read
