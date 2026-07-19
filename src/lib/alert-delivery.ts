@@ -657,7 +657,7 @@ async function sendToChannelOnce(
         to: channel.to,
         subject: `[${alert.severity.toUpperCase()}] Alert for ${provider.displayName || provider.name}`,
         html: `
-          <h2>API Usage Monitor Alert</h2>
+          <h2>Usage Monitor Alert</h2>
           <p><strong>Provider:</strong> ${provider.displayName || provider.name}</p>
           <p><strong>Severity:</strong> ${alert.severity}</p>
           <p><strong>Message:</strong> ${alert.message}</p>
@@ -691,7 +691,7 @@ async function sendToChannelOnce(
             dedup_key: exactPagerDutyDedupKey,
             payload: {
               summary: alertText(provider, alert),
-              source: "API Usage Monitor",
+              source: "Usage Monitor",
               severity: pdSeverity,
               component: provider.name,
               custom_details: {

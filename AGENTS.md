@@ -1,4 +1,4 @@
-# API Usage Monitor — agent notes
+# Usage Monitor — agent notes
 
 Next.js + Prisma (**SQLite**, not Postgres — a single Render web service with a
 persistent disk at `/data`, no separate DB resource; see `render.yaml`) app deployed on
