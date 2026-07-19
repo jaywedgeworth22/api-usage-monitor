@@ -1181,11 +1181,17 @@ export async function syncStatusToUsageSnapshot(events: ExternalUsageEventInput[
   if (statusEvents.length === 0) return;
 
   const allProviders = await prisma.provider.findMany({
-    select: { id: true, name: true },
+    select: { id: true, name: true, groupId: true },
   });
 
   for (const event of statusEvents) {
-    const provider = resolveProviderIdentity(event.provider, allProviders);
+    let provider = event.keyRef
+      ? allProviders.find((p) => p.groupId === event.keyRef || p.id === event.keyRef)
+      : undefined;
+
+    if (!provider) {
+      provider = resolveProviderIdentity(event.provider, allProviders) ?? undefined;
+    }
     if (!provider) continue;
 
     const data: Prisma.UsageSnapshotCreateInput = {
