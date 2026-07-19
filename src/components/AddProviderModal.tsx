@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { Eye, EyeOff } from "lucide-react";
 import ModalDialog from "@/components/ModalDialog";
 import ProviderIntegrationInfo from "@/components/ProviderIntegrationInfo";
 import {
@@ -191,6 +192,10 @@ export default function AddProviderModal({
   const [selectedBuiltin, setSelectedBuiltin] = useState(editProvider?.name || "");
   const [builtinDisplayName, setBuiltinDisplayName] = useState(editProvider?.displayName || "");
   const [apiKey, setApiKey] = useState(editProvider?.apiKey || "");
+  // Default to visible so a pasted/typed key can be verified. This only ever
+  // affects what the user types — the stored key is never placed in this input
+  // (edit mode shows a first6…last4 preview below instead).
+  const [showApiKey, setShowApiKey] = useState(true);
   const [label, setLabel] = useState(editProvider?.label || "");
   const [refreshIntervalMin, setRefreshIntervalMin] = useState(
     editProvider?.refreshIntervalMin ?? 60
@@ -1177,15 +1182,29 @@ export default function AddProviderModal({
                         : "API token (Account Billing Read)")
                     : "API Key"}
                 </label>
-                <input
-                  id="provider-builtin-api-key"
-                  type="password"
-                  value={apiKey}
-                  onChange={(e) => setApiKey(e.target.value)}
-                  disabled={Boolean(credentialManaged)}
-                  placeholder={credentialManaged ? "Managed by Infisical" : editProvider ? "Leave blank to keep current" : "Your API key"}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 disabled:cursor-not-allowed disabled:bg-gray-100 dark:border-gray-600 dark:bg-gray-900 dark:text-gray-100 dark:disabled:bg-gray-800 dark:disabled:text-gray-400"
-                />
+                <div className="relative">
+                  <input
+                    id="provider-builtin-api-key"
+                    type={showApiKey ? "text" : "password"}
+                    value={apiKey}
+                    onChange={(e) => setApiKey(e.target.value)}
+                    disabled={Boolean(credentialManaged)}
+                    placeholder={credentialManaged ? "Managed by Infisical" : editProvider ? "Leave blank to keep current" : "Your API key"}
+                    className="w-full px-3 py-2 pr-10 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 disabled:cursor-not-allowed disabled:bg-gray-100 dark:border-gray-600 dark:bg-gray-900 dark:text-gray-100 dark:disabled:bg-gray-800 dark:disabled:text-gray-400"
+                  />
+                  {!credentialManaged && (
+                    <button
+                      type="button"
+                      onClick={() => setShowApiKey((v) => !v)}
+                      aria-label={showApiKey ? "Hide API key" : "Show API key"}
+                      aria-pressed={showApiKey}
+                      title={showApiKey ? "Hide API key" : "Show API key"}
+                      className="absolute inset-y-0 right-0 flex items-center px-3 text-gray-400 rounded-r-lg hover:text-gray-600 focus:outline-none focus:ring-2 focus:ring-blue-500 dark:text-gray-500 dark:hover:text-gray-300"
+                    >
+                      {showApiKey ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                    </button>
+                  )}
+                </div>
                 {editProvider && !apiKey && editProvider.keyPreview && (
                   <p className="text-xs text-gray-500 mt-1 dark:text-gray-400">
                     Current key:{" "}
@@ -1263,14 +1282,26 @@ export default function AddProviderModal({
                 <label htmlFor="provider-custom-api-key" className="block text-sm font-medium text-gray-700 mb-1 dark:text-gray-200">
                   API Key
                 </label>
-                <input
-                  id="provider-custom-api-key"
-                  type="password"
-                  value={apiKey}
-                  onChange={(e) => setApiKey(e.target.value)}
-                  placeholder={editProvider ? "Leave blank to keep current" : "Your API key"}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 dark:border-gray-600 dark:bg-gray-900 dark:text-gray-100"
-                />
+                <div className="relative">
+                  <input
+                    id="provider-custom-api-key"
+                    type={showApiKey ? "text" : "password"}
+                    value={apiKey}
+                    onChange={(e) => setApiKey(e.target.value)}
+                    placeholder={editProvider ? "Leave blank to keep current" : "Your API key"}
+                    className="w-full px-3 py-2 pr-10 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 dark:border-gray-600 dark:bg-gray-900 dark:text-gray-100"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowApiKey((v) => !v)}
+                    aria-label={showApiKey ? "Hide API key" : "Show API key"}
+                    aria-pressed={showApiKey}
+                    title={showApiKey ? "Hide API key" : "Show API key"}
+                    className="absolute inset-y-0 right-0 flex items-center px-3 text-gray-400 rounded-r-lg hover:text-gray-600 focus:outline-none focus:ring-2 focus:ring-blue-500 dark:text-gray-500 dark:hover:text-gray-300"
+                  >
+                    {showApiKey ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                  </button>
+                </div>
                 {editProvider && !apiKey && editProvider.keyPreview && (
                   <p className="text-xs text-gray-500 mt-1 dark:text-gray-400">
                     Current key:{" "}
