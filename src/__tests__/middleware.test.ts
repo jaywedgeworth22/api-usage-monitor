@@ -1,18 +1,13 @@
 import { describe, expect, it } from "vitest";
-import { config } from "@/middleware";
+import { config, isPublicPath } from "@/middleware";
 
-// The session-cookie middleware only runs on paths its `config.matcher`
-// selects. Next.js compiles that matcher (a single negative-lookahead string)
-// to decide inclusion; here we reproduce the exclusion semantics the matcher
-// encodes — anchor the exported pattern and test membership, exactly the way
-// the middleware comment reasons about `(?:/|$)` segment anchoring.
+// The session-cookie middleware runs on almost all paths now to enforce CSP nonces,
+// but it uses isPublicPath internally to determine if the route should be session-gated.
 //
-// matched === true  -> middleware runs   -> request is session-cookie gated
-// matched === false -> middleware skipped -> the route's OWN token check governs
+// isPublicPath === false -> request is session-cookie gated
+// isPublicPath === true  -> the route's OWN token check governs
 function isSessionGated(pathname: string): boolean {
-  expect(config.matcher).toHaveLength(1);
-  const pattern = config.matcher[0];
-  return new RegExp(`^${pattern}$`).test(pathname);
+  return !isPublicPath(pathname);
 }
 
 describe("middleware matcher — /api/budget-status exclusion (regression for the prod 401 bug)", () => {

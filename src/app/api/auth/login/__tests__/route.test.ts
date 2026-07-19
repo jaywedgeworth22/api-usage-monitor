@@ -30,15 +30,24 @@ function loginRequest(
 describe("POST /api/auth/login", () => {
   beforeEach(() => {
     process.env.DASHBOARD_PASSWORD = PASSWORD;
+    process.env.SESSION_SECRET = "test-session-secret";
   });
 
   afterEach(() => {
     delete process.env.DASHBOARD_PASSWORD;
+    delete process.env.SESSION_SECRET;
     vi.resetModules();
   });
 
   it("returns 503 when DASHBOARD_PASSWORD is not configured", async () => {
     delete process.env.DASHBOARD_PASSWORD;
+    const { POST } = await freshRoute();
+    const res = await POST(loginRequest(PASSWORD, "1.1.1.1"));
+    expect(res.status).toBe(503);
+  });
+
+  it("returns 503 when SESSION_SECRET is not configured", async () => {
+    delete process.env.SESSION_SECRET;
     const { POST } = await freshRoute();
     const res = await POST(loginRequest(PASSWORD, "1.1.1.1"));
     expect(res.status).toBe(503);

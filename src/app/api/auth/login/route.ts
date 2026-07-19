@@ -47,7 +47,7 @@ const loginRateLimiterByTuple = createRateLimiter(60_000, 5);
 const loginBackstop = createRateLimiter(60_000, 20);
 
 export async function POST(request: NextRequest) {
-  if (!process.env.DASHBOARD_PASSWORD?.trim()) {
+  if (!process.env.DASHBOARD_PASSWORD?.trim() || !process.env.SESSION_SECRET?.trim()) {
     return NextResponse.json(
       { error: "Dashboard auth is not configured" },
       { status: 503 }

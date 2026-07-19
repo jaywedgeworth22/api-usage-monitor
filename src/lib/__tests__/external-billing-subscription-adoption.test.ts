@@ -39,6 +39,7 @@ beforeAll(async () => {
   dbPath = path.join(dir, "test.db");
   process.env.DATABASE_URL = `file:${dbPath}`;
   process.env.DASHBOARD_PASSWORD = "external-adoption-test-password";
+  process.env.SESSION_SECRET = "test-session-secret";
   setupPrismaSqliteTestDb(dbPath);
 
   ({ prisma } = await import("@/lib/prisma"));

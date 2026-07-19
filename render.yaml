@@ -89,6 +89,8 @@ services:
       # rights, add a distinct USAGE_READ_TOKEN in the Render dashboard.
       - key: DASHBOARD_PASSWORD
         generateValue: true
+      - key: SESSION_SECRET
+        generateValue: true
       # Optional Infisical provider-credential rotation. Project/path defaults
       # are verified in code, so production only needs the three Universal Auth
       # ID/secret pairs. Render never generates or copies these values.
