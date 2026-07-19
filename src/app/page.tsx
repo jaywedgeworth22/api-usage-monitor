@@ -16,6 +16,7 @@ import type { ExternalBillingRecord } from "@/components/ExternalBillingDetails"
 import PaidServicesPanel from "@/components/PaidServicesPanel";
 import type { SubscriptionRow } from "@/components/SubscriptionsPanel";
 import DashboardProviderWorkspace from "@/components/DashboardProviderWorkspace";
+import OperationsOverview from "@/components/OperationsOverview";
 import { sumProviderFunds } from "@/lib/provider-financial-semantics";
 
 interface Provider {
@@ -452,6 +453,8 @@ export default function DashboardPage() {
       />
 
       <DashboardProviderWorkspace providers={providers} subscriptions={subscriptions} />
+
+      <OperationsOverview />
 
       <details
         ref={portfolioDetailsRef}

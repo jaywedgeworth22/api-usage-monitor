@@ -81,6 +81,11 @@ services:
         sync: false
       - key: BILLING_RECEIPT_HMAC_KEY
         sync: false
+      # Optional read-only view of the separate Cloudflare Email Routing/R2
+      # receipt quarantine. The Worker never receives the billing receipt
+      # ingest/signing credentials and cannot create money events.
+      - key: RECEIPT_INBOX_READ_TOKEN
+        sync: false
       # GET /api/budget-status authenticates with USAGE_READ_TOKEN, falling back
       # to USAGE_INGEST_TOKEN when unset (see src/app/api/budget-status/route.ts).
       # We intentionally do NOT provision a distinct USAGE_READ_TOKEN here: prod
