@@ -25,7 +25,7 @@ import {
   withSnapshotSyncFailure,
 } from "@/lib/snapshot-sync-status";
 import { withInternalUsageWriteAdmission } from "@/lib/ingest-admission";
-
+import { redactProviderRawData } from "@/lib/data-privacy";
 const DEFAULT_PROVIDER_TIMEOUT_MS = 90_000;
 const providerAttemptTokens = new Map<string, symbol>();
 
@@ -92,7 +92,10 @@ export async function recordProviderUsage(
             credits: usage.credits,
             rawData:
               withCostCoverageCaveat(
-                withSnapshotSyncFailure(usage.rawData, usage.postPersistError),
+                withSnapshotSyncFailure(
+                  redactProviderRawData(provider.type, provider.name, usage.rawData),
+                  usage.postPersistError
+                ),
                 usage.costCoverageCaveat
               ) ?? undefined,
           },
