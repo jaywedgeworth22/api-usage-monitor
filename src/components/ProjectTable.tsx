@@ -46,21 +46,21 @@ export default function ProjectTable({
   }
 
   return (
-    <div className="bg-white rounded-xl border border-gray-200 overflow-x-auto">
+    <div className="bg-white rounded-xl border border-gray-200 dark:border-gray-700 dark:bg-gray-800 overflow-x-clip">
       <table className="responsive-table w-full text-sm">
         <caption className="sr-only">Configured projects and budgets</caption>
         <thead>
-          <tr className="border-b border-gray-100 bg-gray-50">
-            <th className="text-left px-6 py-3 font-medium text-gray-500">
+          <tr className="border-b border-gray-100 bg-gray-50 dark:border-gray-700 dark:bg-gray-900/60 [&>th]:sticky [&>th]:top-28 [&>th]:z-20 [&>th]:bg-gray-50 dark:[&>th]:bg-gray-900">
+            <th className="text-left px-6 py-3 font-medium text-gray-500 dark:text-gray-400">
               Name
             </th>
-            <th className="text-left px-6 py-3 font-medium text-gray-500">
+            <th className="text-left px-6 py-3 font-medium text-gray-500 dark:text-gray-400">
               Description
             </th>
-            <th className="text-left px-6 py-3 font-medium text-gray-500">
+            <th className="text-left px-6 py-3 font-medium text-gray-500 dark:text-gray-400">
               Monthly Budget
             </th>
-            <th className="text-right px-6 py-3 font-medium text-gray-500">
+            <th className="text-right px-6 py-3 font-medium text-gray-500 dark:text-gray-400">
               Actions
             </th>
           </tr>

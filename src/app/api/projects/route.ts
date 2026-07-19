@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
-import { computeProjectBudgetStatus } from "@/lib/budget-status";
+import { computeProjectBudgetStatus, bustBudgetStatusCache } from "@/lib/budget-status";
 import { canonicalProjectKey } from "@/lib/provider-identity";
 
 export async function GET(request: NextRequest) {
@@ -55,6 +55,8 @@ export async function POST(request: Request) {
         monthlyBudgetUsd,
       },
     });
+
+    bustBudgetStatusCache();
 
     return NextResponse.json(project);
   } catch (error) {

@@ -1225,6 +1225,12 @@ export function __resetBudgetStatusCacheForTests(): void {
   budgetStatusSwrCache.resetForTests();
 }
 
+/** Invalidate/bust the computeBudgetStatus and computeProjectBudgetStatus caches. */
+export function bustBudgetStatusCache(): void {
+  budgetStatusSwrCache.resetForTests();
+  projectBudgetStatusSwrCache.resetForTests();
+}
+
 export async function computeBudgetStatus(now: Date = new Date()): Promise<BudgetStatusResponse> {
   return budgetStatusSwrCache.get(now);
 }
