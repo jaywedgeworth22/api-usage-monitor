@@ -115,7 +115,7 @@ export const DEFAULT_ANOMALY_CONFIG: AnomalyConfig = {
 };
 
 function readNumberEnv(
-  env: NodeJS.ProcessEnv,
+  env: Partial<NodeJS.ProcessEnv>,
   name: string,
   fallback: number,
   min: number,
@@ -128,7 +128,7 @@ function readNumberEnv(
   return Math.min(Math.max(parsed, min), max);
 }
 
-function readBoolEnv(env: NodeJS.ProcessEnv, name: string, fallback: boolean): boolean {
+function readBoolEnv(env: Partial<NodeJS.ProcessEnv>, name: string, fallback: boolean): boolean {
   const raw = env[name]?.trim().toLowerCase();
   if (raw == null || raw === "") return fallback;
   if (["1", "true", "yes", "on"].includes(raw)) return true;
@@ -141,7 +141,7 @@ function readBoolEnv(env: NodeJS.ProcessEnv, name: string, fallback: boolean): b
  * knob has a conservative default; overrides are clamped to sane ranges so a
  * fat-fingered env value can never make the detector unstable.
  */
-export function resolveAnomalyConfig(env: NodeJS.ProcessEnv = process.env): AnomalyConfig {
+export function resolveAnomalyConfig(env: Partial<NodeJS.ProcessEnv> = process.env): AnomalyConfig {
   const sigmaThreshold = readNumberEnv(env, "ANOMALY_SIGMA_THRESHOLD", DEFAULT_ANOMALY_CONFIG.sigmaThreshold, 1, 20);
   const criticalSigma = Math.max(
     sigmaThreshold,
