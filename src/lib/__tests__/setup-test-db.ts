@@ -255,7 +255,7 @@ CREATE TABLE "ProviderUsageReconciliation" (
   "providerId" TEXT NOT NULL,
   "periodStart" DATETIME NOT NULL,
   "periodEnd" DATETIME NOT NULL,
-  "keyRef" TEXT,
+  "keyRef" TEXT NOT NULL DEFAULT '',
   "reportedCostUsd" REAL NOT NULL,
   "reportedEventCount" INTEGER NOT NULL,
   "verifiedCostUsd" REAL,

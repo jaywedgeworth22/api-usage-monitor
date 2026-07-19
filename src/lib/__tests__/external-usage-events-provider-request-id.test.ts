@@ -1,7 +1,8 @@
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import fs from "fs";
 import os from "os";
 import path from "path";
+import { NextRequest } from "next/server";
 import { setupPrismaSqliteTestDb } from "./setup-test-db";
 
 // Exercises DESIGN §3a/§3b: ExternalUsageEvent.providerRequestId is accepted
@@ -15,6 +16,7 @@ describe("ExternalUsageEvent providerRequestId (integration)", () => {
   let dbPath: string;
   let prisma: typeof import("@/lib/prisma").prisma;
   let persistExternalUsageEvents: typeof import("../external-usage-events").persistExternalUsageEvents;
+  let ingestPost: typeof import("@/app/api/ingest/usage/route").POST;
 
   const occurredAt = new Date("2026-07-18T00:00:00.000Z");
 
@@ -26,6 +28,7 @@ describe("ExternalUsageEvent providerRequestId (integration)", () => {
 
     ({ prisma } = await import("@/lib/prisma"));
     ({ persistExternalUsageEvents } = await import("../external-usage-events"));
+    ({ POST: ingestPost } = await import("@/app/api/ingest/usage/route"));
   }, 60_000);
 
   afterAll(async () => {
@@ -170,5 +173,63 @@ describe("ExternalUsageEvent providerRequestId (integration)", () => {
     ]);
     expect(result.persisted).toBe(1);
     expect(await prisma.externalUsageEvent.count()).toBe(1);
+  });
+
+  it("ignores producer-supplied verification fields on the wire — verified* always persist as null", async () => {
+    // Hardening (adversarial-review nit): producers must never be able to
+    // self-verify. A wire payload that explicitly claims verification state
+    // goes through the REAL ingest route against the REAL database, and the
+    // persisted row must still have every verified* column null — the parser
+    // has no readers for these fields and toCreateData never sets them, so
+    // they can only ever be written by the later monitor-side verification
+    // worker.
+    vi.stubEnv("USAGE_INGEST_TOKEN", "wire-verification-test-token");
+    try {
+      const response = await ingestPost(
+        new NextRequest("https://usage.jays.services/api/ingest/usage", {
+          method: "POST",
+          headers: {
+            authorization: "Bearer wire-verification-test-token",
+            "content-type": "application/json",
+            "x-forwarded-for": "10.9.0.1",
+          },
+          body: JSON.stringify({
+            idempotencyKey: "wire-self-verification-attempt",
+            sourceApp: "socratic-trade",
+            provider: "openrouter",
+            metricType: "cost",
+            costUsd: 0.5,
+            occurredAt: occurredAt.toISOString(),
+            providerRequestId: "gen-wire-1",
+            // Rogue self-verification claims — must be dropped, not persisted.
+            verificationStatus: "match",
+            verifiedCostUsd: 1.23,
+            verifiedAt: "2026-07-18T01:00:00.000Z",
+            verifiedSource: "forged-by-producer",
+          }),
+        })
+      );
+      expect(response.status).toBe(202);
+
+      const event = await prisma.externalUsageEvent.findUniqueOrThrow({
+        where: { idempotencyKey: "wire-self-verification-attempt" },
+        select: {
+          providerRequestId: true,
+          verificationStatus: true,
+          verifiedCostUsd: true,
+          verifiedAt: true,
+          verifiedSource: true,
+        },
+      });
+      // The legitimate field flows through…
+      expect(event.providerRequestId).toBe("gen-wire-1");
+      // …while every verification field stays null despite the wire claims.
+      expect(event.verificationStatus).toBeNull();
+      expect(event.verifiedCostUsd).toBeNull();
+      expect(event.verifiedAt).toBeNull();
+      expect(event.verifiedSource).toBeNull();
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 });

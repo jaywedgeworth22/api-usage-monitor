@@ -349,13 +349,16 @@ model ProviderUsageReconciliation {
   periodStart        DateTime
   periodEnd          DateTime
   // Optional key scope (e.g. a specific API key) when reconciliation is
-  // computed per-key rather than provider-wide. SQLite treats each NULL in a
-  // unique index as distinct, so multiple provider-wide (keyRef IS NULL)
-  // rows across different periods remain uniquely constrained by
-  // (providerId, periodStart, periodEnd) alone — same precedent as
-  // Subscription's nullable-column @@unique below. See that model's
-  // externalBillingSource/externalBillingId comment.
-  keyRef             String?
+  // computed per-key rather than provider-wide. Provider-wide rows use the
+  // "" (empty string) sentinel, NOT null: SQLite treats each NULL as
+  // distinct in a unique index and Prisma's upsert/findUnique cannot target
+  // a NULL member of a compound unique, so a nullable column here would
+  // make the Wave-3 period upsert unenforceable — two provider-wide rows
+  // for the same period would both insert. The non-null sentinel keeps
+  // exactly one row per (providerId, periodStart, periodEnd, keyRef)
+  // addressable by upsert — same pattern as the non-null correctedGuardKey
+  // upsert in external-billing-subscription-adoption.ts.
+  keyRef             String    @default("")
   reportedCostUsd    Float
   reportedEventCount Int
   // Authoritative cost for the same period, when a verifiable source exists.
