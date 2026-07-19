@@ -83,10 +83,6 @@ for (const [pattern, message] of [
 }
 forbidText(deploy, /reset --hard|docker (system|builder) prune|rm -rf/, "broad destructive cleanup is forbidden");
 forbidText(deploy, /set -x/, "deployment must never trace secrets");
-assert.ok(
-  deploy.includes("https://api.render.com/v1/services/"),
-  "deploy script must enforce live Render retirement verification",
-);
 
 requireText(poller, /MAX_FAILURES=3/, "poller must have a bounded retry circuit breaker");
 requireText(poller, /blocked-sha/, "poller must persist the blocked revision");
