@@ -588,6 +588,88 @@ describe("GET /api/providers/:id Gemini key status", () => {
   });
 });
 
+describe("provider billing account identity API boundaries", () => {
+  it("stores only a keyed identity, matches explicit accounts, and never returns the digest", async () => {
+    const billingAccountId = "org_owner_confirmed_exact_123";
+    const create = async (displayName: string, apiKey: string) => {
+      const response = await POST_COLLECTION(
+        new NextRequest("https://usage.jays.services/api/providers", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            name: "openai",
+            displayName,
+            type: "builtin",
+            apiKey,
+            billingAccountId,
+          }),
+        })
+      );
+      expect(response.status).toBe(201);
+      const body = await response.json();
+      expect(JSON.stringify(body)).not.toContain(billingAccountId);
+      expect(JSON.stringify(body)).not.toMatch(/hmac-sha256:[0-9a-f]{64}/);
+      return body as { id: string };
+    };
+
+    const first = await create("OpenAI A", "sk-project-a");
+    const second = await create("OpenAI B", "sk-project-b");
+    const stored = await prisma.provider.findMany({
+      where: { id: { in: [first.id, second.id] } },
+      select: { billingAccountIdentity: true },
+    });
+    expect(stored).toHaveLength(2);
+    expect(stored[0].billingAccountIdentity).toMatch(/^hmac-sha256:[0-9a-f]{64}$/);
+    expect(stored[0].billingAccountIdentity).toBe(
+      stored[1].billingAccountIdentity
+    );
+    expect(stored[0].billingAccountIdentity).not.toContain(billingAccountId);
+
+    const collectionResponse = await GET_COLLECTION(
+      new NextRequest("https://usage.jays.services/api/providers")
+    );
+    const collection = await collectionResponse.json();
+    const byId = new Map(
+      collection.map((row: { id: string }) => [row.id, row])
+    );
+    const firstPublic = byId.get(first.id) as {
+      billingAccount: { matchKey: string; evidence: string };
+      billingAccountIdentityConfigured: boolean;
+    };
+    const secondPublic = byId.get(second.id) as typeof firstPublic;
+    expect(firstPublic.billingAccount).toEqual(secondPublic.billingAccount);
+    expect(firstPublic.billingAccount.evidence).toBe("explicit_account");
+    expect(firstPublic.billingAccountIdentityConfigured).toBe(true);
+    const serialized = JSON.stringify(collection);
+    expect(serialized).not.toContain(billingAccountId);
+    expect(serialized).not.toMatch(/hmac-sha256:[0-9a-f]{64}/);
+  });
+
+  it("clears an explicit identity without returning its prior keyed value", async () => {
+    const provider = await prisma.provider.create({
+      data: {
+        name: "openai",
+        displayName: "OpenAI",
+        type: "builtin",
+        apiKey: encrypt("sk-project-a"),
+        billingAccountIdentity: `hmac-sha256:${"ab".repeat(32)}`,
+      },
+    });
+    const response = await PUT(
+      updateRequest(provider.id, { billingAccountId: null }),
+      { params: Promise.resolve({ id: provider.id }) }
+    );
+    expect(response.status).toBe(200);
+    expect(JSON.stringify(await response.json())).not.toMatch(
+      /hmac-sha256:[0-9a-f]{64}/
+    );
+    expect(
+      (await prisma.provider.findUniqueOrThrow({ where: { id: provider.id } }))
+        .billingAccountIdentity
+    ).toBeNull();
+  });
+});
+
 describe("GET /api/providers alert visibility", () => {
   it("keeps budget alerts visible without snapshot noise for blind providers", async () => {
     const provider = await prisma.provider.create({

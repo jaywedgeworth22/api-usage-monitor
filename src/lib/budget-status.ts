@@ -54,6 +54,9 @@ export interface ProviderBudgetStatus {
   fixedMonthlyCostUsd: number;
   snapshotCostUsd: number | null;
   snapshotCostFetchedAt: string | null;
+  snapshotCostWindowStart: string | null;
+  snapshotCostWindowEnd: string | null;
+  snapshotCostScope: string | null;
   snapshotFixedCostIncludedUsd: number;
   snapshotCostIncludesUnknownFixed: boolean;
   pushedMonthToDateUsd: number;
@@ -908,6 +911,15 @@ async function computeBudgetStatusUncached(now: Date): Promise<BudgetStatusRespo
       snapshotCostFetchedAt: billingSnapshotQuarantined
         ? null
         : latestCostSnapshot?.fetchedAt.toISOString() ?? null,
+      snapshotCostWindowStart: billingSnapshotQuarantined
+        ? null
+        : latestCostSnapshot?.costWindowStart?.toISOString() ?? null,
+      snapshotCostWindowEnd: billingSnapshotQuarantined
+        ? null
+        : latestCostSnapshot?.costWindowEnd?.toISOString() ?? null,
+      snapshotCostScope: billingSnapshotQuarantined
+        ? null
+        : latestCostSnapshot?.costScope ?? null,
       snapshotFixedCostIncludedUsd,
       snapshotCostIncludesUnknownFixed,
       pushedMonthToDateUsd,
