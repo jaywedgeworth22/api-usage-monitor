@@ -218,7 +218,7 @@ describe("verifyOpenRouterGenerations", () => {
 describe("reconcileProviderUsage", () => {
   async function seedProvider(name: string, opts: { totalCost?: number | null } = {}) {
     const provider = await prisma.provider.create({
-      data: { name, type: "builtin", isActive: true },
+      data: { name, displayName: name, type: "builtin", isActive: true },
     });
     if (opts.totalCost !== undefined && opts.totalCost !== null) {
       await prisma.usageSnapshot.create({
