@@ -26,6 +26,7 @@ function providerProfile(provider: Provider) {
 
 function supportsManualFetch(provider: Provider): boolean {
   if (provider.credentialManagement?.alias) return false;
+  if (provider.type === "manual_provider" || provider.type === "generic") return false;
   const profile = providerProfile(provider);
   if (profile.mode === "manual" || profile.mode === "push-only") {
     return false;
