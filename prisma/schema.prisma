@@ -38,6 +38,7 @@ model Provider {
   subscriptions         Subscription[]
   externalBilling       ProviderExternalBilling[]
   externalBillingChargeCorrections ExternalBillingChargeCorrection[]
+  usageReconciliations  ProviderUsageReconciliation[]
 }
 
 model ProviderPlan {
@@ -217,6 +218,31 @@ model ExternalUsageEvent {
   occurredAt     DateTime
   metadata       Json?
   createdAt      DateTime  @default(now())
+  // Provider-side call/generation identifier supplied by the producer at
+  // ingest (e.g. an OpenRouter completion response's `id`). Optional — only
+  // adapter-verifiable providers/call sites populate it. Deliberately NOT
+  // part of the idempotency-key basis (see usage-telemetry.ts's
+  // deriveIdempotencyKey CONTRACT comment): adding it would rekey every
+  // existing event and diverge from the byte-for-byte
+  // congress-trading-shared contract. A replay under the same idempotencyKey
+  // with a different providerRequestId is treated as the same event (see
+  // external-usage-events.ts's comparableEvent), not a collision.
+  providerRequestId String?
+  // Verification fields below are written ONLY by the monitor-side
+  // verification worker (a later wave — see
+  // /Users/jay/apps/DESIGN-usage-compliance-classifier.md §3c), never by
+  // ingest. Ingest always leaves them null.
+  // verificationStatus: null = not applicable/not attempted; "pending" =
+  // queued for a verification check; "match"/"discrepancy" = checked against
+  // the provider's authoritative record; "error" = the check itself failed
+  // (transient, retryable); "unverifiable" = this provider/event has no
+  // verifiable source.
+  verifiedCostUsd    Float?
+  verifiedAt         DateTime?
+  verificationStatus String?
+  // e.g. "openrouter-generation" — identifies which verification source/
+  // adapter produced verifiedCostUsd.
+  verifiedSource     String?
   // First-class per-project attribution. Resolved at ingest from a
   // producer-supplied project name (OTEL_RESOURCE_ATTRIBUTES `project` for
   // Claude Code, or the top-level `project` field on the generic ingest
@@ -231,6 +257,14 @@ model ExternalUsageEvent {
   @@index([provider, occurredAt])
   @@index([keyRef, occurredAt])
   @@index([projectId, occurredAt])
+  // Verification worker's scan for events due a check (see
+  // /Users/jay/apps/DESIGN-usage-compliance-classifier.md §3c: select
+  // `provider='openrouter' AND providerRequestId IS NOT NULL AND
+  // verificationStatus IN (NULL,'pending','error')`).
+  @@index([provider, verificationStatus])
+  // Verification worker's lookup of a specific provider call by its
+  // provider-side request/generation id.
+  @@index([provider, providerRequestId])
   // Standalone occurredAt index for month-to-date aggregations that filter
   // ONLY by occurredAt with no sourceApp/provider/keyRef/projectId equality
   // term - e.g. external-usage-events.ts's
@@ -295,6 +329,54 @@ model ExternalUsageEventTombstone {
 
   @@index([occurredAt])
   @@index([prunedAt])
+}
+
+// Period-level compliance/reconciliation record for adapter-verifiable
+// providers (see /Users/jay/apps/DESIGN-usage-compliance-classifier.md §3d):
+// compares reported cost (summed from pushed ExternalUsageEvent rows for the
+// period) against a provider's authoritative UsageSnapshot total for the
+// same window. This is a separate audit layer alongside the existing
+// max()-based budget-spend logic in budget-status.ts — it must never be read
+// by that computation. Verifiability is per-provider from
+// provider-integration-catalog.ts's billing.visibility taxonomy; providers
+// without a verifiable authoritative source get an explicit "unverifiable"
+// status rather than a silent "ok". Rows are produced by a later wave (the
+// scheduler-side reconciliation worker); this model is additive schema only.
+model ProviderUsageReconciliation {
+  id                 String    @id @default(uuid())
+  providerId         String
+  provider           Provider  @relation(fields: [providerId], references: [id], onDelete: Cascade)
+  periodStart        DateTime
+  periodEnd          DateTime
+  // Optional key scope (e.g. a specific API key) when reconciliation is
+  // computed per-key rather than provider-wide. Provider-wide rows use the
+  // "" (empty string) sentinel, NOT null: SQLite treats each NULL as
+  // distinct in a unique index and Prisma's upsert/findUnique cannot target
+  // a NULL member of a compound unique, so a nullable column here would
+  // make the Wave-3 period upsert unenforceable — two provider-wide rows
+  // for the same period would both insert. The non-null sentinel keeps
+  // exactly one row per (providerId, periodStart, periodEnd, keyRef)
+  // addressable by upsert — same pattern as the non-null correctedGuardKey
+  // upsert in external-billing-subscription-adoption.ts.
+  keyRef             String    @default("")
+  reportedCostUsd    Float
+  reportedEventCount Int
+  // Authoritative cost for the same period, when a verifiable source exists.
+  verifiedCostUsd    Float?
+  // e.g. "usage-snapshot" — identifies which authoritative source produced
+  // verifiedCostUsd.
+  verifiedSource     String?
+  deltaUsd           Float?
+  deltaRatio         Float?
+  // "ok" | "discrepancy" | "unverifiable" | "pending" | "error" — mirrors the
+  // per-event verificationStatus vocabulary on ExternalUsageEvent, but
+  // period-scoped.
+  status             String
+  checkedAt          DateTime
+  createdAt          DateTime  @default(now())
+
+  @@unique([providerId, periodStart, periodEnd, keyRef])
+  @@index([providerId, status])
 }
 
 // Durable checkpoint for converting OTLP cumulative Sum points into deltas.
