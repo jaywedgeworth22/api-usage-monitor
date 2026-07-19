@@ -663,7 +663,27 @@ Protocol: /Users/jay/apps/EFFORT-LOG-PROTOCOL.md (canonical). Live board: this f
 
 - **Remaining feasible direct provider-capabilities audit (CODEX, read-only, 2026-07-18) — IN PROGRESS.** Audit current catalog/adapters plus official provider documentation for unimplemented direct money, tier/renewal, quota, balance, and paid-resource run-rate signals; excludes brokers and already completed OpenAI/GitHub/Cloudflare/Vercel work. No repository, secret, production, or external configuration changes.
 
-
+- **Audit and repair legacy provider `groupId` rows; make grouped money/credit totals canonical
+  (AG, corrected by CLAUDE 2026-07-19) — PR #585 OPEN / IN PROGRESS.** Provider creation historically grouped
+  every same-name provider even when API keys/accounts differed, so dashboard balance can hide distinct
+  accounts. Live OpenAI rows currently repeat the same organization Costs snapshot while retaining
+  distinct pushed project telemetry; this lane persists an exact provider billing-account identity
+  (`Provider.billingAccountIdentity`, an HMAC-SHA256 digest of an operator-confirmed account id, or of
+  the decrypted authoritative credential when no explicit id is set — the raw value is never stored or
+  returned) and dedupes shared canonical Costs snapshots without collapsing distinct project/key events.
+  CLAUDE completed CODEX's uncommitted work (`codex/shared-billing-account-dedup`, stale base `7c0d903`)
+  by porting it onto current main as branch `claude/shared-billing-account-dedup`, fixing two real
+  regressions surfaced by the family-level money-aggregation port (a false-"$0.00" single-provider
+  display when spend coverage is unknown, and a "Partial" coverage label wrongly overriding "Unknown"
+  for a single-provider family), and adding `src/lib/provider-money-aggregation.ts` +
+  `src/lib/provider-billing-account.ts` with adversarial tests proving both money-path invariants: (1)
+  two keys sharing one org's Admin billing credential dedupe to one counted account, never double
+  counted, and (2) two keys with different Admin credentials, or an explicit distinct
+  operator-confirmed account id, are never collapsed into one account's spend. `billingAccountIdentity`
+  is an additive nullable column (safe under `prisma db push`, confirmed by `test:migrate-safe`).
+  Local `npm run verify` passed in full (110 files / 1216 unit+integration tests, lint, typecheck,
+  migrate-safe, sqlite-backup, startup-config, production build). Existing rows still need a
+  backup-backed data audit; not deployed and not merged — see the active PR for review.
 - **Add account identity to pushed status metrics before mapping duplicate provider names
   (unassigned, M).** `syncStatusToUsageSnapshot` maps `quota_sync`/`credit_balance` by provider name
   through an unordered duplicate-name map; with multiple OpenAI/Resend/etc. accounts it can attach a

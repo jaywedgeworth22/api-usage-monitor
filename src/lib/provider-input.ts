@@ -8,6 +8,7 @@ export interface ProviderInput {
   config?: Record<string, unknown>;
   refreshIntervalMin: number;
   groupId?: string;
+  billingAccountId?: string;
   label?: string;
   plan?: ProviderPlanInput;
   allocations?: { projectId: string; percentage: number }[];
@@ -21,6 +22,7 @@ export interface ProviderUpdateInput {
   isActive?: boolean;
   refreshIntervalMin?: number;
   groupId?: string | null;
+  billingAccountId?: string | null;
   label?: string | null;
   plan?: ProviderPlanInput;
   allocations?: { projectId: string; percentage: number }[];
@@ -48,6 +50,7 @@ const MAX_REFRESH_INTERVAL_MIN = 60 * 24 * 7;
 const BILLING_MODES = new Set(["actual", "estimated", "manual"]);
 const BILLING_INTERVALS = new Set(SUBSCRIPTION_INTERVALS);
 const GOOGLE_SERVICE_ACCOUNT_SECRET_PATH = "serviceAccountJson";
+const MAX_BILLING_ACCOUNT_ID_LENGTH = 256;
 
 function asRecord(value: unknown): Record<string, unknown> | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
@@ -69,6 +72,22 @@ function isSafePathSegment(segment: unknown): segment is string {
   if (typeof segment !== "string" || !segment) return false;
   if (segment === "__proto__" || segment === "constructor" || segment === "prototype") return false;
   return true;
+}
+
+function parseBillingAccountId(
+  value: unknown
+): string | null | undefined {
+  const cleaned = cleanNullableString(value);
+  if (cleaned == null) return cleaned;
+  if (cleaned.length > MAX_BILLING_ACCOUNT_ID_LENGTH) {
+    throw new Error(
+      `billingAccountId must be at most ${MAX_BILLING_ACCOUNT_ID_LENGTH} characters`
+    );
+  }
+  if (/\p{Cc}/u.test(cleaned)) {
+    throw new Error("billingAccountId cannot contain control characters");
+  }
+  return cleaned;
 }
 
 function parseSecretConfigOperations(
@@ -321,6 +340,7 @@ export function parseProviderCreateInput(body: Record<string, unknown>): Provide
     config,
     refreshIntervalMin: parseRefreshInterval(body.refreshIntervalMin),
     groupId: cleanOptionalString(body.groupId),
+    billingAccountId: parseBillingAccountId(body.billingAccountId) ?? undefined,
     label: cleanOptionalString(body.label),
     plan: parseProviderPlanInput(body.plan),
     allocations: parseAllocationsInput(body.allocations),
@@ -378,6 +398,10 @@ export function parseProviderUpdateInput(
 
   if (body.groupId !== undefined) {
     update.groupId = cleanNullableString(body.groupId) ?? null;
+  }
+
+  if (body.billingAccountId !== undefined) {
+    update.billingAccountId = parseBillingAccountId(body.billingAccountId) ?? null;
   }
 
   if (body.label !== undefined) {

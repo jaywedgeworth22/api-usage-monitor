@@ -31,6 +31,11 @@ import {
   providerCredentialManagementForClient,
 } from "@/lib/managed-provider-credential";
 import type { CostCoverageCaveat } from "@/lib/adapters/helpers";
+import {
+  authoritativeProviderBillingCredential,
+  hashProviderBillingAccountId,
+  projectProviderBillingAccountMatches,
+} from "@/lib/provider-billing-account";
 
 function decryptKey(encryptedKey: string | null): string | null {
   if (!encryptedKey) return null;
@@ -121,6 +126,7 @@ export async function GET(request: NextRequest) {
       isActive: true,
       refreshIntervalMin: true,
       groupId: true,
+      billingAccountIdentity: true,
       label: true,
       config: true,
       secretConfig: true,
@@ -257,10 +263,39 @@ export async function GET(request: NextRequest) {
     ids.push(provider.id);
     duplicateIdsByCanonicalName.set(key, ids);
   }
+  const decryptedKeysByProviderId = new Map(
+    providers.map((provider) => [provider.id, decryptKey(provider.apiKey)])
+  );
+  const serverConfigsByProviderId = new Map(
+    providers.map((provider) => [
+      provider.id,
+      serverConfig(provider.config, provider.secretConfig),
+    ])
+  );
+  const billingAccountMatches = projectProviderBillingAccountMatches(
+    providers.map((provider) => ({
+      id: provider.id,
+      name: provider.name,
+      billingAccountIdentity: provider.billingAccountIdentity,
+      decryptedCredential: authoritativeProviderBillingCredential({
+        providerName: provider.name,
+        primaryCredential: decryptedKeysByProviderId.get(provider.id) ?? null,
+        serverConfig: serverConfigsByProviderId.get(provider.id) ?? null,
+      }),
+    }))
+  );
 
   // Flatten latest snapshot into the provider object
   const result = providers.map((p) => {
-    const { snapshots, apiKey, config, secretConfig, _count, ...rest } = p;
+    const {
+      snapshots,
+      apiKey,
+      config,
+      secretConfig,
+      billingAccountIdentity,
+      _count,
+      ...rest
+    } = p;
     const clientConfig = providerConfigForClient(config, secretConfig);
     const credentialManagement = providerCredentialManagementForClient(
       config,
@@ -293,8 +328,8 @@ export async function GET(request: NextRequest) {
     const costCoverageCaveat = latestSnapshotRow
       ? costCoverageCaveatBySnapshotId.get(latestSnapshotRow.id) ?? null
       : null;
-    const decryptedKey = decryptKey(apiKey);
-    const adapterConfig = serverConfig(config, secretConfig);
+    const decryptedKey = decryptedKeysByProviderId.get(p.id) ?? null;
+    const adapterConfig = serverConfigsByProviderId.get(p.id) ?? null;
     const geminiStatusSnapshot = geminiStatusSnapshots.get(p.id) ?? null;
     const geminiBillingStatus = deriveGeminiBillingStatus({
       providerName: p.name,
@@ -354,6 +389,8 @@ export async function GET(request: NextRequest) {
         : 0,
       ...clientConfig,
       credentialManagement,
+      billingAccount: billingAccountMatches.get(p.id) ?? null,
+      billingAccountIdentityConfigured: billingAccountIdentity != null,
       // A validated managed credential may expose a masked preview so
       // independently managed multi-key rows stay distinguishable. Malformed
       // or unreadable ownership envelopes fail closed: never infer that their
@@ -381,6 +418,9 @@ export async function GET(request: NextRequest) {
       spentUsd: canonicalBudget?.spentUsd ?? latestSnapshot?.totalCost ?? 0,
       snapshotCostUsd: canonicalBudget?.snapshotCostUsd ?? latestSnapshot?.totalCost ?? null,
       snapshotCostFetchedAt: canonicalBudget?.snapshotCostFetchedAt ?? null,
+      snapshotCostWindowStart: canonicalBudget?.snapshotCostWindowStart ?? null,
+      snapshotCostWindowEnd: canonicalBudget?.snapshotCostWindowEnd ?? null,
+      snapshotCostScope: canonicalBudget?.snapshotCostScope ?? null,
       snapshotFixedCostIncludedUsd:
         canonicalBudget?.snapshotFixedCostIncludedUsd ?? 0,
       snapshotCostIncludesUnknownFixed:
@@ -479,6 +519,9 @@ export async function POST(request: NextRequest) {
         : null,
       refreshIntervalMin: input.refreshIntervalMin,
       groupId,
+      billingAccountIdentity: input.billingAccountId
+        ? hashProviderBillingAccountId(input.name, input.billingAccountId)
+        : null,
       label: input.label,
       plan: input.plan
         ? { create: toPrismaProviderPlanData(input.plan) }

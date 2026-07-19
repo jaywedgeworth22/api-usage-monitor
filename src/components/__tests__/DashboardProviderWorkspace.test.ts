@@ -313,7 +313,7 @@ describe("DashboardProviderWorkspace", () => {
       }),
     ]);
 
-    expect(html).toContain("Not aggregated");
+    expect(html).toContain("Account identity unresolved");
     expect(html).toContain("$100.00 spent");
     expect(html).toContain("$47.25 receipt cash");
     expect(html).toContain("$9,000.00 Claude estimate excluded");
@@ -703,7 +703,7 @@ describe("Lane B compact markup (default state: compact density, attention sort,
 
   it("still renders the non-aggregated caveat text in compact density", () => {
     const html = renderWorkspace([provider("account-one"), provider("account-two")]);
-    expect(html).toContain("Not aggregated");
+    expect(html).toContain("Account identity unresolved");
     expect(html).toContain("See exact account values below");
   });
 
