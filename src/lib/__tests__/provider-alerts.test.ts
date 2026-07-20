@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { buildProviderAlertState } from "@/lib/provider-alerts";
+import type { AnomalyResult } from "@/lib/anomaly-detection";
 
 describe("buildProviderAlertState snapshot capability", () => {
   it("keeps budget alerts but suppresses impossible snapshot alerts for push/manual tracking", () => {
@@ -37,5 +38,77 @@ describe("buildProviderAlertState snapshot capability", () => {
         expect.objectContaining({ code: "stale_snapshot" }),
       ])
     );
+  });
+});
+
+describe("buildProviderAlertState anomaly emission", () => {
+  const costAnomaly: AnomalyResult = {
+    providerId: "prov-1",
+    metric: "cost",
+    day: "2026-07-19",
+    observed: 100,
+    baselineCenter: 10,
+    baselineSpread: 1.48,
+    expectedLow: 4.82,
+    expectedHigh: 15.18,
+    sigmas: 60,
+    severity: "critical",
+    method: "mad",
+    windowSize: 10,
+  };
+
+  it("emits a spend_anomaly alert from a pre-computed cost anomaly", () => {
+    const state = buildProviderAlertState(
+      {
+        isActive: true,
+        refreshIntervalMin: 60,
+        plan: null,
+        latestSnapshot: null,
+        snapshotExpected: false,
+        anomalies: [costAnomaly],
+      },
+      new Date("2026-07-19T12:00:00.000Z")
+    );
+
+    expect(state.alerts).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ code: "spend_anomaly", severity: "critical" }),
+      ])
+    );
+    const alert = state.alerts.find((a) => a.code === "spend_anomaly");
+    expect(alert?.message).toContain("Spend spike");
+  });
+
+  it("maps the requests metric to a request_anomaly code", () => {
+    const state = buildProviderAlertState(
+      {
+        isActive: true,
+        refreshIntervalMin: 60,
+        plan: null,
+        latestSnapshot: null,
+        snapshotExpected: false,
+        anomalies: [{ ...costAnomaly, metric: "requests", severity: "warning" }],
+      },
+      new Date("2026-07-19T12:00:00.000Z")
+    );
+    expect(state.alerts).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ code: "request_anomaly", severity: "warning" }),
+      ])
+    );
+  });
+
+  it("emits no anomaly alert when none are supplied", () => {
+    const state = buildProviderAlertState(
+      {
+        isActive: true,
+        refreshIntervalMin: 60,
+        plan: null,
+        latestSnapshot: null,
+        snapshotExpected: false,
+      },
+      new Date("2026-07-19T12:00:00.000Z")
+    );
+    expect(state.alerts.some((a) => a.code === "spend_anomaly" || a.code === "request_anomaly")).toBe(false);
   });
 });

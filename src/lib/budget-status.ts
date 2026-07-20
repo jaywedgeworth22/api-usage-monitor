@@ -17,6 +17,8 @@ import { buildCanonicalProjectIdMap } from "@/lib/project-resolver";
 import { buildProviderAlertState, type ProviderAlert } from "@/lib/provider-alerts";
 import { getExternalEventRawCutoff } from "@/lib/data-retention";
 import { calculateEomForecast } from "@/lib/forecasting";
+import { resolveAnomalyConfig, type AnomalyResult } from "@/lib/anomaly-detection";
+import { loadSpendAnomaliesByProviderId } from "@/lib/anomaly-loader";
 import { advancePeriod, isSubscriptionInterval } from "@/lib/subscriptions";
 import {
   canLinkSubscriptionToExternalBilling,
@@ -510,6 +512,21 @@ async function computeBudgetStatusUncached(now: Date): Promise<BudgetStatusRespo
     pushedByProviderId.set(owner.id, bucket);
   }
 
+  // Statistical spike/anomaly detection over per-provider daily spend history.
+  // Env-gated (ANOMALY_ALERTS_ENABLED) and fully defensive: any failure or a
+  // partial/mocked DB degrades to "no anomalies" rather than breaking the
+  // canonical budget computation. The detector + robustness live in
+  // anomaly-detection.ts; the loader is one capped, scalar-only snapshot query.
+  const anomalyConfig = resolveAnomalyConfig();
+  let anomaliesByProviderId = new Map<string, AnomalyResult[]>();
+  if (anomalyConfig.enabled) {
+    try {
+      anomaliesByProviderId = await loadSpendAnomaliesByProviderId(now, anomalyConfig);
+    } catch (error) {
+      console.warn("[anomaly-detection] spend anomaly load failed; skipping", error);
+    }
+  }
+
   const providerStatuses: ProviderBudgetStatus[] = providers.map((p) => {
     const plan = p.plan;
     const latestSnapshot = p.snapshots[0] ?? null;
@@ -854,6 +871,7 @@ async function computeBudgetStatusUncached(now: Date): Promise<BudgetStatusRespo
         trackedSpendUsd: spentUsd,
         fixedAccruedUsd,
         reconciliationDiscrepancyUsd: p.usageReconciliations?.[0]?.status === "discrepancy" ? p.usageReconciliations[0].deltaUsd : null,
+        anomalies: anomaliesByProviderId.get(p.id),
       },
       now
     );
@@ -861,7 +879,9 @@ async function computeBudgetStatusUncached(now: Date): Promise<BudgetStatusRespo
       (a) =>
         a.code === "budget_exceeded" ||
         a.code === "budget_warning" ||
-        a.code === "usage_reconciliation_discrepancy"
+        a.code === "usage_reconciliation_discrepancy" ||
+        a.code === "spend_anomaly" ||
+        a.code === "request_anomaly"
     );
     if (fixedCostConflict) {
       budgetAlerts.push({
