@@ -1,7 +1,23 @@
-import { PrismaClient } from "@prisma/client";
+// @prisma/client is CommonJS (`module.exports = { ...require('#main-entry-point') }`
+// in the generated client). Node's ESM named-export interop for a CommonJS
+// module depends on static analysis (cjs-module-lexer) of the module source,
+// and that spread-based re-export is exactly the shape that analysis cannot
+// always resolve - on Node 24 this intermittently leaves a named
+// `import { PrismaClient } from "@prisma/client"` binding undefined, throwing
+// "PrismaClient is not a constructor" only in some dynamic-import paths (a
+// fresh `await import("@/lib/prisma")` in a test file's beforeAll, in
+// particular). scripts/ensure-subscription-link-unique-index.mjs carries the
+// same fix for the equivalent startup-script hazard (PR #409); this default
+// import is the runtime-code sibling of that fix. Default-importing the
+// module object sidesteps synthetic named-export detection entirely: the
+// constructor is read back out via a plain property access instead.
+import type { PrismaClient as PrismaClientInstance } from "@prisma/client";
+import prismaClientModule from "@prisma/client";
+
+const { PrismaClient } = prismaClientModule;
 
 const globalForPrisma = globalThis as unknown as {
-  prisma: PrismaClient | undefined;
+  prisma: PrismaClientInstance | undefined;
   __apiUsageMonitorSqlitePragmasApplied: Promise<void> | undefined;
 };
 
@@ -33,7 +49,7 @@ function withConnectionLimit(url: string): string {
   return `${url}${url.includes("?") ? "&" : "?"}connection_limit=${limit}`;
 }
 
-function createPrismaClient(): PrismaClient {
+function createPrismaClient(): PrismaClientInstance {
   const url = process.env.DATABASE_URL;
   // With no URL, defer to Prisma's own env-driven construction (and its own
   // clear "Environment variable not found: DATABASE_URL" error path) rather
