@@ -4,6 +4,7 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch: {}
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
@@ -14,7 +15,16 @@ permissions:
 
 jobs:
   verify:
-    runs-on: ubuntu-latest
+    # Self-hosted CI with automatic hosted fallback (fleet runner-offload).
+    # Resolves to the runner label in the repo variable UM_CI_RUNNER when it is
+    # set (e.g. usage-ci), otherwise to 'ubuntu-latest'. Dependabot PRs are
+    # forced back to hosted runners: their third-party install/build scripts
+    # must never run beside production containers and a repo-scoped runner PAT
+    # on the shared self-hosted box. While UM_CI_RUNNER is unset this workflow
+    # behaves exactly as before (hosted).
+    # Runbook — clearing the variable is an instant, global hosted fallback:
+    #   gh variable set UM_CI_RUNNER --repo jaywedgeworth22/Usage-Monitor --body ""
+    runs-on: ${{ (github.actor != 'dependabot[bot]' && vars.UM_CI_RUNNER) || 'ubuntu-latest' }}
     timeout-minutes: 30
     env:
       CI: true
@@ -22,6 +32,21 @@ jobs:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           fetch-depth: 0
+
+      - name: Ensure sqlite3 CLI is installed
+        run: |
+          if ! command -v sqlite3 &> /dev/null; then
+            echo "sqlite3 not found, installing..."
+            if command -v apt-get &> /dev/null; then
+              if command -v sudo &> /dev/null; then
+                sudo apt-get update && sudo apt-get install -y sqlite3
+              else
+                apt-get update && apt-get install -y sqlite3
+              fi
+            elif command -v apk &> /dev/null; then
+              apk add sqlite
+            fi
+          fi
 
       - name: Configure test database
         run: echo "DATABASE_URL=file:${RUNNER_TEMP}/api-usage-monitor-ci.db" >> "$GITHUB_ENV"

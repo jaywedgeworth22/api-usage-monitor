@@ -7,10 +7,13 @@ on:
       - main
   schedule:
     - cron: "41 10 * * 1"
+  workflow_dispatch: {}
 
 jobs:
   gitleaks:
-    runs-on: ubuntu-latest
+    # Self-hosted CI with hosted fallback; dependabot forced hosted. See ci.yml
+    # for the full rationale/runbook. Clear UM_CI_RUNNER for instant fallback.
+    runs-on: ${{ (github.actor != 'dependabot[bot]' && vars.UM_CI_RUNNER) || 'ubuntu-latest' }}
     permissions:
       contents: read
       pull-requests: read
@@ -49,3 +52,4 @@ jobs:
       - uses: gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e # v3.0.0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_ENABLE_UPLOAD_ARTIFACT: false
