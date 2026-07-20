@@ -1,0 +1,166 @@
+name: UsageMonitor
+
+# ---------------------------------------------------------------------------
+# XcodeGen spec for the Usage Monitor iOS app.
+#
+# Regenerate the .xcodeproj after changing this file (or adding/removing
+# app-target source files) with:  cd ios/UsageMonitor && xcodegen generate
+#
+# NOTE: feature/integration code lives in the SPM package `UsageMonitorKit`
+# (declared under `packages:` below). Adding a screen means dropping a .swift
+# file into that package's `Sources/<Target>/` directory — SPM auto-discovers
+# it and NOTHING in this file changes. This file only changes when the thin app
+# shell / widget / test targets or build settings change.
+# ---------------------------------------------------------------------------
+
+options:
+  bundleIdPrefix: services.jays.usage
+  deploymentTarget:
+    iOS: "17.0"
+  createIntermediateGroups: true
+  groupSortPosition: top
+  generateEmptyDirectories: true
+
+packages:
+  UsageMonitorKit:
+    path: UsageMonitorKit
+
+settings:
+  base:
+    SWIFT_VERSION: "5.0"                 # Swift 5 language mode (compiled by the Swift 6 toolchain)
+    IPHONEOS_DEPLOYMENT_TARGET: "17.0"
+    MARKETING_VERSION: "1.0.0"
+    CURRENT_PROJECT_VERSION: "1"
+    DEVELOPMENT_TEAM: ""
+    CODE_SIGN_STYLE: Automatic
+    ENABLE_USER_SCRIPT_SANDBOXING: YES
+    SWIFT_STRICT_CONCURRENCY: minimal
+    # Headless CI/sandbox builds have no signing identity; app-group
+    # entitlements would otherwise fail to validate. Runtime signing is the
+    # owner's concern when they open the project in Xcode.
+    CODE_SIGNING_ALLOWED: NO
+    CODE_SIGNING_REQUIRED: NO
+
+targets:
+  # -------------------------------------------------------------------------
+  # Main application — thin composition shell over UsageMonitorKit.
+  # -------------------------------------------------------------------------
+  UsageMonitor:
+    type: application
+    platform: iOS
+    sources:
+      - path: App
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: services.jays.usage.monitor
+        INFOPLIST_FILE: App/Resources/Info.plist
+        CODE_SIGN_ENTITLEMENTS: App/Resources/UsageMonitor.entitlements
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
+        ENABLE_PREVIEWS: YES
+        TARGETED_DEVICE_FAMILY: "1,2"
+        SUPPORTS_MACCATALYST: NO
+    dependencies:
+      - target: UsageMonitorWidgetExtension
+        embed: true
+      # Shared foundation + every feature/integration the shell mounts.
+      - package: UsageMonitorKit
+        product: AppCore
+      - package: UsageMonitorKit
+        product: Models
+      - package: UsageMonitorKit
+        product: Networking
+      - package: UsageMonitorKit
+        product: DesignSystem
+      - package: UsageMonitorKit
+        product: WidgetShared
+      - package: UsageMonitorKit
+        product: Dashboard
+      - package: UsageMonitorKit
+        product: Providers
+      - package: UsageMonitorKit
+        product: Alerts
+      - package: UsageMonitorKit
+        product: ProjectBudgets
+      - package: UsageMonitorKit
+        product: Settings
+      - package: UsageMonitorKit
+        product: AppLock
+      - package: UsageMonitorKit
+        product: OfflineCache
+      - package: UsageMonitorKit
+        product: PushScaffold
+
+  # -------------------------------------------------------------------------
+  # WidgetKit extension
+  # -------------------------------------------------------------------------
+  UsageMonitorWidgetExtension:
+    type: app-extension
+    platform: iOS
+    sources:
+      - path: UsageMonitorWidget
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: services.jays.usage.monitor.widget
+        INFOPLIST_FILE: UsageMonitorWidget/Info.plist
+        CODE_SIGN_ENTITLEMENTS: UsageMonitorWidget/UsageMonitorWidget.entitlements
+        ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
+        TARGETED_DEVICE_FAMILY: "1,2"
+    dependencies:
+      - package: UsageMonitorKit
+        product: WidgetShared
+      - package: UsageMonitorKit
+        product: DesignSystem
+      - package: UsageMonitorKit
+        product: Models
+
+  # -------------------------------------------------------------------------
+  # Unit tests (APIClient decoding + view-model / budget math)
+  # -------------------------------------------------------------------------
+  UsageMonitorTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - path: UsageMonitorTests
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: services.jays.usage.monitor.tests
+        GENERATE_INFOPLIST_FILE: YES
+    dependencies:
+      - target: UsageMonitor
+
+  # -------------------------------------------------------------------------
+  # Widget unit tests — the widget's pure presentation logic compiled into a
+  # standalone test bundle (app-extension symbols can't be imported by the Kit
+  # tests or the app test bundle, so WidgetPresentation.swift is compiled in
+  # directly alongside the tests).
+  # -------------------------------------------------------------------------
+  UsageMonitorWidgetTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - path: UsageMonitorWidgetTests
+      - path: UsageMonitorWidget/WidgetPresentation.swift
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: services.jays.usage.monitor.widgettests
+        GENERATE_INFOPLIST_FILE: YES
+    dependencies:
+      - package: UsageMonitorKit
+        product: DesignSystem
+      - package: UsageMonitorKit
+        product: WidgetShared
+
+schemes:
+  UsageMonitor:
+    build:
+      targets:
+        UsageMonitor: all
+        UsageMonitorWidgetExtension: all
+    run:
+      config: Debug
+    test:
+      config: Debug
+      targets:
+        - UsageMonitorTests
+        - UsageMonitorWidgetTests

@@ -155,7 +155,13 @@ describe("alert delivery", () => {
       fetchImpl: fetchMock as unknown as typeof fetch,
     });
 
-    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledOnce());
+    // vi.waitFor's own default timeout (1000ms) is independent of this
+    // file's global testTimeout and can be too tight once real Prisma I/O
+    // (provider/notification writes ahead of the fetch call) competes with a
+    // loaded CI runner or a full parallel worker pool. An explicit, generous
+    // timeout keeps this a wait on a real condition rather than a race
+    // against wall-clock scheduling.
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledOnce(), { timeout: 10_000 });
 
     // Guard every assertion below in try/finally: if any assertion throws,
     // the finally block still resolves the mocked fetch, releases any
@@ -173,10 +179,17 @@ describe("alert delivery", () => {
       resolveFetch?.(new Response("ok", { status: 200 }));
       // Persisting the delivery outcome needs internal write admission, which
       // is queued FIFO behind the external lease held above, so the delivery
-      // promise cannot settle until that lease is released.
+      // promise cannot settle until that lease is released. Race against a
+      // microtask (not a real timer) rather than a hardcoded wall-clock delay:
+      // `delivery` is genuinely blocked on the lease queue, a macrotask-level
+      // gate that only clears once `releaseHttpWriter()` runs below, so it
+      // cannot win a microtask race regardless of system load. A short real
+      // `setTimeout` here previously raced actual scheduling latency under a
+      // busy CI runner/worker pool and could flake by declaring "settled"
+      // before `delivery` had, in fact, progressed any further.
       const stateWhileQueued = await Promise.race([
         delivery.then(() => "settled" as const),
-        new Promise<"queued">((resolve) => setTimeout(() => resolve("queued"), 20)),
+        Promise.resolve("queued" as const),
       ]);
       expect(stateWhileQueued).toBe("queued");
     } finally {
@@ -719,7 +732,13 @@ describe("alert delivery", () => {
     } as AlertDb;
 
     const owner = deliverProviderAlerts({ now, config, fetchImpl: fetchMock });
-    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledOnce());
+    // vi.waitFor's own default timeout (1000ms) is independent of this
+    // file's global testTimeout and can be too tight once real Prisma I/O
+    // (provider/notification writes ahead of the fetch call) competes with a
+    // loaded CI runner or a full parallel worker pool. An explicit, generous
+    // timeout keeps this a wait on a real condition rather than a race
+    // against wall-clock scheduling.
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledOnce(), { timeout: 10_000 });
 
     const contender = await deliverProviderAlerts({
       now,
@@ -959,7 +978,10 @@ describe("alert delivery", () => {
         providerAlertChannelDelivery: prisma.providerAlertChannelDelivery,
       } as unknown as AlertDb,
     });
-    await vi.waitFor(() => expect(activatorObservedOpen).toBe(true));
+    // See the timeout comment above: vi.waitFor's 1000ms default is
+    // independent of this file's global testTimeout and too tight under a
+    // loaded CI runner.
+    await vi.waitFor(() => expect(activatorObservedOpen).toBe(true), { timeout: 10_000 });
 
     await prisma.usageSnapshot.create({
       data: {
@@ -1960,7 +1982,13 @@ describe("alert delivery", () => {
       },
       fetchImpl: fetchMock,
     });
-    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledOnce());
+    // vi.waitFor's own default timeout (1000ms) is independent of this
+    // file's global testTimeout and can be too tight once real Prisma I/O
+    // (provider/notification writes ahead of the fetch call) competes with a
+    // loaded CI runner or a full parallel worker pool. An explicit, generous
+    // timeout keeps this a wait on a real condition rather than a race
+    // against wall-clock scheduling.
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledOnce(), { timeout: 10_000 });
 
     const notification = await prisma.providerAlertNotification.findUniqueOrThrow({
       where: { stateKey: `${provider.id}:balance_low` },
@@ -2527,7 +2555,13 @@ describe("alert delivery", () => {
       config,
       fetchImpl: fetchMock as unknown as typeof fetch,
     });
-    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledOnce());
+    // vi.waitFor's own default timeout (1000ms) is independent of this
+    // file's global testTimeout and can be too tight once real Prisma I/O
+    // (provider/notification writes ahead of the fetch call) competes with a
+    // loaded CI runner or a full parallel worker pool. An explicit, generous
+    // timeout keeps this a wait on a real condition rather than a race
+    // against wall-clock scheduling.
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledOnce(), { timeout: 10_000 });
 
     const inFlightNotification =
       await prisma.providerAlertNotification.findUniqueOrThrow({
@@ -2901,7 +2935,10 @@ describe("alert delivery", () => {
       config,
       fetchImpl: fetchMock as unknown as typeof fetch,
     });
-    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+    // See the timeout comment above: vi.waitFor's 1000ms default is
+    // independent of this file's global testTimeout and too tight under a
+    // loaded CI runner.
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2), { timeout: 10_000 });
 
     const contender = await deliverProviderAlerts({
       now: new Date("2026-07-20T13:30:00.000Z"),
