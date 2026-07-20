@@ -33,6 +33,21 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Ensure sqlite3 CLI is installed
+        run: |
+          if ! command -v sqlite3 &> /dev/null; then
+            echo "sqlite3 not found, installing..."
+            if command -v apt-get &> /dev/null; then
+              if command -v sudo &> /dev/null; then
+                sudo apt-get update && sudo apt-get install -y sqlite3
+              else
+                apt-get update && apt-get install -y sqlite3
+              fi
+            elif command -v apk &> /dev/null; then
+              apk add sqlite
+            fi
+          fi
+
       - name: Configure test database
         run: echo "DATABASE_URL=file:${RUNNER_TEMP}/api-usage-monitor-ci.db" >> "$GITHUB_ENV"
 
