@@ -103,11 +103,16 @@ export default function SubscriptionsPanel({
   });
 
   return (
-    <div className="overflow-x-auto rounded-xl border border-gray-200 bg-white dark:border-gray-700 dark:bg-gray-800">
+    // overflow-x-clip (not auto/hidden) does not create a scroll container, so the
+    // sticky <thead> below stays pinned during page scroll. This table is only ever
+    // rendered on the Settings services tab, so the top offset can be the fixed
+    // top-28 (global nav h-16 + the settings sticky tabs/Add bar) rather than a
+    // variant-conditional value like PaidServicesPanel uses.
+    <div className="overflow-x-clip rounded-xl border border-gray-200 bg-white dark:border-gray-700 dark:bg-gray-800">
       <table className="responsive-table w-full text-sm">
         <caption className="sr-only">Tracked subscriptions</caption>
         <thead>
-          <tr className="border-b border-gray-100 bg-gray-50 dark:border-gray-700 dark:bg-gray-900/60">
+          <tr className="border-b border-gray-100 bg-gray-50 dark:border-gray-700 dark:bg-gray-900/60 [&>th]:sticky [&>th]:top-28 [&>th]:z-20 [&>th]:bg-gray-50 dark:[&>th]:bg-gray-900">
             <th className="px-6 py-3 text-left font-medium text-gray-500 dark:text-gray-400">Name</th>
             <th className="hidden px-6 py-3 text-left font-medium text-gray-500 dark:text-gray-400 sm:table-cell">Provider</th>
             <th className="hidden px-6 py-3 text-left font-medium text-gray-500 dark:text-gray-400 md:table-cell">Project</th>

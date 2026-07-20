@@ -541,5 +541,154 @@ describe("computeProjectBudgetStatus stale-while-revalidate cache", () => {
       expect(thirdBudget.providers.find((p) => p.id === provider.id)?.spentUsd).toBe(35);
       expect(thirdProject.providers.find((p) => p.id === provider.id)?.spentUsd).toBe(35);
     });
+
+    it("discards a refresh that started before the bust instead of letting it repopulate the cache", async () => {
+      // Regression test for the "invalidation loses to an in-flight refresh"
+      // bug. Ownership of the in-flight slot used to be keyed ONLY on the
+      // month-start string, which a bust does not change - so a refresh that
+      // began before the mutation could still see `refreshKey === key` at
+      // completion (because a post-bust caller had re-claimed the slot for the
+      // same month), write its PRE-mutation snapshot into the freshly-busted
+      // cache, and clear the slot out from under the post-bust refresh - whose
+      // own correct result was then discarded. Net effect for the owner: the
+      // project they just deleted reappeared, and stayed for another full TTL.
+      const NOW = new Date("2027-05-10T12:00:00.000Z");
+      process.env.BUDGET_STATUS_CACHE_TTL_MS = "60000";
+      const provider = await createProviderWithCost(
+        "bust-vs-inflight-provider",
+        15,
+        new Date("2027-05-10T10:00:00.000Z")
+      );
+
+      // Warm the cache with the pre-mutation value.
+      const warm = await computeBudgetStatus(NOW);
+      expect(warm.providers.find((p) => p.id === provider.id)?.spentUsd).toBe(15);
+
+      // Gate usageSnapshot.findMany - the `latestCostSnapshots` read that
+      // actually feeds spentUsd, and the last read of it in the compute.
+      // Call 0 = the pre-bust background refresh, call 1 = the post-bust one.
+      // Each compute is parked AFTER its read resolves, so the pre-bust
+      // refresh genuinely holds a PRE-mutation view; parking before the read
+      // would let it pick the post-mutation value up on release and hide the
+      // bug entirely.
+      const originalFindMany = prisma.usageSnapshot.findMany.bind(prisma.usageSnapshot);
+      const gates: Array<() => void> = [];
+      const gateFor = (index: number) =>
+        new Promise<void>((resolve) => {
+          gates[index] = resolve;
+        });
+      const preBustGate = gateFor(0);
+      const postBustGate = gateFor(1);
+      let findManyCalls = 0;
+      // Counted AFTER the read resolves, so the test can sequence the mutation
+      // strictly after the pre-bust refresh has already read the old rows.
+      // Counting only at call entry would leave that a real race.
+      let findManyReads = 0;
+      vi.spyOn(prisma.usageSnapshot, "findMany").mockImplementation((async (args: never) => {
+        const call = findManyCalls++;
+        const rows = await originalFindMany(args);
+        findManyReads++;
+        if (call === 0) await preBustGate;
+        if (call === 1) await postBustGate;
+        return rows;
+      }) as never);
+
+      // Go stale -> the SWR hit returns 15 immediately and starts refresh R,
+      // which is now parked inside usageSnapshot.findMany.
+      process.env.BUDGET_STATUS_CACHE_TTL_MS = "0";
+      expect(await computeBudgetStatus(NOW)).toBe(warm);
+      await waitUntil(async () => findManyReads === 1);
+      // Stop further staleness so no extra refreshes muddy the sequence.
+      process.env.BUDGET_STATUS_CACHE_TTL_MS = "60000";
+
+      // The mutation the owner just made, followed by its invalidation.
+      await prisma.usageSnapshot.updateMany({
+        where: { providerId: provider.id },
+        data: { totalCost: 35 },
+      });
+      bustBudgetStatusCache();
+
+      // A post-bust read lands (cold cache) and claims the in-flight slot for
+      // the SAME month key. Its own compute R2 parks at the second gate.
+      const postBustRead = computeBudgetStatus(NOW);
+      await waitUntil(async () => findManyReads === 2);
+
+      // R (pre-bust, pre-mutation) now completes while R2 still owns the slot.
+      gates[0]();
+
+      // Wait for R to land. Under the bug it repopulates the busted cache, so
+      // a probe returns immediately; under the fix nothing is ever written and
+      // the probe stays parked behind R2, so the race falls through to its
+      // timeout. Either way we only proceed once R has had every chance to
+      // write - which is what makes the buggy interleaving deterministic
+      // rather than a matter of who wins a real race.
+      const probeCacheEntry = () =>
+        Promise.race([
+          computeBudgetStatus(NOW).then(
+            (r) => r.providers.find((p) => p.id === provider.id)?.spentUsd
+          ),
+          new Promise<undefined>((resolve) => setTimeout(() => resolve(undefined), 60)),
+        ]);
+      const probeDeadline = Date.now() + 500;
+      while (Date.now() < probeDeadline) {
+        if ((await probeCacheEntry()) !== undefined) break;
+      }
+
+      // R2 (post-bust, post-mutation) completes second.
+      gates[1]();
+
+      // The post-bust read must see its own post-mutation number, never the
+      // pre-bust refresh's stale one.
+      const result = await postBustRead;
+      expect(result.providers.find((p) => p.id === provider.id)?.spentUsd).toBe(35);
+
+      // ...and the cache must be left holding the fresh value, so the next
+      // reader isn't served the stale one for another full TTL.
+      const next = await computeBudgetStatus(NOW);
+      expect(next.providers.find((p) => p.id === provider.id)?.spentUsd).toBe(35);
+    });
+
+    it("does not let a post-bust caller piggyback on a pre-bust in-flight compute", async () => {
+      // Same root cause, cold-cache variant: a caller arriving after the bust
+      // must start its own compute rather than awaiting an in-flight promise
+      // whose DB reads predate the mutation.
+      const NOW = new Date("2027-06-10T12:00:00.000Z");
+      process.env.BUDGET_STATUS_CACHE_TTL_MS = "60000";
+      const provider = await createProviderWithCost(
+        "bust-vs-piggyback-provider",
+        21,
+        new Date("2027-06-10T10:00:00.000Z")
+      );
+
+      const originalFindMany = prisma.provider.findMany.bind(prisma.provider);
+      let releaseFirst!: () => void;
+      const firstGate = new Promise<void>((resolve) => {
+        releaseFirst = resolve;
+      });
+      let findManyCalls = 0;
+      vi.spyOn(prisma.provider, "findMany").mockImplementation((async (args: never) => {
+        if (findManyCalls++ === 0) await firstGate;
+        return originalFindMany(args);
+      }) as never);
+
+      // Cold compute in flight, parked before it reads any rows.
+      const pending = computeBudgetStatus(NOW);
+      await waitUntil(async () => findManyCalls === 1);
+
+      // Mutate + invalidate while that compute is still parked.
+      await prisma.usageSnapshot.updateMany({
+        where: { providerId: provider.id },
+        data: { totalCost: 42 },
+      });
+      bustBudgetStatusCache();
+
+      // Release the pre-bust compute and let it settle.
+      releaseFirst();
+      await pending.catch(() => {});
+
+      // A read after the bust must reflect the mutation.
+      const after = await computeBudgetStatus(NOW);
+      expect(after.providers.find((p) => p.id === provider.id)?.spentUsd).toBe(42);
+    });
   });
 });
