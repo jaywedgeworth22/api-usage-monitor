@@ -17,6 +17,24 @@ import { usageUnitLabelForProvider } from "@/lib/provider-definitions";
 import { useDisplayDensity } from "@/lib/display-density";
 import { costCoverageHelpText } from "@/lib/cost-coverage-help";
 import { CostCoverageCaveatBanner, spendCoverageNoteText } from "./cost-coverage-caveat";
+
+/** Short display label for the raw pushed-cost-coverage enum, paired with
+ * `costCoverageHelpText` as a title tooltip - same "Complete"/"Partial"/
+ * "Unknown" convention used elsewhere on this page and in
+ * DashboardProviderWorkspace, so a bare enum value never reaches the UI. */
+function pushedCostCoverageLabel(coverage: ProviderCostCoverage | null | undefined): string {
+  switch (coverage) {
+    case "complete":
+      return "Complete";
+    case "partial":
+      return "Partial";
+    case "legacy_unknown":
+      return "Unknown (legacy)";
+    case "unknown":
+    default:
+      return "Unknown";
+  }
+}
 import {
   ComplianceSummaryPanel,
   type ProviderComplianceSummaryView,
@@ -577,8 +595,11 @@ export default function ProviderDetailPage() {
           </div>
           <div>
             <dt className="text-xs text-gray-500 dark:text-gray-400">Pushed cost coverage</dt>
-            <dd className="mt-1 font-medium capitalize text-gray-900 dark:text-gray-100">
-              {(provider.pushedCostCoverage ?? "unknown").replace("_", " ")}
+            <dd
+              className="mt-1 font-medium text-gray-900 dark:text-gray-100"
+              title={costCoverageHelpText(provider.pushedCostCoverage ?? "unknown")}
+            >
+              {pushedCostCoverageLabel(provider.pushedCostCoverage)}
             </dd>
             <dd className="mt-0.5 text-[10px] text-gray-500 dark:text-gray-400">
               {provider.pushedPricedEventCount ?? 0} priced · {provider.pushedUnpricedEventCount ?? 0} unpriced · {provider.pushedUnclassifiedCostEventCount ?? 0} unclassified
