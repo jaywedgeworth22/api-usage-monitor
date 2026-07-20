@@ -7,8 +7,8 @@ import * as helpers from "@/lib/adapters/helpers";
 
 let testDir: string;
 let prisma: typeof import("@/lib/prisma").prisma;
-let verifyOpenRouterGenerations: typeof import("../usage-maintenance").verifyOpenRouterGenerations;
-let reconcileProviderUsage: typeof import("../usage-maintenance").reconcileProviderUsage;
+let verifyOpenRouterGenerations: typeof import("../openrouter-generation-verification").verifyOpenRouterGenerations;
+let reconcileProviderUsage: typeof import("../provider-usage-reconciliation").reconcileProviderUsage;
 
 beforeAll(async () => {
   process.env.ENCRYPTION_KEY = "44".repeat(32);
@@ -18,7 +18,12 @@ beforeAll(async () => {
   process.env.DATABASE_URL = `file:${dbPath}`;
   setupPrismaSqliteTestDb(dbPath);
   ({ prisma } = await import("@/lib/prisma"));
-  ({ verifyOpenRouterGenerations, reconcileProviderUsage } = await import("../usage-maintenance"));
+  ({ verifyOpenRouterGenerations } = await import(
+    "../openrouter-generation-verification"
+  ));
+  ({ reconcileProviderUsage } = await import(
+    "../provider-usage-reconciliation"
+  ));
 }, 60_000);
 
 afterAll(async () => {
@@ -37,168 +42,304 @@ beforeEach(async () => {
   vi.restoreAllMocks();
 });
 
+/**
+ * Producers (CT/ST) put the OpenRouter GENERATION ID in `providerRequestId`
+ * and the API-KEY REFERENCE in `keyRef`. Fixtures here must mirror that exact
+ * contract — a fixture that stuffs the generation id into `keyRef` would make
+ * the worker look functional while matching zero real rows in production.
+ */
+async function seedEvent(overrides: {
+  providerRequestId?: string | null;
+  costUsd?: number | null;
+  verificationStatus?: string | null;
+  verifiedSource?: string | null;
+  occurredAt?: Date;
+}) {
+  return prisma.externalUsageEvent.create({
+    data: {
+      sourceApp: "socratic-trade",
+      provider: "openrouter",
+      metricType: "usage",
+      keyRef: "OPENROUTER_API_KEY",
+      costUsd: overrides.costUsd ?? 0.001,
+      occurredAt: overrides.occurredAt ?? new Date(),
+      providerRequestId: overrides.providerRequestId ?? "gen-abc",
+      verificationStatus: overrides.verificationStatus ?? null,
+      verifiedSource: overrides.verifiedSource ?? null,
+    },
+  });
+}
+
+function mockGeneration(byId: Record<string, { status: number; cost?: number }>) {
+  vi.spyOn(helpers, "fetchJson").mockImplementation(async (url: string) => {
+    const match = Object.keys(byId).find((id) => url.includes(id));
+    const entry = match ? byId[match] : { status: 404 };
+    if (entry.status !== 200) {
+      return { ok: false, status: entry.status, data: null, headers: new Headers() };
+    }
+    return {
+      ok: true,
+      status: 200,
+      data: { data: { id: match, total_cost: entry.cost } },
+      headers: new Headers(),
+    };
+  });
+}
+
 describe("verifyOpenRouterGenerations", () => {
-  it("verifies and fails events based on API responses", async () => {
-    const provider = await prisma.provider.create({
-      data: {
-        name: "openrouter",
-        displayName: "OpenRouter",
-        apiKey: "encryptedKey",
-      },
+  it("verifies by providerRequestId — the field producers actually populate", async () => {
+    const event = await seedEvent({
+      providerRequestId: "gen-real-1",
+      costUsd: 0.002,
     });
+    mockGeneration({ "gen-real-1": { status: 200, cost: 0.002 } });
 
-    const event1 = await prisma.externalUsageEvent.create({
+    const result = await verifyOpenRouterGenerations();
+
+    expect(result.examined).toBe(1);
+    expect(result.matched).toBe(1);
+    const stored = await prisma.externalUsageEvent.findUniqueOrThrow({
+      where: { id: event.id },
+    });
+    expect(stored.verificationStatus).toBe("match");
+    // The whole point of the audit layer: the provider's authoritative cost is
+    // persisted, not just an id-echo check.
+    expect(stored.verifiedCostUsd).toBe(0.002);
+    expect(stored.verifiedSource).toBe("openrouter-generation");
+    expect(stored.verifiedAt).not.toBeNull();
+  });
+
+  it("never selects an event whose generation id is absent, regardless of keyRef", async () => {
+    // keyRef deliberately looks like a generation id; providerRequestId is null.
+    await prisma.externalUsageEvent.create({
       data: {
-        idempotencyKey: "key-1",
-        sourceApp: "app-1",
+        sourceApp: "socratic-trade",
         provider: "openrouter",
-        keyRef: "gen-123",
+        metricType: "usage",
+        keyRef: "gen-looks-like-one",
+        costUsd: 0.001,
         occurredAt: new Date(),
+        providerRequestId: null,
       },
     });
+    const fetchSpy = vi.spyOn(helpers, "fetchJson");
 
-    const event2 = await prisma.externalUsageEvent.create({
-      data: {
-        idempotencyKey: "key-2",
-        sourceApp: "app-1",
-        provider: "openrouter",
-        keyRef: "gen-456",
-        occurredAt: new Date(),
-      },
+    const result = await verifyOpenRouterGenerations();
+
+    expect(result.examined).toBe(0);
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("flags a discrepancy when the provider charged materially more than reported", async () => {
+    const event = await seedEvent({
+      providerRequestId: "gen-drift",
+      costUsd: 0.001,
     });
+    mockGeneration({ "gen-drift": { status: 200, cost: 0.5 } });
 
-    const event3 = await prisma.externalUsageEvent.create({
-      data: {
-        idempotencyKey: "key-3",
-        sourceApp: "app-1",
-        provider: "openrouter",
-        keyRef: "not-gen",
-        occurredAt: new Date(),
-      },
+    const result = await verifyOpenRouterGenerations();
+
+    expect(result.discrepancies).toBe(1);
+    const stored = await prisma.externalUsageEvent.findUniqueOrThrow({
+      where: { id: event.id },
     });
+    expect(stored.verificationStatus).toBe("discrepancy");
+    expect(stored.verifiedCostUsd).toBe(0.5);
+  });
 
-    const fetchJsonSpy = vi.spyOn(helpers, "fetchJson");
-    fetchJsonSpy.mockImplementation(async (url) => {
-      if (url.includes("gen-123")) {
-        return {
-          ok: true,
-          status: 200,
-          data: { data: { id: "gen-123", total_cost: 0.0001 } },
-          headers: new Headers(),
-        };
-      }
-      if (url.includes("gen-456")) {
-        return {
-          ok: false,
-          status: 404,
-          data: null,
-          headers: new Headers(),
-        };
-      }
-      return {
-        ok: false,
-        status: 500,
-        data: null,
-        headers: new Headers(),
-      };
+  it("treats a null reported cost against real provider cost as under-reporting", async () => {
+    const event = await seedEvent({
+      providerRequestId: "gen-null-cost",
+      costUsd: null,
     });
+    mockGeneration({ "gen-null-cost": { status: 200, cost: 0.25 } });
 
-    const verifiedCount = await verifyOpenRouterGenerations();
-    expect(verifiedCount).toBe(1);
+    await verifyOpenRouterGenerations();
 
-    const stored1 = await prisma.externalUsageEvent.findUniqueOrThrow({ where: { id: event1.id } });
-    expect(stored1.verificationStatus).toBe("verified");
+    const stored = await prisma.externalUsageEvent.findUniqueOrThrow({
+      where: { id: event.id },
+    });
+    expect(stored.verificationStatus).toBe("discrepancy");
+    expect(stored.verifiedCostUsd).toBe(0.25);
+  });
 
-    const stored2 = await prisma.externalUsageEvent.findUniqueOrThrow({ where: { id: event2.id } });
-    expect(stored2.verificationStatus).toBe("failed");
+  it("retries transient failures as 'error' and re-selects them on a later pass", async () => {
+    const event = await seedEvent({ providerRequestId: "gen-flaky" });
+    mockGeneration({ "gen-flaky": { status: 500 } });
 
-    const stored3 = await prisma.externalUsageEvent.findUniqueOrThrow({ where: { id: event3.id } });
-    expect(stored3.verificationStatus).toBeNull(); // Skipped because it doesn't start with gen-
+    const first = await verifyOpenRouterGenerations();
+    expect(first.errors).toBe(1);
+    const afterFirst = await prisma.externalUsageEvent.findUniqueOrThrow({
+      where: { id: event.id },
+    });
+    expect(afterFirst.verificationStatus).toBe("error");
+    expect(afterFirst.verifiedCostUsd).toBeNull();
+
+    // An "error" row must be picked up again — the due-scan is
+    // (status IS NULL OR status IN ('pending','error')).
+    mockGeneration({ "gen-flaky": { status: 200, cost: 0.003 } });
+    const second = await verifyOpenRouterGenerations();
+    expect(second.examined).toBe(1);
+    const afterSecond = await prisma.externalUsageEvent.findUniqueOrThrow({
+      where: { id: event.id },
+    });
+    expect(afterSecond.verificationStatus).toBe("match");
+  });
+
+  it("stops the pass and reports degraded when the key cannot read generations", async () => {
+    await seedEvent({ providerRequestId: "gen-a" });
+    await seedEvent({ providerRequestId: "gen-b" });
+    const fetchSpy = vi
+      .spyOn(helpers, "fetchJson")
+      .mockResolvedValue({ ok: false, status: 401, data: null, headers: new Headers() });
+
+    const result = await verifyOpenRouterGenerations();
+
+    expect(result.degraded).toBe(true);
+    // One probe is enough to learn the key is unscoped; the rest of the batch
+    // must not burn its retry budget on the same configuration problem.
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it("parks a permanently-dead generation id in a TERMINAL state instead of cycling forever", async () => {
+    const event = await seedEvent({ providerRequestId: "gen-dead" });
+    // A generation OpenRouter has pruned: 404s on every attempt, forever.
+    mockGeneration({ "gen-dead": { status: 404 } });
+
+    // Burn the retry budget.
+    for (let pass = 0; pass < 5; pass += 1) {
+      await verifyOpenRouterGenerations();
+    }
+    const parked = await prisma.externalUsageEvent.findUniqueOrThrow({
+      where: { id: event.id },
+    });
+    expect(parked.verificationStatus).toBe("unverifiable");
+    expect(parked.verifiedSource).toBe("openrouter-generation-exhausted");
+
+    // The next pass must NOT re-select it. If the terminal state were the
+    // retryable "error", this row would be picked up again and its attempt
+    // counter would reset — a permanent cycle that fills every batch (the scan
+    // is oldest-first) and starves newly-ingested events.
+    const fetchSpy = vi.spyOn(helpers, "fetchJson");
+    fetchSpy.mockClear(); // drop the 5 calls the retry budget already made
+    const after = await verifyOpenRouterGenerations();
+    expect(after.examined).toBe(0);
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("never re-fetches an already-settled event", async () => {
+    await seedEvent({
+      providerRequestId: "gen-settled",
+      verificationStatus: "match",
+    });
+    const fetchSpy = vi.spyOn(helpers, "fetchJson");
+
+    const result = await verifyOpenRouterGenerations();
+
+    expect(result.examined).toBe(0);
+    expect(fetchSpy).not.toHaveBeenCalled();
   });
 });
 
 describe("reconcileProviderUsage", () => {
-  it("reconciles usage and detects discrepancies", async () => {
+  async function seedProvider(name: string, opts: { totalCost?: number | null } = {}) {
     const provider = await prisma.provider.create({
-      data: {
-        name: "verifiable-provider",
-        displayName: "Verifiable Provider",
-      },
+      data: { name, displayName: name, type: "builtin", isActive: true },
     });
+    if (opts.totalCost !== undefined && opts.totalCost !== null) {
+      await prisma.usageSnapshot.create({
+        data: {
+          providerId: provider.id,
+          fetchedAt: new Date(),
+          totalCost: opts.totalCost,
+          costScope: "calendar_month_to_date",
+        },
+      });
+    }
+    return provider;
+  }
 
-    const now = new Date();
-    const monthStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
+  it("upserts one row per provider-period instead of recreating it", async () => {
+    const provider = await seedProvider("openai", { totalCost: 10 });
 
-    // Create snapshot in current month
-    await prisma.usageSnapshot.create({
-      data: {
-        providerId: provider.id,
-        fetchedAt: now,
-        totalCost: 100.0,
-      },
-    });
-
-    // Create local usage event in current month
-    await prisma.externalUsageEvent.create({
-      data: {
-        idempotencyKey: "evt-1",
-        sourceApp: "app-1",
-        provider: "verifiable-provider",
-        costUsd: 95.0,
-        occurredAt: now,
-      },
-    });
-
-    // Reconcile
-    const count = await reconcileProviderUsage();
-    expect(count).toBe(1);
-
-    const reconciliation = await prisma.providerUsageReconciliation.findFirstOrThrow({
+    await reconcileProviderUsage();
+    const first = await prisma.providerUsageReconciliation.findMany({
       where: { providerId: provider.id },
     });
+    expect(first).toHaveLength(1);
 
-    expect(reconciliation.verifiedCostUsd).toBe(100.0);
-    expect(reconciliation.reportedCostUsd).toBe(95.0);
-    expect(reconciliation.deltaUsd).toBe(5.0);
-    expect(reconciliation.status).toBe("discrepancy");
+    await reconcileProviderUsage();
+    const second = await prisma.providerUsageReconciliation.findMany({
+      where: { providerId: provider.id },
+    });
+    // A moving periodEnd (or delete+create) would produce a second row and
+    // destroy the original's createdAt.
+    expect(second).toHaveLength(1);
+    expect(second[0].id).toBe(first[0].id);
+    expect(second[0].createdAt.getTime()).toBe(first[0].createdAt.getTime());
+    expect(second[0].keyRef).toBe("");
   });
 
-  it("marks as ok if discrepancy is within threshold", async () => {
-    const provider = await prisma.provider.create({
-      data: {
-        name: "verifiable-provider-2",
-        displayName: "Verifiable Provider 2",
-      },
-    });
-
-    const now = new Date();
-
-    // Create snapshot in current month
-    await prisma.usageSnapshot.create({
-      data: {
-        providerId: provider.id,
-        fetchedAt: now,
-        totalCost: 10.005,
-      },
-    });
-
-    // Create local usage event in current month
-    await prisma.externalUsageEvent.create({
-      data: {
-        idempotencyKey: "evt-2",
-        sourceApp: "app-1",
-        provider: "verifiable-provider-2",
-        costUsd: 10.01,
-        occurredAt: now,
-      },
-    });
+  it("labels structurally unverifiable providers explicitly, never silently ok", async () => {
+    // render's catalog billing.visibility is "metadata" — not reconcilable.
+    const provider = await seedProvider("render", { totalCost: 5 });
 
     await reconcileProviderUsage();
 
-    const reconciliation = await prisma.providerUsageReconciliation.findFirstOrThrow({
+    const row = await prisma.providerUsageReconciliation.findFirstOrThrow({
       where: { providerId: provider.id },
     });
+    expect(row.status).toBe("unverifiable");
+    expect(row.verifiedCostUsd).toBeNull();
+    expect(row.deltaUsd).toBeNull();
+  });
 
-    expect(reconciliation.status).toBe("ok"); // |10.005 - 10.01| = 0.005 <= 0.01
+  it("marks a verifiable provider with no authoritative snapshot as pending", async () => {
+    const provider = await seedProvider("openai");
+
+    await reconcileProviderUsage();
+
+    const row = await prisma.providerUsageReconciliation.findFirstOrThrow({
+      where: { providerId: provider.id },
+    });
+    expect(row.status).toBe("pending");
+    expect(row.verifiedCostUsd).toBeNull();
+  });
+
+  it("never attributes one pushed-cost bucket to several same-key provider rows", async () => {
+    // Two ACTIVE rows sharing a canonical key — Provider.name has no unique
+    // constraint, so this is reachable (e.g. two OpenAI accounts).
+    const first = await seedProvider("openai", { totalCost: 60 });
+    const second = await seedProvider("openai", { totalCost: 40 });
+
+    await reconcileProviderUsage();
+
+    const rows = await prisma.providerUsageReconciliation.findMany({
+      where: { providerId: { in: [first.id, second.id] } },
+    });
+    expect(rows).toHaveLength(2);
+    // Exactly one row may own the bucket; the sibling must NOT be handed the
+    // same pushed dollars a second time (that would fabricate a discrepancy on
+    // a perfectly reconciled month).
+    const credited = rows.filter((row) => row.reportedCostUsd > 0);
+    expect(credited.length).toBeLessThanOrEqual(1);
+    const ambiguous = rows.filter((row) => row.status === "unverifiable");
+    expect(ambiguous).toHaveLength(1);
+    expect(ambiguous[0].deltaUsd).toBeNull();
+  });
+
+  it("records a discrepancy when provider-reported cost exceeds pushed telemetry", async () => {
+    const provider = await seedProvider("openai", { totalCost: 100 });
+
+    await reconcileProviderUsage();
+
+    const row = await prisma.providerUsageReconciliation.findFirstOrThrow({
+      where: { providerId: provider.id },
+    });
+    expect(row.status).toBe("discrepancy");
+    expect(row.verifiedCostUsd).toBe(100);
+    expect(row.reportedCostUsd).toBe(0);
+    expect(row.deltaUsd).toBe(100);
+    expect(row.verifiedSource).toBe("usage-snapshot");
   });
 });

@@ -265,7 +265,9 @@ model ExternalUsageEvent {
   // Verification worker's scan for events due a check (see
   // /Users/jay/apps/DESIGN-usage-compliance-classifier.md §3c: select
   // `provider='openrouter' AND providerRequestId IS NOT NULL AND
-  // verificationStatus IN (NULL,'pending','error')`).
+  // (verificationStatus IS NULL OR verificationStatus IN ('pending','error'))`).
+  // NOTE the explicit IS NULL: SQL `IN (NULL, ...)` never matches NULL, so a
+  // freshly-ingested (unverified) event would otherwise never be picked up.
   @@index([provider, verificationStatus])
   // Verification worker's lookup of a specific provider call by its
   // provider-side request/generation id.

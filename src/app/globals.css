@@ -119,24 +119,35 @@ body {
 
 /* ==========================================================================
    Display Density (Compact Mode) Adjustments
-   ========================================================================== */
+   ==========================================================================
+   Only pure spacing tweaks live here (padding/gap/font-size) - nothing in
+   this file hides content. Collapsing a secondary line in compact mode is
+   done in the component itself (ProviderTable.tsx, ProviderCard.tsx, the
+   provider detail page) so the hidden text can be folded into a `title`
+   attribute on the element that stays visible. A blind CSS selector can't
+   do that (an element that's `display: none` can't be hovered for its
+   title), which is why this used to hide several field *labels* by
+   accident - see PR history for #601 if you're wondering why this comment
+   is unusually specific.
 
-/* 1. Global table row/cell height reductions */
+   DashboardProviderWorkspace.tsx is intentionally NOT styled from here: it
+   already ships its own compact/comfortable "Row density" control (see the
+   `density` state and `usage-monitor:dashboard-density` storage key in that
+   file, from the #383/#384 density-redesign work), with its own row markup
+   and `title`-based detail fallbacks. Applying this global class on top of
+   that would fight its independent state instead of building on it. */
+
+/* Global table row/cell height reduction (safe: padding only, no content
+   changes; SortHeader/th padding included, so the sticky header shrinks
+   along with the rows below it without affecting its `position: sticky`
+   offset). */
 .density-compact .responsive-table th,
 .density-compact .responsive-table td {
   padding-top: 0.35rem !important;
   padding-bottom: 0.35rem !important;
 }
 
-/* 2. ProviderTable specific */
-.density-compact .provider-table td[data-label="Name"] p.text-xs,
-.density-compact .provider-table td[data-label="Name"] p.font-mono,
-.density-compact .provider-table td[data-label="Spend / Budget"] span.mt-1,
-.density-compact .provider-table td[data-label="Spend / Budget"] p.text-xs {
-  display: none !important;
-}
-
-/* 3. ProviderCard specific */
+/* ProviderCard */
 .density-compact .provider-card {
   padding: 0.875rem 1rem !important;
 }
@@ -149,42 +160,15 @@ body {
 .density-compact .provider-card h3 {
   font-size: 0.95rem !important;
 }
-.density-compact .provider-card p.text-xs,
-.density-compact .provider-card p.text-\[10px\],
-.density-compact .provider-card p.mt-1.text-\[10px\],
-.density-compact .provider-card p.mt-3.text-xs,
-.density-compact .provider-card span.font-normal {
-  display: none !important;
-}
 .density-compact .provider-card .mt-3 {
   margin-top: 0.5rem !important;
 }
 
-/* 4. DashboardProviderWorkspace specific */
-.density-compact .workspace-container td[data-label="Provider family"] p.text-xs,
-.density-compact .workspace-container td[data-label="Spend"] p.text-[10px],
-.density-compact .workspace-container td[data-label="Spend"] span.font-normal,
-.density-compact .workspace-container td[data-label="Last sync"] p.text-[10px],
-.density-compact .workspace-container td[data-label="Last sync"] p.mt-1 {
-  display: none !important;
-}
-.density-compact .workspace-container .table-group-cell .px-3.py-3 {
-  padding: 0.5rem 0.75rem !important;
-}
-.density-compact .workspace-container .table-group-cell .gap-3 {
-  gap: 0.5rem !important;
-}
-
-/* 5. Provider details page specific */
+/* Provider detail page (src/app/providers/[id]/page.tsx) */
 .density-compact .provider-details .grid-cols-1,
 .density-compact .provider-details .grid-cols-2 {
   gap: 0.5rem !important;
 }
 .density-compact .provider-details .p-4 {
   padding: 0.75rem !important;
-}
-.density-compact .provider-details p.text-\[10px\],
-.density-compact .provider-details dd.text-\[10px\],
-.density-compact .provider-details dl dd + dd.text-\[10px\] {
-  display: none !important;
 }
