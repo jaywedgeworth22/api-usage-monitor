@@ -8,6 +8,7 @@ import { computeBudgetStatus, bustBudgetStatusCache } from "@/lib/budget-status"
 import { toPrismaProviderPlanData } from "@/lib/provider-plan";
 import { canonicalProviderKey } from "@/lib/provider-identity";
 import { buildKeyPreview } from "@/lib/provider-key-preview";
+import { getProviderComplianceSummary } from "@/lib/provider-compliance";
 import {
   decryptProviderSecretConfig,
   hasProviderSecrets,
@@ -193,6 +194,17 @@ export async function GET(
   const costCoverageCaveat = snapshotCostCoverageCaveat(
     latestSnapshotWithRawData?.rawData ?? null
   );
+  // Display-only read-back of the §3c/§3d audit layer. Never feeds budgets,
+  // alerts, or the max() spend logic; a failure here must not take down the
+  // provider page, so it degrades to null.
+  const compliance = await getProviderComplianceSummary({
+    id: provider.id,
+    name: provider.name,
+    type: provider.type,
+  }).catch((error) => {
+    console.error("[providers] compliance summary failed:", error);
+    return null;
+  });
   const decryptedKey = decryptKey(apiKey);
   const adapterConfig = serverConfig(config, secretConfig);
   const billingAccount = projectProviderBillingAccountMatches([
@@ -289,6 +301,7 @@ export async function GET(
     // CostCoverageCaveat in adapters/helpers.ts for why these must not be
     // conflated.
     costCoverageCaveat,
+    compliance,
     alerts,
     estimatedMonthlyCostUsd: alertState.estimatedMonthlyCostUsd,
     spentUsd: canonicalBudget?.spentUsd ?? latestSnapshot?.totalCost ?? 0,

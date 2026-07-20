@@ -18,6 +18,7 @@ import type {
 } from "@/components/ProviderCard";
 import type { SubscriptionRow } from "@/components/SubscriptionsPanel";
 import SortHeader, { type SortDirection } from "@/components/table/SortHeader";
+import { costCoverageHelpText } from "@/lib/cost-coverage-help";
 import { providerFinancialSemantics } from "@/lib/provider-financial-semantics";
 import { aggregateProviderFamilyMoney } from "@/lib/provider-money-aggregation";
 import { canonicalProviderKey } from "@/lib/provider-identity";
@@ -355,6 +356,19 @@ function costCoverageLabel(family: ProviderFamily): string {
   }
 }
 
+/** Plain-language tooltip to pair with `costCoverageLabel` above - same
+ * "Complete"/"Partial"/"Unknown" branching, but returning the coverage kind
+ * `costCoverageHelpText` expects rather than the short display label. Null
+ * for the "Account identity unresolved" case, which isn't one of the four
+ * cost-coverage states and has its own explanation in the UI already. */
+function familyCostCoverageKind(family: ProviderFamily): ProviderCostCoverage | null {
+  if (!family.financialsAggregated) return null;
+  if (family.providers.length > 1 && family.incompleteCostCount > 0) {
+    return "partial";
+  }
+  return family.providers[0]?.spendCoverage ?? "unknown";
+}
+
 function childLabel(provider: WorkspaceProvider): string {
   return provider.label || provider.keyPreview || provider.displayName;
 }
@@ -583,7 +597,14 @@ function CompactFamilyCells({
       : family.projectedUsd != null
         ? `${formatCurrency(family.projectedUsd)} projected`
         : "Projection unavailable";
-  const spendTitle = `${budgetOrProjectionText} · Coverage: ${costCoverageLabel(family)}`;
+  const coverageKind = familyCostCoverageKind(family);
+  const spendTitle = [
+    budgetOrProjectionText,
+    `Coverage: ${costCoverageLabel(family)}`,
+    coverageKind && coverageKind !== "complete" ? costCoverageHelpText(coverageKind) : null,
+  ]
+    .filter(Boolean)
+    .join(" · ");
 
   const creditsBalanceTitle = `${financialSemantics.creditsLabel} ${formatNumber(family.credits)} · ${financialSemantics.balanceLabel} ${formatCurrency(family.balance)}`;
 
@@ -798,11 +819,17 @@ function ComfortableFamilyCells({
             </p>
           </>
         )}
-        <span className={`mt-1 inline-flex rounded-full px-2 py-0.5 text-[11px] font-medium ${
-          family.financialsAggregated && family.incompleteCostCount === 0
-            ? "bg-emerald-50 text-emerald-700 dark:bg-emerald-950/60 dark:text-emerald-300"
-            : "bg-amber-50 text-amber-800 dark:bg-amber-950/60 dark:text-amber-300"
-        }`}>
+        <span
+          className={`mt-1 inline-flex rounded-full px-2 py-0.5 text-[11px] font-medium ${
+            family.financialsAggregated && family.incompleteCostCount === 0
+              ? "bg-emerald-50 text-emerald-700 dark:bg-emerald-950/60 dark:text-emerald-300"
+              : "bg-amber-50 text-amber-800 dark:bg-amber-950/60 dark:text-amber-300"
+          }`}
+          title={(() => {
+            const kind = familyCostCoverageKind(family);
+            return kind && kind !== "complete" ? costCoverageHelpText(kind) : undefined;
+          })()}
+        >
           {costCoverageLabel(family)}
         </span>
         {family.costCoverageCaveatCount > 0 && (

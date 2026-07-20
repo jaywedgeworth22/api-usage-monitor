@@ -14,7 +14,13 @@ import type {
   ProviderCostCoverageCaveat,
 } from "@/components/ProviderCard";
 import { usageUnitLabelForProvider } from "@/lib/provider-definitions";
+import { useDisplayDensity } from "@/lib/display-density";
+import { costCoverageHelpText } from "@/lib/cost-coverage-help";
 import { CostCoverageCaveatBanner, spendCoverageNoteText } from "./cost-coverage-caveat";
+import {
+  ComplianceSummaryPanel,
+  type ProviderComplianceSummaryView,
+} from "./compliance-summary";
 
 interface Provider {
   id: string;
@@ -66,6 +72,7 @@ interface Provider {
   pushedUnclassifiedCostEventCount: number;
   spendCoverage: ProviderCostCoverage;
   costCoverageCaveat?: ProviderCostCoverageCaveat | null;
+  compliance?: ProviderComplianceSummaryView | null;
   subscriptionMonthToDateUsd?: number;
   fixedAccruedUsd?: number;
   linkedFixedDedupeUsd?: number;
@@ -128,6 +135,7 @@ export default function ProviderDetailPage() {
   const [snapshotPage, setSnapshotPage] = useState(1);
   const loadedOnce = useRef(false);
   const hasProviderData = useRef(false);
+  const density = useDisplayDensity();
 
   const fetchData = useCallback(async () => {
     if (loadedOnce.current && hasProviderData.current) setRefreshing(true);
@@ -352,8 +360,33 @@ export default function ProviderDetailPage() {
             className="text-lg font-semibold"
           />
         </div>
-        <div className="rounded-xl border border-gray-200 bg-white p-4 dark:border-gray-700 dark:bg-gray-800">
-          <p className="mb-1 text-xs text-gray-500 dark:text-gray-400">
+        <div
+          className="rounded-xl border border-gray-200 bg-white p-4 dark:border-gray-700 dark:bg-gray-800"
+          title={
+            density === "compact"
+              ? [
+                  provider.snapshotCostFetchedAt
+                    ? `Cost snapshot fetched ${new Date(provider.snapshotCostFetchedAt).toLocaleString()}`
+                    : null,
+                  spendCoverage === "partial" && unpricedEventCount > 0
+                    ? `${unpricedEventCount} unpriced event${unpricedEventCount === 1 ? "" : "s"}`
+                    : !hasKnownSpend && unpricedEventCount > 0
+                      ? `${unpricedEventCount} usage event${unpricedEventCount === 1 ? "" : "s"} without cost`
+                      : spendCoverageNoteText(spendCoverage, provider.costCoverageCaveat),
+                ]
+                  .filter(Boolean)
+                  .join(" · ")
+              : undefined
+          }
+        >
+          <p
+            className="mb-1 text-xs text-gray-500 dark:text-gray-400"
+            title={
+              spendCoverage === "complete"
+                ? undefined
+                : costCoverageHelpText(spendCoverage)
+            }
+          >
             {spendCoverage === "partial"
               ? "Known spend this month"
               : "Tracked spend this month"}
@@ -361,32 +394,45 @@ export default function ProviderDetailPage() {
           <p className="text-lg font-semibold text-amber-600 dark:text-amber-300">
             {hasKnownSpend ? formatUsd(canonicalSpendUsd) : "Cost not reported"}
           </p>
-          {provider.snapshotCostFetchedAt && (
-            <p className="text-[10px] text-gray-500 dark:text-gray-400">
-              Cost snapshot fetched {new Date(provider.snapshotCostFetchedAt).toLocaleString()}
-            </p>
-          )}
-          {spendCoverage === "partial" && unpricedEventCount > 0 ? (
-            <p className="text-[10px] text-amber-600 dark:text-amber-300">
-              {unpricedEventCount} unpriced event{unpricedEventCount === 1 ? "" : "s"}
-            </p>
-          ) : !hasKnownSpend && unpricedEventCount > 0 ? (
-            <p className="text-[10px] text-amber-600 dark:text-amber-300">
-              {unpricedEventCount} usage event{unpricedEventCount === 1 ? "" : "s"} without cost
-            </p>
-          ) : (
-            <p
-              className={`text-[10px] ${
-                provider.costCoverageCaveat
-                  ? "text-orange-600 dark:text-orange-300"
-                  : "text-gray-500 dark:text-gray-400"
-              }`}
-            >
-              {spendCoverageNoteText(spendCoverage, provider.costCoverageCaveat)}
-            </p>
+          {density === "comfortable" && (
+            <>
+              {provider.snapshotCostFetchedAt && (
+                <p className="text-[10px] text-gray-500 dark:text-gray-400">
+                  Cost snapshot fetched {new Date(provider.snapshotCostFetchedAt).toLocaleString()}
+                </p>
+              )}
+              {spendCoverage === "partial" && unpricedEventCount > 0 ? (
+                <p className="text-[10px] text-amber-600 dark:text-amber-300">
+                  {unpricedEventCount} unpriced event{unpricedEventCount === 1 ? "" : "s"}
+                </p>
+              ) : !hasKnownSpend && unpricedEventCount > 0 ? (
+                <p className="text-[10px] text-amber-600 dark:text-amber-300">
+                  {unpricedEventCount} usage event{unpricedEventCount === 1 ? "" : "s"} without cost
+                </p>
+              ) : (
+                <p
+                  className={`text-[10px] ${
+                    provider.costCoverageCaveat
+                      ? "text-orange-600 dark:text-orange-300"
+                      : "text-gray-500 dark:text-gray-400"
+                  }`}
+                >
+                  {spendCoverageNoteText(spendCoverage, provider.costCoverageCaveat)}
+                </p>
+              )}
+            </>
           )}
         </div>
-        <div className="rounded-xl border border-gray-200 bg-white p-4 dark:border-gray-700 dark:bg-gray-800">
+        <div
+          className="rounded-xl border border-gray-200 bg-white p-4 dark:border-gray-700 dark:bg-gray-800"
+          title={
+            density === "compact"
+              ? spendCoverage === "partial"
+                ? "excludes unpriced usage"
+                : provider.billingMode
+              : undefined
+          }
+        >
           <p className="mb-1 text-xs text-gray-500 dark:text-gray-400">
             {spendCoverage === "partial"
               ? "Known-cost projection"
@@ -397,9 +443,11 @@ export default function ProviderDetailPage() {
               ? formatUsd(provider.projectedEomUsd ?? provider.estimatedMonthlyCostUsd)
               : "Unavailable"}
           </p>
-          <p className="text-[10px] uppercase text-gray-400 dark:text-gray-500">
-            {spendCoverage === "partial" ? "excludes unpriced usage" : provider.billingMode}
-          </p>
+          {density === "comfortable" && (
+            <p className="text-[10px] uppercase text-gray-400 dark:text-gray-500">
+              {spendCoverage === "partial" ? "excludes unpriced usage" : provider.billingMode}
+            </p>
+          )}
         </div>
         {hasCredits && (
           <div className="rounded-xl border border-gray-200 bg-white p-4 dark:border-gray-700 dark:bg-gray-800">
@@ -465,6 +513,8 @@ export default function ProviderDetailPage() {
           <p className="mt-4 text-xs text-gray-500 dark:text-gray-400">{provider.plan.notes}</p>
         )}
       </div>
+
+      <ComplianceSummaryPanel compliance={provider.compliance ?? null} />
 
       <details className="rounded-xl border border-gray-200 bg-white dark:border-gray-700 dark:bg-gray-800">
         <summary className="cursor-pointer px-4 py-3 text-sm font-semibold text-gray-700 hover:bg-gray-50 dark:text-gray-200 dark:hover:bg-gray-700/40">

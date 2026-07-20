@@ -4,6 +4,8 @@ import { isExternalBillingStale } from "@/components/ExternalBillingDetails";
 import ProviderIntegrationInfo, { publicConfigFieldNames } from "@/components/ProviderIntegrationInfo";
 import { getProviderIntegrationProfile } from "@/lib/provider-integration-catalog";
 import SortHeader, { type SortDirection } from "@/components/table/SortHeader";
+import { useDisplayDensity } from "@/lib/display-density";
+import { costCoverageHelpText } from "@/lib/cost-coverage-help";
 
 interface ProviderTableProps {
   providers: Provider[];
@@ -211,6 +213,7 @@ export default function ProviderTable({
   const [sortField, setSortField] = useState<SortField>("name");
   const [sortDirection, setSortDirection] = useState<SortDirection>("asc");
   const [collapsedGroups, setCollapsedGroups] = useState<Record<string, boolean>>({});
+  const density = useDisplayDensity();
 
   const toggleGroup = (type: string) => {
     setCollapsedGroups(prev => ({ ...prev, [type]: !prev[type] }));
@@ -381,7 +384,14 @@ export default function ProviderTable({
                             {category} <span className="font-normal normal-case opacity-75">({groupProviders.length})</span>
                           </span>
                         </div>
-                        <span className="text-xs font-medium text-gray-500 dark:text-gray-400">
+                        <span
+                          className="text-xs font-medium text-gray-500 dark:text-gray-400"
+                          title={
+                            incompleteGroupCount > 0
+                              ? costCoverageHelpText("partial")
+                              : undefined
+                          }
+                        >
                           {incompleteGroupCount > 0 ? "Known group spend" : "Group spend"}: {formatUsd(groupSpend)} {groupBudget > 0 && ` / ${formatUsd(groupBudget)}`}
                           {incompleteGroupCount > 0
                             ? ` · ${incompleteGroupCount} incomplete`
@@ -416,7 +426,13 @@ export default function ProviderTable({
                         className="border-b border-gray-50 dark:border-gray-800 hover:bg-gray-50 dark:hover:bg-gray-800/50 transition-colors"
                       >
                 <td data-label="Name" className="px-6 py-4">
-                  <div>
+                  <div
+                    title={
+                      density === "compact"
+                        ? [provider.name, provider.label].filter(Boolean).join(" · ")
+                        : undefined
+                    }
+                  >
                     <ProviderIntegrationInfo
                       providerName={provider.name}
                       providerType={provider.type}
@@ -443,9 +459,13 @@ export default function ProviderTable({
                         geminiMonitoringStatus: provider.geminiMonitoringStatus,
                       }}
                     />
-                    <p className="text-xs text-gray-400 dark:text-gray-500">{provider.name}</p>
-                    {provider.label && (
-                      <p className="mt-0.5 text-xs text-gray-500 dark:text-gray-400">{provider.label}</p>
+                    {density === "comfortable" && (
+                      <>
+                        <p className="text-xs text-gray-400 dark:text-gray-500">{provider.name}</p>
+                        {provider.label && (
+                          <p className="mt-0.5 text-xs text-gray-500 dark:text-gray-400">{provider.label}</p>
+                        )}
+                      </>
                     )}
                     {provider.credentialManagement && (
                       <span className="mt-1 inline-flex rounded border border-blue-200 bg-blue-50 px-1.5 py-0.5 text-[10px] font-medium text-blue-700 dark:border-blue-900 dark:bg-blue-950/60 dark:text-blue-300">
@@ -500,56 +520,106 @@ export default function ProviderTable({
                   </div>
                 </td>
                 <td data-label="Spend / Budget" className="px-6 py-4">
-                  <div className="text-xs">
-                    <p className="font-medium text-gray-900 dark:text-gray-100">
-                      {spendCoverage === "unknown" || spendCoverage === "legacy_unknown"
-                        ? "Cost not reported"
-                        : `${formatUsd(knownSpendUsd(provider))}${spendCoverage === "partial" ? " known" : ""} MTD`}
-                    </p>
-                    {spendCoverage === "complete" && provider.projectedEomUsd != null ? (
-                      <p className="text-gray-600 dark:text-gray-300">Projected {formatUsd(provider.projectedEomUsd)}</p>
-                    ) : spendCoverage === "partial" && provider.projectedEomUsd != null ? (
-                      <p className="text-gray-600 dark:text-gray-300">
-                        Known-cost projection {formatUsd(provider.projectedEomUsd)}
-                      </p>
-                    ) : (
-                      <p className="text-gray-500 dark:text-gray-400">Projection unavailable</p>
-                    )}
-                    {provider.snapshotCostFetchedAt && (
-                      <p className="text-[10px] text-gray-500 dark:text-gray-400">
-                        Cost snapshot fetched {new Date(provider.snapshotCostFetchedAt).toLocaleString()}
-                      </p>
-                    )}
-                    {spendCoverage === "partial" && unpricedCount > 0 && (
-                      <p className="text-amber-600 dark:text-amber-300">
-                        {unpricedCount} unpriced event{unpricedCount === 1 ? "" : "s"}
-                      </p>
-                    )}
-                    {(spendCoverage === "unknown" || spendCoverage === "legacy_unknown") &&
-                      unpricedCount > 0 && (
-                        <p className="text-amber-600 dark:text-amber-300">
-                          {unpricedCount} usage event{unpricedCount === 1 ? "" : "s"} without cost
+                  {(() => {
+                    // Compact mode shows only the amount + budget lines; every
+                    // other detail below is folded into this title instead of
+                    // being dropped, so it's still reachable on hover/focus.
+                    const projectionText =
+                      spendCoverage === "complete" && provider.projectedEomUsd != null
+                        ? `Projected ${formatUsd(provider.projectedEomUsd)}`
+                        : spendCoverage === "partial" && provider.projectedEomUsd != null
+                          ? `Known-cost projection ${formatUsd(provider.projectedEomUsd)}`
+                          : "Projection unavailable";
+                    const detailParts = [projectionText];
+                    if (provider.snapshotCostFetchedAt) {
+                      detailParts.push(
+                        `Cost snapshot fetched ${new Date(provider.snapshotCostFetchedAt).toLocaleString()}`
+                      );
+                    }
+                    if (spendCoverage === "partial" && unpricedCount > 0) {
+                      detailParts.push(`${unpricedCount} unpriced event${unpricedCount === 1 ? "" : "s"}`);
+                    } else if (
+                      (spendCoverage === "unknown" || spendCoverage === "legacy_unknown") &&
+                      unpricedCount > 0
+                    ) {
+                      detailParts.push(`${unpricedCount} usage event${unpricedCount === 1 ? "" : "s"} without cost`);
+                    }
+                    detailParts.push(`Billing mode: ${provider.billingMode}`);
+                    if (connectedBilling) {
+                      detailParts.push(
+                        `Provider billing: ${billingRecordCount} record${billingRecordCount === 1 ? "" : "s"} · ${connectedBilling.serviceName || connectedBilling.planName || connectedBilling.kind}${connectedBilling.status ? ` · ${connectedBilling.status}` : ""}${staleBillingCount > 0 ? ` · ${staleBillingCount} stale` : ""}`
+                      );
+                    }
+                    const compactDetailTitle = detailParts.join(" · ");
+
+                    return (
+                      <div className="text-xs" title={density === "compact" ? compactDetailTitle : undefined}>
+                        <p
+                          className="font-medium text-gray-900 dark:text-gray-100"
+                          title={
+                            spendCoverage === "complete"
+                              ? undefined
+                              : costCoverageHelpText(spendCoverage)
+                          }
+                        >
+                          {spendCoverage === "unknown" || spendCoverage === "legacy_unknown"
+                            ? "Cost not reported"
+                            : `${formatUsd(knownSpendUsd(provider))}${spendCoverage === "partial" ? " known" : ""} MTD`}
                         </p>
-                      )}
-                    {provider.costCoverageCaveat && (
-                      <p className="mt-1 font-medium text-orange-700 dark:text-orange-300">
-                        Cost coverage gap: {provider.costCoverageCaveat.message}
-                      </p>
-                    )}
-                    <p className="text-gray-600 dark:text-gray-300">
-                      Budget {formatUsd(provider.plan?.monthlyBudgetUsd)}
-                    </p>
-                    <span className="mt-1 inline-flex rounded bg-gray-100 px-1.5 py-0.5 text-[10px] font-medium uppercase text-gray-500 dark:bg-gray-700 dark:text-gray-300">
-                      {provider.billingMode}
-                    </span>
-                    {connectedBilling && (
-                      <p className="mt-1 text-[10px] font-medium text-blue-700 dark:text-blue-300">
-                        Provider billing: {billingRecordCount} record{billingRecordCount === 1 ? "" : "s"} · {connectedBilling.serviceName || connectedBilling.planName || connectedBilling.kind}
-                        {connectedBilling.status ? ` · ${connectedBilling.status}` : ""}
-                        {staleBillingCount > 0 ? ` · ${staleBillingCount} stale` : ""}
-                      </p>
-                    )}
-                  </div>
+                        {density === "comfortable" && (
+                          <>
+                            <p className="text-gray-600 dark:text-gray-300">{projectionText}</p>
+                            {provider.snapshotCostFetchedAt && (
+                              <p className="text-[10px] text-gray-500 dark:text-gray-400">
+                                Cost snapshot fetched {new Date(provider.snapshotCostFetchedAt).toLocaleString()}
+                              </p>
+                            )}
+                            {spendCoverage === "partial" && unpricedCount > 0 && (
+                              <p className="text-amber-600 dark:text-amber-300">
+                                {unpricedCount} unpriced event{unpricedCount === 1 ? "" : "s"}
+                              </p>
+                            )}
+                            {(spendCoverage === "unknown" || spendCoverage === "legacy_unknown") &&
+                              unpricedCount > 0 && (
+                                <p className="text-amber-600 dark:text-amber-300">
+                                  {unpricedCount} usage event{unpricedCount === 1 ? "" : "s"} without cost
+                                </p>
+                              )}
+                          </>
+                        )}
+                        {provider.costCoverageCaveat &&
+                          (density === "compact" ? (
+                            <p
+                              className="mt-1 font-medium text-orange-700 dark:text-orange-300"
+                              title={provider.costCoverageCaveat.message}
+                            >
+                              Coverage gap
+                            </p>
+                          ) : (
+                            <p className="mt-1 font-medium text-orange-700 dark:text-orange-300">
+                              Cost coverage gap: {provider.costCoverageCaveat.message}
+                            </p>
+                          ))}
+                        <p className="text-gray-600 dark:text-gray-300">
+                          Budget {formatUsd(provider.plan?.monthlyBudgetUsd)}
+                        </p>
+                        {density === "comfortable" && (
+                          <>
+                            <span className="mt-1 inline-flex rounded bg-gray-100 px-1.5 py-0.5 text-[10px] font-medium uppercase text-gray-500 dark:bg-gray-700 dark:text-gray-300">
+                              {provider.billingMode}
+                            </span>
+                            {connectedBilling && (
+                              <p className="mt-1 text-[10px] font-medium text-blue-700 dark:text-blue-300">
+                                Provider billing: {billingRecordCount} record{billingRecordCount === 1 ? "" : "s"} · {connectedBilling.serviceName || connectedBilling.planName || connectedBilling.kind}
+                                {connectedBilling.status ? ` · ${connectedBilling.status}` : ""}
+                                {staleBillingCount > 0 ? ` · ${staleBillingCount} stale` : ""}
+                              </p>
+                            )}
+                          </>
+                        )}
+                      </div>
+                    );
+                  })()}
                 </td>
                 <td data-label="Alerts" className="px-6 py-4">
                   {alertCounts.open > 0 ? (

@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { costCoverageHelpText } from "@/lib/cost-coverage-help";
 
 export type ExternalCostCoverage = "complete" | "partial" | "unknown" | "legacy_unknown";
 
@@ -103,7 +104,14 @@ export default function ExternalTelemetryPanel({ usageSummary }: ExternalTelemet
           <p className="text-[10px] font-medium uppercase tracking-wide text-gray-500 dark:text-gray-400">
             Tracked cash spend
           </p>
-          <p className="text-sm font-semibold text-gray-900 dark:text-gray-100">
+          <p
+            className="text-sm font-semibold text-gray-900 dark:text-gray-100"
+            title={
+              usageSummary.costCoverage === "complete"
+                ? undefined
+                : costCoverageHelpText(usageSummary.costCoverage)
+            }
+          >
             {costLabel(
               externalCost,
               usageSummary.costCoverage,
@@ -215,7 +223,14 @@ export default function ExternalTelemetryPanel({ usageSummary }: ExternalTelemet
                           ? usd.format(group.estimatedApiEquivalentUsd)
                           : new Intl.NumberFormat("en-US").format(displayedUsage)}
                       </p>
-                      <p className="text-xs text-gray-500 dark:text-gray-400">
+                      <p
+                        className="text-xs text-gray-500 dark:text-gray-400"
+                        title={
+                          !hasReceiptCash && !hasEstimatedApiEquivalent && group.costCoverage !== "complete"
+                            ? costCoverageHelpText(group.costCoverage)
+                            : undefined
+                        }
+                      >
                         {hasReceiptCash
                           ? "Receipt cash paid · max-reconciled with observed usage"
                           : hasEstimatedApiEquivalent
