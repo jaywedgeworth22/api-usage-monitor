@@ -1,4 +1,5 @@
 import { calculateEomForecast } from "@/lib/forecasting";
+import { type AnomalyResult, describeAnomaly } from "@/lib/anomaly-detection";
 import { isSubscriptionInterval, rollForwardRenewal } from "@/lib/subscriptions";
 
 export type AlertSeverity = "critical" | "warning" | "info";
@@ -19,7 +20,11 @@ export interface ProviderAlert {
     | "stale_snapshot"
     | "missing_snapshot"
     | "unconfigured_budget"
-    | "usage_reconciliation_discrepancy";
+    | "usage_reconciliation_discrepancy"
+    // Statistical spike/anomaly alerts (see anomaly-detection.ts). Consumed by
+    // the generic providerId:code alert-delivery machinery like any other code.
+    | "spend_anomaly"
+    | "request_anomaly";
   severity: AlertSeverity;
   message: string;
 }
@@ -59,6 +64,11 @@ export interface ProviderAlertInput {
   // must not be linearly extrapolated to month end.
   fixedAccruedUsd?: number;
   reconciliationDiscrepancyUsd?: number | null;
+  // Pre-computed statistical anomalies (see anomaly-detection.ts /
+  // anomaly-loader.ts). The detector runs upstream; this layer only maps each
+  // structured result into an alert so the existing persistence/delivery/dedup
+  // machinery carries it. Absent for callers that do not run detection.
+  anomalies?: AnomalyResult[];
 }
 
 export interface ProviderAlertState {
@@ -261,6 +271,17 @@ export function buildProviderAlertState(
       code: "usage_reconciliation_discrepancy",
       severity: "warning",
       message: `Usage reconciliation discrepancy of ${formatUsd(input.reconciliationDiscrepancyUsd)} detected.`,
+    });
+  }
+
+  // Emit statistical spike/anomaly alerts from pre-computed detector results.
+  // The heavy lifting (baseline, robustness, thresholds) lives in
+  // anomaly-detection.ts; here we only translate each result into an alert.
+  for (const anomaly of input.anomalies ?? []) {
+    alerts.push({
+      code: anomaly.metric === "requests" ? "request_anomaly" : "spend_anomaly",
+      severity: anomaly.severity,
+      message: describeAnomaly(anomaly),
     });
   }
 
