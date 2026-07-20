@@ -453,6 +453,21 @@ const CREDENTIAL_MAPPINGS: readonly CredentialMapping[] = [
       secretConfig: { privateKey: values.get("OCI_API_SIGNING_PRIVATE_KEY") ?? "" },
     }),
   },
+  {
+    scope: "shared",
+    providerName: "coolify",
+    attempts: [{
+      source: "shared",
+      required: ["COOLIFY_API_TOKEN"],
+      optional: ["COOLIFY_HOST"],
+    }],
+    build: (values) => ({
+      apiKey: values.get("COOLIFY_API_TOKEN"),
+      ...(values.get("COOLIFY_HOST")
+        ? { publicConfig: { host: values.get("COOLIFY_HOST")! } }
+        : {}),
+    }),
+  },
 ] as const;
 
 // ---------------------------------------------------------------------------
@@ -498,6 +513,8 @@ const SECRET_NAME_TO_PROVIDER: ReadonlyMap<string, string> = new Map<string, str
   ["OCI_API_SIGNING_PRIVATE_KEY", "oracle"],
   ["OCI_REGION", "oracle"],
   ["OCI_COMPARTMENT_OCID", "oracle"],
+  ["COOLIFY_API_TOKEN", "coolify"],
+  ["COOLIFY_HOST", "coolify"],
   // Vector DB
   ["PINECONE_API_KEY", "pinecone"],
   ["VOYAGE_API_KEY", "voyage"],

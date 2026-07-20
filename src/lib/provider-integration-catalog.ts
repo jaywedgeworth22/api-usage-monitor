@@ -409,6 +409,18 @@ const CATALOG: Record<CatalogProviderName, ProviderIntegrationProfile> = {
     limitations: ["Non-USD plan prices remain in their owner currency and are never mislabeled as USD; discounts, tax, and accrued invoice totals are unavailable.", "Automatic backup images are not priced again because the server backup add-on already represents that charge."],
     source: "src/lib/adapters/hetzner.ts",
   }),
+  coolify: defineProfile({
+    name: "coolify", displayName: "Coolify", category: "Infrastructure", mode: "health-only",
+    summary: "Reads server reachability/usability and application deployment status from a Coolify instance's REST API; this is service-health monitoring of self-hosted infrastructure, not a third-party billing account.",
+    reads: ["Account-wide server inventory with reachability/usability flags.", "Account-wide application inventory with Docker-derived deployment status (running/exited/restarting plus health).", "Best-effort per-server resource inventory (applications, databases, services and their status) via one bounded request per discovered server."],
+    stores: ["Minimized server/application identity, reachability, and up/down/degraded status derived from the documented status string; environment variables, git contents, logs, and deployment payloads are never requested."],
+    credentialInputs: ["Coolify API token (Bearer) with read access.", "Optional instance host; defaults to Coolify Cloud, set explicitly for a self-hosted instance."],
+    billing: { visibility: "none", summary: "Coolify is a self-hosted PaaS control plane and exposes no cost, invoice, or subscription API to this connector; there is no billing state to sync." },
+    canAdd: ["Authenticated resource-usage metrics could be added if Coolify documents a REST endpoint for its Sentinel-collected CPU/memory/disk data."],
+    cannotAdd: ["Live CPU/memory/disk utilization is pushed by Coolify's optional Sentinel agent directly into the instance's own database and is not exposed by any documented GET endpoint, so it cannot be read without an undocumented integration."],
+    limitations: ["A configured self-hosted host is treated as an untrusted, SSRF-checked outbound URL.", "Per-server resource detail is capped and best-effort: a failure or an account past the server cap only downgrades that optional detail, never the core server/application health snapshot.", "An application with a null/empty status has never been deployed and is reported as not-yet-deployed rather than down."],
+    source: "src/lib/adapters/coolify.ts",
+  }),
   apify: defineProfile({
     name: "apify", displayName: "Apify", category: "Data", mode: "direct",
     summary: "Reads billing cycle, usage USD, maximum usage, active plan, base price, and included credits.",

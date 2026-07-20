@@ -64,6 +64,7 @@ async function loadAdapters() {
     import("./vercel"),
     import("./render"),
     import("./oracle"),
+    import("./coolify"),
   ]);
 
   const [
@@ -85,6 +86,7 @@ async function loadAdapters() {
     vercel,
     render,
     oracle,
+    coolify,
   ] = modules;
 
   // Keep the Add Provider catalog and poll registry compile-time exhaustive.
@@ -128,6 +130,7 @@ async function loadAdapters() {
     robinhood: robinhood.fetchUsage,
     alpaca: alpaca.fetchUsage,
     oracle: oracle.fetchUsage,
+    coolify: coolify.fetchUsage,
   };
   Object.assign(adapters, builtInAdapters);
 
