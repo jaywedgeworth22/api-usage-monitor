@@ -48,7 +48,7 @@
     "react-dom": "^19.0.0",
     "react-is": "^19.0.0",
     "recharts": "^3.9.2",
-    "uuid": "^11.0.0"
+    "uuid": "^14.0.1"
   },
   "devDependencies": {
     "@cloudflare/vitest-pool-workers": "0.18.6",
