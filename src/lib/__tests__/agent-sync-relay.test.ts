@@ -54,7 +54,8 @@ describe("agent-sync-relay adapter", () => {
     });
 
     expect(res.balance).toBeNull();
-    expect(res.totalCost).toBe(0);
+    expect(res.totalCost).toBeNull();
+    expect(res.costScope).toBe("unknown");
     expect(res.totalRequests).toBeNull();
     expect(res.rawData).toEqual({
       status: "UP",

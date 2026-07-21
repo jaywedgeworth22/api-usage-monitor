@@ -417,11 +417,13 @@ describe("project attribution (integration)", () => {
       spentUsd: 30,
       projectedEomUsd: 30,
     });
+    // Prepaid receipts are funding, not residual consumption — residual
+    // allocation after direct-tagged usage is zero (Wave A money trust).
     expect(status.projects.find((row) => row.id === allocatedProject.id)).toMatchObject({
       directUsd: 0,
-      allocatedUsd: 17.25,
-      spentUsd: 17.25,
-      projectedEomUsd: 17.25,
+      allocatedUsd: 0,
+      spentUsd: 0,
+      projectedEomUsd: 0,
     });
   });
 
