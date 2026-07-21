@@ -711,6 +711,77 @@ Protocol: /Users/jay/apps/EFFORT-LOG-PROTOCOL.md (canonical). Live board: this f
   _2026-07-13 diagnostic update (CODEX): confirmed Congress's live doubled ingest path returns 404, both producers omit many cost/project fields, pushed provider names do not match canonical monitor rows, and historical spend was never backfilled. Live Render was also 18 commits behind `origin/main`; owner-directed auto-deploy was changed from Off to On Commit and verified, but the setting change did not trigger a retroactive deploy. No app code, database, or manual deploy change in this diagnostic lane._
 ## Planned / Reserved
 
+- **GROK3 multi-expert full-app review (read-only) — COMPLETE 2026-07-20 / AUDIT FILED.** 14 specialist lanes; report `docs/audits/2026-07-20-grok3-full-app-expert-review.md`. Planned implement tasks reserved under Planned as GROK3-A*…E* (waves A–E). Headline P0s: money trust (unknown→$0, chart≠KPI, plan+subscription double-count, receipt-as-spend), iOS budget unit mix, producer retry storms, Oracle deploy wedge / backup ready env-lie. No code product fixes in the review commit itself.
+_Source: `docs/audits/2026-07-20-grok3-full-app-expert-review.md` (14 specialist lanes). Status: PLANNED / NOT STARTED unless noted. Unassigned — claim in #agent-sync. Waves A–E are recommended implementation order._
+
+#### Wave A — Money trust (P0)
+- **[GROK3-A1] Never coerce unknown/incomplete spend to $0 in portfolio, providers API, or hero totals (P0, M) — PLANNED.** Fail closed: `spentUsd: null` + incomplete counters; no `?? 0` inventing complete zeros. Files: `src/lib/provider-money-aggregation.ts`, `src/app/api/providers/route.ts`, summary cards / workspace spend labels. Evidence: audit P0 #1.
+- **[GROK3-A2] Align charts with family-safe KPI aggregation (P0, S) — PLANNED.** Projected-cost pie (and any portfolio charts) must use the same family/portfolio money aggregate as summary KPIs; incomplete/ambiguous footnotes. File: `src/components/DashboardCharts.tsx` vs `page.tsx`. Evidence: audit P0 #2.
+- **[GROK3-A3] Channel-scope-aware merge instead of blind max(); split prepaid receipt funding vs consumption (P0, L) — PLANNED.** Only `max()` when channel scopes nest; otherwise sum or fail to partial. Default budget/alerts on usage consumption; receipts as separate prepaid funding. File: `src/lib/budget-status.ts`. Evidence: audit P0 #3.
+- **[GROK3-A4] Hard-block or auto-suppress Plan fixed fee + Subscription double-count (P0, M) — PLANNED.** Refuse saving both, or exclude plan fixed from `spentUsd` when subscription events exist; relabel “Plan price / mo”; escalate `fixed_cost_conflict` beyond warning-only. Files: `budget-status.ts`, `AddProviderModal.tsx`, `POST /api/subscriptions`, `billing-inventory.ts`. Evidence: audit P0 #4 / money-path H1–H2.
+- **[GROK3-A5] Snapshot eligibility: require MTD-compatible costScope/window; kill health-check complete $0 (P0, S) — PLANNED.** Ignore unknown-scope totals for cash; agent-sync-relay `totalCost: null`. Files: `budget-status.ts`, `adapters/agent-sync-relay.ts`. Evidence: LLM cost P0 #3.
+- **[GROK3-A6] Family row coverage/budget correctness (P1, S) — PLANNED.** “Known” suffix from any incomplete member; multi-key family budget display (sum or multi-badge). File: `DashboardProviderWorkspace.tsx`.
+
+#### Wave B — iOS money correctness (P0)
+- **[GROK3-B1] iOS Overview/widget account totals from providers, not project summary mix (P0, M) — PLANNED.** Hero meter must not mix `totalSpentUsd` (providers) with project `totalBudgetUsd`/`overBudget`. Files: iOS `DashboardViewData.swift`, hero/widget builders; possibly clarify server `budget-status` summary contract. Evidence: audit P0 #5 / iOS P0.1.
+- **[GROK3-B2] Quarantine or remove local-only project budget edit (P0, S) — PLANNED.** Do not present Save as real server write until mutation API exists. File: `ProjectBudgetEditing.swift` / project UI.
+- **[GROK3-B3] Sign-out clears BudgetDiskCache, SharedStore, widget snapshot (P0, S) — PLANNED.** `SettingsViewModel.removeToken` must wipe money state.
+- **[GROK3-B4] Widget empty state must not show fabricated spend (P1, S) — PLANNED.** Distinct connect/empty snapshot; curated numbers only for gallery preview.
+- **[GROK3-B5] Reload WidgetKit timelines on successful budget sink; host-aware background client (P1, S) — PLANNED.** Files: `OfflineCacheSnapshotSink`, `BackgroundRefreshManager` / `AppDelegate`.
+- **[GROK3-B6] Provider-scoped alert notifications + dedupe keys (P1, S) — PLANNED.** Include provider identity in title/id.
+- **[GROK3-B7] iOS staleness banners + fetch coalescing + subscriptions read UI (P2, M) — PLANNED.** Wire `BudgetStaleness`; single in-flight `BudgetStore` fetch; surface `APIClient.subscriptions()`.
+- **[GROK3-B8] Refresh stale iOS ARCHITECTURE-CONTRACT.md (P3, S) — PLANNED.** Features are real; doc still says placeholders.
+
+#### Wave C — Storms, producers, ops monitors (P0/P1)
+- **[GROK3-C1] Producer retry-storm contract (ST/CT/OTLP wrappers) (P0, L, cross-repo) — PLANNED.** Honor Retry-After; exponential backoff + circuit breaker; treat HTTP 202 as success regardless of `accepted`; never spin on `accepted: 0`. Cross-board rows on Socratic.Trade / Congress.Trade / shared as needed. Evidence: historical OOM→35rps overage.
+- **[GROK3-C2] Lengthen server 429 Retry-After on ingest/OTLP rate limits (P0, S) — PLANNED.** Raise from 1s to ≥5–30s when enabled; prefer auth-identity buckets over shared CF IP alone. Files: `otlp/v1/metrics/route.ts`, ingest usage route, `rate-limit.ts`.
+- **[GROK3-C3] Oracle auto-deploy wedge + false-green observer (P0, M) — PLANNED.** Alert on blocked-sha / revision lag vs main / all-writers-stopped; GH observer must not exit 0 solely on supersede without live SHA. Files: `deploy/oracle/auto-deploy.sh`, `.github/workflows/oracle-production-deploy.yml`. Effort log already notes ~24h lag class.
+- **[GROK3-C4] Backup truth beyond LITESTREAM_ACTIVE env (P0/P1, M) — PLANNED.** Do not treat ready backup check as replica health; add LTX age side-channel or hard-depend Garage Sentry monitor. File: `runtime-health.ts`.
+- **[GROK3-C5] Uptime probe: ready?strict=1 + deploy-grade fields (P1, S) — PLANNED.** File: `.github/workflows/uptime-monitor.yml`.
+- **[GROK3-C6] Projected budget status for throttle consumers (P1, M) — PLANNED.** `status` today ignores `projectedEomUsd`; add `projectedStatus` or elevate when EOM projection exceeds budget. File: `budget-status.ts`. Cross-app ST throttle loop.
+- **[GROK3-C7] Abort adapter HTTP on provider timeout + failure/429 cross-tick backoff (P1, M) — PLANNED.** Pass AbortSignal into `fetchJson`; exponential skip after failures; skip known-blind without invoking adapter. Files: `usage-recorder.ts`, `adapters/helpers.ts`.
+- **[GROK3-C8] Admission/lease metrics + long-hold deferral (P1, M) — PLANNED.** Emit reject rate, lease hold p95, waiter depth; soft time-box non-money maintenance under pressure.
+- **[GROK3-C9] Budget alert hysteresis + stable billing_sync messaging (P1, S) — PLANNED.** Reduce warn↔exceed / billing flap noise.
+- **[GROK3-C10] Distinct USAGE_READ_TOKEN required in production (P1, S, ops) — PLANNED.** Stop read≡ingest fallback for budget-status/subscriptions; set Oracle env. Security blast-radius finding.
+
+#### Wave D — Operator UX, mobile, Attention (P1)
+- **[GROK3-D1] Attention as primary workflow (P1, M) — PLANNED.** Always-visible critical strip; “+N more” beyond 8; deep-link to edit budget; actionable CTAs. Files: `page.tsx`, summary cards, settings deep links.
+- **[GROK3-D2] Neutral styling for 0 open alerts; money-first summary order (P1, S) — PLANNED.** File: `DashboardSummaryCards.tsx`.
+- **[GROK3-D3] Unify density preference + rename nav “API Monitor” → “Usage Monitor” (P1, S) — PLANNED.** One storage key; align defaults. Files: `display-density.ts`, `Nav.tsx`, workspace density.
+- **[GROK3-D4] Cost-coverage legend + teach once (P1, S) — PLANNED.** Complete / Known / Not reported / Gap chips; not tooltip-only; reuse `cost-coverage-help.ts`.
+- **[GROK3-D5] Post-add connection checklist + push/OTLP setup card (P1, M) — PLANNED.** Poll/snapshot/cost channel/budget/next-step for push-only. Settings + AddProvider success path.
+- **[GROK3-D6] Mobile Safari: 16px login inputs, 44pt table actions, sticky filters, Settings sticky remeasure (P1, M) — PLANNED.** Login zoom, touch targets, `sm:sticky` workspace filters, CSS vars for sticky chrome.
+- **[GROK3-D7] Dark-mode pass on Projects, Attention, Sentry, dashboard chrome (P1, S) — PLANNED.** Complements residual dark-mode planned row.
+- **[GROK3-D8] Plan price ↔ Subscription mutual exclusivity copy + Settings glossary (P1, S) — PLANNED.** Expand “How data gets here”; residual allocation honesty on projects.
+- **[GROK3-D9] Default-open Portfolio when criticalCount or incomplete costs > 0 (P2, S) — PLANNED.**
+- **[GROK3-D10] Login Suspense skeleton; always show last-updated on mobile (P2, S) — PLANNED.**
+
+#### Wave E — Scale, coverage, telemetry contract (P1/P2)
+- **[GROK3-E1] Incremental current-month MTD counters / partial rollups (P0 perf, L) — PLANNED.** Kill ~11s full-month groupBy cold path; unify provider+project into one scan. Files: `external-usage-events.ts`, `budget-status.ts`.
+- **[GROK3-E2] Infisical money-path Admin/management key wiring (P1, M) — PLANNED.** OpenAI Admin, Anthropic Admin, xAI team/management, CF/GH/Vercel/Render as applicable. File: `infisical-provider-sync.ts`.
+- **[GROK3-E3] OpenRouter MTD estimate caveat + multi-workspace honesty (P1, S) — PLANNED.** `costCoverageCaveat` when totalCost from `/activity`. File: `adapters/openrouter.ts`.
+- **[GROK3-E4] Cross-repo telemetry contract CI lock (P1, M) — PLANNED.** Shared package vectors/enums vs `usage-telemetry.ts`; pin version. Cross: congress-trading-shared.
+- **[GROK3-E5] Producer hard rules: always occurredAt ISO + explicit per-call idempotencyKey (P1, M, cross-repo) — PLANNED.** Fix random-UUID when occurredAt missing; normalize ISO in basis only with coordinated bump.
+- **[GROK3-E6] Project create backfill from metadata.project + rollup re-attribution path (P1, M) — PLANNED.** Unknown names stuck null forever after prune today.
+- **[GROK3-E7] Soft-invalidate budget SWR on ingest admission release (P2, S) — PLANNED.** Or expose `generatedAt` age header for throttle clients.
+- **[GROK3-E8] OpenAI poll short-circuit legacy endpoints when Costs succeeds; realistic page caps (P2, M) — PLANNED.** Files: `adapters/openai.ts`, Anthropic/Cloudflare pagination caps.
+- **[GROK3-E9] OTLP: skip zero cumulative deltas; isolate/rate-limit system.* metrics; broaden disable flag (P1, M) — PLANNED.** Files: `cumulative-state.ts`, `system-mapper.ts`, `ingest-admission.ts` enable helper.
+- **[GROK3-E10] Built-in rawData allowlist / shorter raw retention (P1, M) — PLANNED.** Security: preserve strategy leaves upstream PII on disk. File: `data-privacy.ts`.
+- **[GROK3-E11] Wire series EOM forecast + push-based anomalies (P2, M) — PLANNED.** `forecasting.ts` series helpers unused; anomaly-loader snapshot-only.
+- **[GROK3-E12] Period reconciliation apples-to-oranges fix (P2, S) — PLANNED.** Compare usagePushed to snapshot variable (exclude fixed). File: `provider-usage-reconciliation.ts`.
+- **[GROK3-E13] Materializer persist+watermark single transaction; pause on ambiguous mid-period reconcile (P2, S) — PLANNED.** Files: `subscription-materializer.ts`, `external-billing-subscription-adoption.ts`.
+- **[GROK3-E14] Tombstone growth strategy + scheduled offline VACUUM + ANALYZE (P2, M) — PLANNED.** Keep money-safe; reclaim freelist off readiness path.
+- **[GROK3-E15] Batch ingest inserts (createMany); fix usage-events pagination orderBy (P2, M) — PLANNED.** File: `external-usage-events.ts`.
+- **[GROK3-E16] Fix LlamaIndex row in docs/direct-billing-integrations.md (P3, S) — PLANNED.** Adapter already hits beta usage-metrics.
+- **[GROK3-E17] Retire or permanently no-poll agent-sync Provider seed (P2, S) — PLANNED.** Prefer ops card/Sentry over usage poller coupling.
+- **[GROK3-E18] Route-level session re-check on mutators; classify apiKey in secret-config keys (P2, S) — PLANNED.** Defense-in-depth. Files: mutator routes, `provider-secret-config.ts`.
+- **[GROK3-E19] Optional verified-preferred cash mode for OpenRouter when coverage high (P2, L) — PLANNED.** Audit layer today does not correct budgets.
+- **[GROK3-E20] Clamp self-burning probe refresh floors (Twelve Data / Unusual Whales) (P2, S) — PLANNED.** Validation min interval.
+
+#### Review deliverable (done)
+- **[GROK3-REVIEW] Multi-expert full-app review written and filed — COMPLETE 2026-07-20.** Report: `docs/audits/2026-07-20-grok3-full-app-expert-review.md`. 14 specialists; waves A–E tasks reserved above. Read-only; no prod mutation.
+
+
 - **Fix Usage Monitor live-board path resolution in `codex-coordination-audit.py` (unassigned, S; discovered by CODEX cleanup audit 2026-07-18) — PLANNED.** The read-only audit currently expects `/Users/jay/apps/USAGE-MONITOR-EFFORT-LOG.md` and falsely reports the board missing, while the fleet's canonical established board is `/Users/jay/apps/API-USAGE-MONITOR-EFFORT-LOG.md`. Update the repo-to-board mapping/test in the shared coordination utility without creating a duplicate board, then verify `--repo /Users/jay/Code/Usage-Monitor` resolves this live board.
 - **Recover and disposition three dirty repo-rename residual worktrees (unassigned, M; discovered by CODEX cleanup audit 2026-07-18) — PLANNED / PRESERVED.** Pointer repair exposed unique uncommitted changes in `/Users/jay/apps/api-usage-monitor-alert-summary-tag`, `/Users/jay/apps/api-usage-monitor-litestream-emergency-disable`, and `/Users/jay/apps/api-usage-monitor-readiness-grace`; prior audits had misclassified them as clean because `git status` was failing through the obsolete repo path. Archive each diff/untracked file and branch bundle, compare its intended patch with current `main` and existing effort rows, then land valuable gaps through clean new PRs or remove only after an explicit content-equivalence/supersession receipt. Do not force-remove these worktrees.
 - **Disposition two locked missing-directory Claude worktree registrations after repo rename (unassigned, S; discovered by CODEX cleanup verification 2026-07-18) — PLANNED / PRESERVED.** Registrations `wf_a6385dc8-e5e-1` (`claude/litestream-render-backup`) and `wf_a6385dc8-e5e-2` (`claude/adapter-resilience`) remain locked to the obsolete `/Users/jay/Code/API-usage-monitor/.claude/worktrees/` path and their checkout directories are absent. Confirm the recorded owner process/locks are stale, archive reachable branch objects and registration metadata, then unlock/prune only those two registrations; do not delete their branches unless novelty and handoff history are separately resolved.
@@ -826,6 +897,8 @@ Jul 8 18:10 CT)._
 - **Integration P1 (CT-side): Congress.Trade never reads GET /api/budget-status** — no spend-feedback loop; wire periodic read + self-throttle. _(filed by MONET 2026-07-15 from eval-sweep audit)_
 - **Integration P1: quota_sync/credit_balance receiver (PR #90) has ZERO producers on ST/CT** — wire a producer or park the receiver. _(filed by MONET 2026-07-15 from eval-sweep audit)_
 ## Changelog of this log
+- 2026-07-20 — GROK3: filed multi-expert full-app review audit + reserved Wave A–E implement tasks (GROK3-A1…E20) on Planned; review deliverable COMPLETE.
+
 
 - 2026-07-18 — CODEX: completed the owner-directed fleet-closeout coverage pass; added explicit residual dark-mode, multi-account family/sort, and provider authority/evidence rows; corrected post-cutover provider failures, Oracle RAM measurement, and Oracle alert-channel verification; coordinated the active cleanup lane to refresh the repository mirror without overwriting concurrent work.
 
