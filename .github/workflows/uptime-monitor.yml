@@ -71,9 +71,16 @@ jobs:
             --retry-all-errors \
             --output "$body_file" \
             --write-out "%{http_code}" \
-            https://usage.jays.services/api/ready) || http_code="000"
+            "https://usage.jays.services/api/ready?strict=1") || http_code="000"
 
-          if [ "$http_code" = "200" ] && jq -e '.ok == true' "$body_file" >/dev/null 2>&1; then
+          # Transport must match body: without strict=1, not_ready still returns HTTP 200.
+          # Require database + scheduler ok when those fields are present (deploy-grade bar).
+          if [ "$http_code" = "200" ] && jq -e '
+              .ok == true
+              and (.status == "ready" or .status == null)
+              and ((.checks.database.ok // true) == true)
+              and ((.checks.scheduler.ok // true) == true)
+            ' "$body_file" >/dev/null 2>&1; then
             status="ok"
           else
             status="fail"

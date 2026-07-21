@@ -101,7 +101,7 @@ export async function POST(request: NextRequest) {
         status: 429,
         headers: {
           "Retry-After": String(
-            ingestEnabled ? 1 : OTLP_METRICS_DISABLED_RETRY_AFTER_SECONDS
+            ingestEnabled ? 30 : OTLP_METRICS_DISABLED_RETRY_AFTER_SECONDS
           ),
         },
       }

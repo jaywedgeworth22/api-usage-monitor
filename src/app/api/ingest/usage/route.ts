@@ -59,7 +59,9 @@ export async function POST(request: NextRequest) {
   if (!ingestRateLimiter.check(ip)) {
     return NextResponse.json(
       { error: "Too many requests. Slow down." },
-      { status: 429, headers: { "Retry-After": "1" } }
+      // Prefer longer backoff so multi-app producers do not re-burst every second
+      // after a shared Cloudflare-edge rate limit (see OTLP metrics path).
+      { status: 429, headers: { "Retry-After": "30" } }
     );
   }
 

@@ -651,7 +651,7 @@ Protocol: /Users/jay/apps/EFFORT-LOG-PROTOCOL.md (canonical). Live board: this f
   _2026-07-15 (MONET): moved to Completed — stale duplicate row; work already merged (PR #58, squash `dfdb39e`, per this row's own trailing annotation) and docs/EFFORT-LOG.md mirror already corrected by PR #299 on 2026-07-15; the live board simply hadn't caught up. No further action needed._
 
 ## In Progress
-- **[GROK3] Wave C storms/ops (C1–C10) — IN PROGRESS 2026-07-20.** Branch `grok3/wave-a-money-trust` continues. Retry-After, uptime strict, projected status, abort/backoff, USAGE_READ_TOKEN note, deploy observer notes.
+- **[GROK3] Wave C storms/ops — PARTIAL 2026-07-20.** DONE in-branch: C2 Retry-After 30s (ingest+OTLP 429), C5 uptime `ready?strict=1` + db/scheduler ok, C6 `projectedStatus` on ProviderBudgetStatus. STILL PLANNED: C1 producer circuit breakers (cross-repo), C3 deploy observer, C4 backup truth, C7 abort adapter HTTP, C8 admission metrics, C9 hysteresis, C10 USAGE_READ_TOKEN prod ops. PR opening with Waves A–C partial.
 
 - **[GROK3] Wave A money trust (A1–A6) — COMPLETE 2026-07-20 (pending PR).** Branch `grok3/wave-a-money-trust`. Null-safe portfolio/providers totals; family chart slices; receipt cash out of spentUsd (funding vs usage); plan fixed suppressed when subscription events exist + API guards; agent-sync totalCost null + unknown scope excluded from cash; family partial "known" + multi budget sum. Focused money tests 151 green; tsc clean. Next: Wave B iOS.
 

@@ -83,7 +83,13 @@ export interface ProviderBudgetStatus {
   projectedEomUsd: number;
   remainingUsd: number | null;
   percentUsed: number | null;
+  /** MTD spend vs budget (lagging). */
   status: BudgetStatusLevel;
+  /**
+   * Runway status using projectedEomUsd — throttle consumers should prefer this
+   * over `status` so early-month burn that would breach EOM is visible.
+   */
+  projectedStatus: BudgetStatusLevel;
   alerts: ProviderAlert[];
 }
 
@@ -946,6 +952,20 @@ async function computeBudgetStatusUncached(now: Date): Promise<BudgetStatusRespo
             : "ok";
     }
 
+    // Throttle consumers need runway, not only lagging MTD spend. projectedStatus
+    // elevates when EOM projection would breach even if current spend is still ok.
+    let projectedStatus: BudgetStatusLevel = status;
+    if (monthlyBudgetUsd != null && monthlyBudgetUsd > 0) {
+      const projected = projectedVariableUsageUsd + fixedAccruedUsd + forecastedSubscriptionRenewalsUsd;
+      // projectedEomUsd is assigned below — compute inline for projectedStatus.
+      const projectedEomForStatus = projected;
+      if (projectedEomForStatus >= monthlyBudgetUsd) {
+        projectedStatus = "exceeded";
+      } else if (projectedEomForStatus >= monthlyBudgetUsd * WARNING_RATIO) {
+        projectedStatus = status === "exceeded" ? "exceeded" : "warning";
+      }
+    }
+
     return {
       id: p.id,
       name: p.name,
@@ -990,6 +1010,7 @@ async function computeBudgetStatusUncached(now: Date): Promise<BudgetStatusRespo
       remainingUsd,
       percentUsed,
       status,
+      projectedStatus,
       alerts: budgetAlerts,
     };
   });
