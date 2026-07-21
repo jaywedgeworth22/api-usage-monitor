@@ -128,8 +128,8 @@ describe("applyBudgetControls — default-off (byte-identical to notify-only)", 
   });
 });
 
-describe("applyBudgetControls — hysteresis (pause only after sustained breach)", () => {
-  it("does not pause on the first breach ticks and pauses on the Nth", async () => {
+describe("applyBudgetControls — hysteresis (advisory only after sustained breach)", () => {
+  it("does not recommend on the first ticks and recommends on the Nth without pausing", async () => {
     const provider = await createProvider({
       name: "sustained",
       budgetControlsEnabled: true,
@@ -151,76 +151,44 @@ describe("applyBudgetControls — hysteresis (pause only after sustained breach)
     expect(result.paused).toBe(0);
     expect((await readProvider(provider.id)).budgetPausedAt).toBeNull();
 
-    // Tick 3 — pause + advisory recommendation
+    // Tick 3 — advisory recommendation only (never auto-pause)
     result = await applyBudgetControls(opts);
-    expect(result.paused).toBe(1);
+    expect(result.paused).toBe(0);
     expect(result.recommendationsRaised).toBe(1);
-    const paused = await readProvider(provider.id);
-    expect(paused.budgetBreachState).toBe("paused");
-    expect(paused.budgetPausedAt?.getTime()).toBe(MARCH.getTime());
-    expect(paused.budgetPauseThresholdUsd).toBe(50);
-    expect(paused.budgetPauseObservedSpendUsd).toBe(100);
-    expect(paused.keyDisableRecommended).toBe(true);
+    const after = await readProvider(provider.id);
+    expect(after.budgetBreachState).toBe("breached");
+    expect(after.budgetPausedAt).toBeNull();
+    expect(after.budgetPauseThresholdUsd).toBe(50);
+    expect(after.budgetPauseObservedSpendUsd).toBe(100);
+    expect(after.keyDisableRecommended).toBe(true);
 
     expect(await auditActions(provider.id)).toEqual([
       "breach_observed",
-      "pause",
       "recommend_key_disable",
     ]);
   });
 });
 
-describe("applyBudgetControls — reversibility", () => {
-  it("auto-clears the pause when the breach resolves under the resume band", async () => {
-    const provider = await createProvider({
-      name: "resolves",
-      budgetControlsEnabled: true,
-      monthlyBudgetUsd: 50,
-    });
-    // Pause it (single-tick breach threshold).
-    await applyBudgetControls({
-      now: MARCH,
-      env: ON_TICKS_1,
-      prismaClient: prisma,
-      computeStatus: statusFor([{ id: provider.id, monthlyBudgetUsd: 50, spentUsd: 100 }]),
-    });
-    expect((await readProvider(provider.id)).budgetPausedAt).not.toBeNull();
-
-    // Spend falls under the resume band (0.9 * 50 = 45).
-    const result = await applyBudgetControls({
-      now: MARCH,
-      env: ON_TICKS_1,
-      prismaClient: prisma,
-      computeStatus: statusFor([{ id: provider.id, monthlyBudgetUsd: 50, spentUsd: 40 }]),
-    });
-    expect(result.resumed).toBe(1);
-    expect(result.recommendationsCleared).toBe(1);
-    const resumed = await readProvider(provider.id);
-    expect(resumed.budgetBreachState).toBe("ok");
-    expect(resumed.budgetPausedAt).toBeNull();
-    expect(resumed.keyDisableRecommended).toBe(false);
-    expect(await auditActions(provider.id)).toContain("resume_breach_resolved");
-    expect(await auditActions(provider.id)).toContain(
-      "clear_key_disable_recommendation"
-    );
-  });
-
-  it("auto-clears the pause when the UTC budget period rolls", async () => {
+describe("applyBudgetControls — period roll clears manual pause", () => {
+  it("auto-clears an owner pause when the UTC budget period rolls", async () => {
     const provider = await createProvider({
       name: "period-roll",
       budgetControlsEnabled: true,
       monthlyBudgetUsd: 50,
     });
-    await applyBudgetControls({
-      now: MARCH,
-      env: ON_TICKS_1,
-      prismaClient: prisma,
-      computeStatus: statusFor([{ id: provider.id, monthlyBudgetUsd: 50, spentUsd: 100 }]),
+    // Seed a manual-style pause directly (auto path never pauses).
+    await prisma.provider.update({
+      where: { id: provider.id },
+      data: {
+        budgetBreachState: "paused",
+        budgetPausedAt: MARCH,
+        budgetPauseReason: "owner manual",
+        budgetControlPeriodStart: new Date("2026-03-01T00:00:00.000Z"),
+        keyDisableRecommended: true,
+        budgetBreachStreak: 3,
+      },
     });
-    expect((await readProvider(provider.id)).budgetPausedAt).not.toBeNull();
 
-    // Next month: even though spend is still high, the new period resumes and
-    // restarts hysteresis (does not immediately re-pause because breachTicks>1).
     const result = await applyBudgetControls({
       now: APRIL,
       env: ON_TICKS_3,
@@ -230,7 +198,7 @@ describe("applyBudgetControls — reversibility", () => {
     expect(result.resumed).toBe(1);
     const rolled = await readProvider(provider.id);
     expect(rolled.budgetPausedAt).toBeNull();
-    expect(rolled.budgetBreachState).toBe("breached"); // new-period breach re-observed
+    expect(rolled.budgetBreachState).toBe("breached");
     expect(rolled.budgetBreachStreak).toBe(1);
     expect(await auditActions(provider.id)).toContain("resume_period_roll");
   });
@@ -243,7 +211,7 @@ describe("applyBudgetControls — fail-safe", () => {
       budgetControlsEnabled: true,
       monthlyBudgetUsd: 50,
     });
-    // First pause it so there is real state to protect.
+    // Seed recommendation state to protect.
     await applyBudgetControls({
       now: MARCH,
       env: ON_TICKS_1,
@@ -251,7 +219,7 @@ describe("applyBudgetControls — fail-safe", () => {
       computeStatus: statusFor([{ id: provider.id, monthlyBudgetUsd: 50, spentUsd: 100 }]),
     });
     const before = await readProvider(provider.id);
-    expect(before.budgetPausedAt).not.toBeNull();
+    expect(before.keyDisableRecommended).toBe(true);
     const auditBefore = await prisma.budgetControlEvent.count();
 
     const result = await applyBudgetControls({
@@ -265,10 +233,8 @@ describe("applyBudgetControls — fail-safe", () => {
     expect(result.degraded).toBe(true);
     expect(result.error).toContain("compute exploded");
 
-    // State and audit trail are untouched by the failed run.
     const after = await readProvider(provider.id);
-    expect(after.budgetPausedAt?.getTime()).toBe(before.budgetPausedAt?.getTime());
-    expect(after.budgetBreachState).toBe("paused");
+    expect(after.keyDisableRecommended).toBe(true);
     expect(await prisma.budgetControlEvent.count()).toBe(auditBefore);
   });
 });

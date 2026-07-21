@@ -99,8 +99,8 @@ describe("decideBudgetControlAction — gating", () => {
   });
 });
 
-describe("decideBudgetControlAction — hysteresis", () => {
-  it("pauses only on the Nth consecutive breach observation", () => {
+describe("decideBudgetControlAction — hysteresis (advisory only)", () => {
+  it("recommends key-disable on the Nth consecutive breach without auto-pausing", () => {
     const cfg = config({ breachTicks: 3 });
     let current = state();
 
@@ -119,32 +119,31 @@ describe("decideBudgetControlAction — hysteresis", () => {
     expect(d.events).toHaveLength(0);
     current = d.next;
 
-    // Tick 3 — sustained breach reaches the threshold: PAUSE.
+    // Tick 3 — sustained breach: RECOMMEND only (never auto-pause).
     d = decideBudgetControlAction(current, obs(60, 50), cfg, NOW);
-    expect(d.paused).toBe(true);
-    expect(d.next.budgetBreachState).toBe("paused");
-    expect(d.next.budgetPausedAt?.getTime()).toBe(NOW.getTime());
-    expect(d.events.map((e) => e.action)).toEqual([
-      "pause",
-      "recommend_key_disable",
-    ]);
+    expect(d.paused).toBe(false);
+    expect(d.next.budgetBreachState).toBe("breached");
+    expect(d.next.budgetPausedAt).toBeNull();
+    expect(d.recommendationRaised).toBe(true);
+    expect(d.next.keyDisableRecommended).toBe(true);
+    expect(d.events.map((e) => e.action)).toEqual(["recommend_key_disable"]);
   });
 
-  it("records the threshold, observed spend, and raises the key-disable recommendation on pause", () => {
+  it("records the threshold, observed spend, and raises the key-disable recommendation", () => {
     const cfg = config({ breachTicks: 1, breachMarginRatio: 1.0 });
     const d = decideBudgetControlAction(state(), obs(75, 50), cfg, NOW);
-    expect(d.paused).toBe(true);
+    expect(d.paused).toBe(false);
     expect(d.recommendationRaised).toBe(true);
     expect(d.next.budgetPauseThresholdUsd).toBe(50);
     expect(d.next.budgetPauseObservedSpendUsd).toBe(75);
     expect(d.next.keyDisableRecommended).toBe(true);
-    expect(d.next.budgetPauseReason).toContain("Sustained budget breach");
     const recommend = d.events.find((e) => e.action === "recommend_key_disable");
     expect(recommend?.reason).toContain("RECOMMENDATION ONLY");
     expect(recommend?.reason).toContain("No credential was modified");
+    expect(recommend?.reason).toContain("NOT auto-paused");
   });
 
-  it("respects a breach margin above the budget line before pausing", () => {
+  it("respects a breach margin above the budget line before recommending", () => {
     // margin 1.2 => threshold = 60; spend 55 is over budget but under threshold.
     const cfg = config({ breachTicks: 1, breachMarginRatio: 1.2 });
     const d = decideBudgetControlAction(state(), obs(55, 50), cfg, NOW);
@@ -152,7 +151,7 @@ describe("decideBudgetControlAction — hysteresis", () => {
     expect(d.next.budgetBreachState).toBe("ok");
   });
 
-  it("clears partial hysteresis progress if the breach resolves before pausing", () => {
+  it("clears partial hysteresis progress if the breach resolves before recommendation", () => {
     const cfg = config({ breachTicks: 3 });
     const breached = state({ budgetBreachState: "breached", budgetBreachStreak: 2 });
     const d = decideBudgetControlAction(breached, obs(40, 50), cfg, NOW);
@@ -163,7 +162,7 @@ describe("decideBudgetControlAction — hysteresis", () => {
   });
 });
 
-describe("decideBudgetControlAction — resume / reversibility", () => {
+describe("decideBudgetControlAction — manual pause holds / period roll", () => {
   const paused = () =>
     state({
       budgetBreachState: "paused",
@@ -175,29 +174,13 @@ describe("decideBudgetControlAction — resume / reversibility", () => {
       budgetControlLastActionAt: new Date("2026-03-05T00:00:00.000Z"),
     });
 
-  it("holds the pause in the dead-band between the resume band and the budget line", () => {
-    // budget 50, resumeMargin 0.9 => resume ceiling 45. spend 47 is under budget
-    // (not in breach) but still above the resume band — hold the pause.
-    const d = decideBudgetControlAction(paused(), obs(47, 50), config(), NOW);
-    expect(d.changed).toBe(false);
+  it("holds an owner-set pause until period roll or opt-out (no auto-resume on spend drop)", () => {
+    const d = decideBudgetControlAction(paused(), obs(45, 50), config(), NOW);
+    expect(d.resumed).toBe(false);
     expect(d.next.budgetPausedAt).not.toBeNull();
   });
 
-  it("resumes and clears the recommendation once spend falls under the resume band", () => {
-    const d = decideBudgetControlAction(paused(), obs(45, 50), config(), NOW);
-    expect(d.resumed).toBe(true);
-    expect(d.recommendationCleared).toBe(true);
-    expect(d.next.budgetPausedAt).toBeNull();
-    expect(d.next.budgetBreachState).toBe("ok");
-    expect(d.next.keyDisableRecommended).toBe(false);
-    expect(d.events.map((e) => e.action)).toEqual([
-      "resume_breach_resolved",
-      "clear_key_disable_recommendation",
-    ]);
-  });
-
   it("resumes on a UTC budget-period roll and restarts hysteresis for the new period", () => {
-    // Stored anchor is February; NOW is in March => period rolled.
     const feb = new Date("2026-02-01T00:00:00.000Z");
     const pausedInFebruary = { ...paused(), budgetControlPeriodStart: feb };
     const stillOver = decideBudgetControlAction(
@@ -208,8 +191,6 @@ describe("decideBudgetControlAction — resume / reversibility", () => {
     );
     expect(stillOver.resumed).toBe(true);
     expect(stillOver.next.budgetPausedAt).toBeNull();
-    // Spend is still over budget, but a fresh period restarts the streak so it
-    // does NOT immediately re-pause.
     expect(stillOver.paused).toBe(false);
     expect(stillOver.next.budgetBreachStreak).toBe(1);
     expect(stillOver.next.budgetControlPeriodStart?.getTime()).toBe(
@@ -220,23 +201,25 @@ describe("decideBudgetControlAction — resume / reversibility", () => {
 });
 
 describe("decideBudgetControlAction — cooldown (anti-flap)", () => {
-  it("blocks a re-pause within the cooldown after a recent action", () => {
+  it("blocks a re-recommendation within the cooldown after a recent action", () => {
     const cfg = config({ breachTicks: 1, cooldownMs: 60 * 60 * 1000 });
     const recentlyActed = state({
       budgetControlLastActionAt: new Date(NOW.getTime() - 1000), // 1s ago
     });
     const d = decideBudgetControlAction(recentlyActed, obs(100, 50), cfg, NOW);
     expect(d.paused).toBe(false);
+    expect(d.recommendationRaised).toBe(false);
     expect(d.next.budgetBreachState).toBe("breached");
   });
 
-  it("allows the pause once the cooldown has elapsed", () => {
+  it("allows the recommendation once the cooldown has elapsed", () => {
     const cfg = config({ breachTicks: 1, cooldownMs: 60 * 60 * 1000 });
     const longAgo = state({
       budgetControlLastActionAt: new Date(NOW.getTime() - 2 * 60 * 60 * 1000), // 2h ago
     });
     const d = decideBudgetControlAction(longAgo, obs(100, 50), cfg, NOW);
-    expect(d.paused).toBe(true);
+    expect(d.paused).toBe(false);
+    expect(d.recommendationRaised).toBe(true);
   });
 });
 

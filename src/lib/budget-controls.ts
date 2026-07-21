@@ -7,35 +7,24 @@ import { withInternalUsageWriteAdmission } from "@/lib/ingest-admission";
 // Budget-breach automated control actions (DESIGN: default-off, reversible,
 // audited, hysteresis, fail-safe, recommendation-only key handling).
 //
-// Today's alerting is NOTIFY-ONLY. This module adds guarded automated
-// responses when a provider breaches its configured monthly budget:
-//   1. pause that provider's polling (stop incurring/observing further),
-//   2. surface a key-disable RECOMMENDATION (advisory data only — it NEVER
-//      disables or revokes a credential; key revocation is owner-only per the
-//      safety rules),
-//   3. a durable spend-cap / breach state on the provider that the dashboard
-//      shows and that gates the pause.
+// Today's alerting is NOTIFY-ONLY. This module adds a **guarded advisory layer**
+// when a provider breaches its configured monthly budget, plus **owner-driven
+// manual** poll pause/resume:
+//   1. track sustained breach state + key-disable RECOMMENDATION (advisory only
+//      — NEVER disables/rotates credentials),
+//   2. optional **manual** pause of polling (owner API only — auto-pause was
+//      rejected: this app is a read-only observer, so auto-pausing only blinds
+//      the dashboard while real spend continues; see owner review on PR #623),
+//   3. durable audit trail via BudgetControlEvent.
 //
 // SAFETY MODEL
-//   - DEFAULT-OFF: every automated action is gated behind BOTH the master env
-//     flag BUDGET_AUTO_CONTROLS_ENABLED (default false) AND a per-provider
-//     opt-in (Provider.budgetControlsEnabled, default false). With the master
-//     flag off, applyBudgetControls does ZERO I/O and returns immediately, so
-//     behavior is byte-identical to the notify-only path (proven by test).
-//   - REVERSIBLE + AUDITED: pausing writes durable, additive state
-//     (budgetPausedAt/budgetBreachState/reason/threshold) and is never
-//     destructive. It auto-clears when the breach resolves (spend falls back
-//     under a resume band) or the UTC budget period rolls. Every state change
-//     appends a BudgetControlEvent audit row.
-//   - HYSTERESIS / anti-flap: a pause requires a SUSTAINED breach — N
-//     consecutive breach observations (BUDGET_CONTROL_BREACH_TICKS) — plus a
-//     cooldown before re-acting, mirroring the scheduler's
-//     provider_fetch_degraded consecutive-tick latch. Resume uses a lower band
-//     (BUDGET_CONTROL_RESUME_MARGIN_RATIO) than the pause threshold so a spend
-//     hovering at the budget line cannot oscillate pause/resume every tick.
-//   - FAIL-SAFE: if the control layer errors, it must NOT break the
-//     scheduler/poll cycle. applyBudgetControls swallows all errors, logs, and
-//     degrades to notify-only (returns degraded:true) instead of throwing.
+//   - DEFAULT-OFF: gated behind BOTH BUDGET_AUTO_CONTROLS_ENABLED (default false)
+//     AND Provider.budgetControlsEnabled (default false). Master off ⇒ zero I/O.
+//   - AUTOMATED PATH IS ADVISORY ONLY: sustained breach never auto-pauses poll.
+//   - MANUAL PAUSE is owner-initiated, audited, and cleared on period roll /
+//     opt-out / explicit resume. Polling skip still requires master+opt-in so
+//     BUDGET_AUTO_CONTROLS_ENABLED=false is a global kill-switch.
+//   - FAIL-SAFE: applyBudgetControls never throws into the scheduler.
 // ---------------------------------------------------------------------------
 
 export type BudgetBreachState = "ok" | "breached" | "paused";
@@ -48,13 +37,17 @@ export const BUDGET_BREACH_STATES: readonly BudgetBreachState[] = [
 
 export type BudgetControlAction =
   | "pause"
+  | "pause_manual"
   | "resume_breach_resolved"
   | "resume_period_roll"
   | "resume_controls_disabled"
+  | "resume_manual"
   | "recommend_key_disable"
   | "clear_key_disable_recommendation"
   | "breach_observed"
-  | "breach_cleared";
+  | "breach_cleared"
+  | "controls_enabled"
+  | "controls_disabled";
 
 const DEFAULT_BREACH_TICKS = 3;
 const DEFAULT_BREACH_MARGIN_RATIO = 1.0;
@@ -315,9 +308,6 @@ export function decideBudgetControlAction(
   const budget = observation.monthlyBudgetUsd;
   const budgetConfigured = budget != null && budget > 0;
   const threshold = budgetConfigured ? budget * config.breachMarginRatio : null;
-  const resumeCeiling = budgetConfigured
-    ? budget * config.resumeMarginRatio
-    : null;
   const inBreach =
     budgetConfigured && threshold != null && observation.spentUsd >= threshold;
 
@@ -345,30 +335,24 @@ export function decideBudgetControlAction(
           periodStart,
         });
       }
-      if (newStreak >= config.breachTicks && cooldownElapsed) {
-        next.budgetBreachState = "paused";
-        next.budgetPausedAt = now;
-        next.budgetPauseReason = `Sustained budget breach: spend ${observation.spentUsd} at/over pause threshold ${threshold} for ${newStreak} consecutive observation(s).`;
-        next.budgetPauseThresholdUsd = threshold;
-        next.budgetPauseObservedSpendUsd = observation.spentUsd;
+      // ADVISORY ONLY after sustained breach: never auto-pause polling.
+      // Auto-pause was rejected for this app (read-only observer): pausing the
+      // poll blinds the dashboard while real spend continues on the key.
+      if (
+        newStreak >= config.breachTicks &&
+        cooldownElapsed &&
+        !next.keyDisableRecommended
+      ) {
         next.budgetControlLastActionAt = now;
         next.keyDisableRecommended = true;
-        paused = true;
+        next.budgetPauseThresholdUsd = threshold;
+        next.budgetPauseObservedSpendUsd = observation.spentUsd;
         recommendationRaised = true;
-        events.push({
-          action: "pause",
-          reason: next.budgetPauseReason,
-          breachState: "paused",
-          thresholdUsd: threshold,
-          observedSpendUsd: observation.spentUsd,
-          breachStreak: newStreak,
-          periodStart,
-        });
         events.push({
           action: "recommend_key_disable",
           reason:
-            "Provider paused on sustained budget breach. RECOMMENDATION ONLY: consider disabling or rotating this key. No credential was modified.",
-          breachState: "paused",
+            `Sustained budget breach: spend ${observation.spentUsd} at/over threshold ${threshold} for ${newStreak} consecutive observation(s). RECOMMENDATION ONLY: consider disabling or rotating this key, or use the owner pause API if you intentionally want to stop polling. No credential was modified and polling was NOT auto-paused.`,
+          breachState: "breached",
           thresholdUsd: threshold,
           observedSpendUsd: observation.spentUsd,
           breachStreak: newStreak,
@@ -379,42 +363,10 @@ export function decideBudgetControlAction(
   } else {
     // Not in breach this observation.
     if (next.budgetPausedAt !== null) {
-      // Only resume when spend has fallen under the (lower) resume band AND the
-      // cooldown has elapsed — the dead-band between resumeCeiling and the
-      // pause threshold is where we hold the pause to avoid oscillation.
-      const belowResumeBand =
-        resumeCeiling == null || observation.spentUsd <= resumeCeiling;
-      if (belowResumeBand && cooldownElapsed) {
-        resumed = true;
-        recommendationCleared = next.keyDisableRecommended;
-        next.budgetBreachState = "ok";
-        next.budgetBreachStreak = 0;
-        next.budgetPausedAt = null;
-        next.budgetPauseReason = null;
-        next.budgetPauseThresholdUsd = null;
-        next.budgetPauseObservedSpendUsd = null;
-        next.budgetControlLastActionAt = now;
-        next.keyDisableRecommended = false;
-        events.push({
-          action: "resume_breach_resolved",
-          reason: `Budget breach resolved: spend ${observation.spentUsd} fell to/under the resume band ${resumeCeiling}. Polling resumed.`,
-          breachState: "ok",
-          thresholdUsd: threshold,
-          observedSpendUsd: observation.spentUsd,
-          breachStreak: 0,
-          periodStart,
-        });
-        events.push({
-          action: "clear_key_disable_recommendation",
-          reason: "Budget breach resolved; key-disable recommendation cleared.",
-          breachState: "ok",
-          thresholdUsd: threshold,
-          observedSpendUsd: observation.spentUsd,
-          breachStreak: 0,
-          periodStart,
-        });
-      }
-      // else: hold the pause (dead-band or cooldown) — no change.
+      // Manual pauses stay until owner resumes, opt-out, or period roll.
+      // Auto-resume on "spend fell under resume band" is intentionally disabled:
+      // spentUsd is monotonic within a UTC month, so resume would never fire for
+      // a true over-budget pause (owner review F2). Period roll still clears.
     } else if (next.budgetBreachState === "breached" || next.budgetBreachStreak > 0) {
       // Partial hysteresis progress that never reached a pause — clear it.
       const hadProgress =
@@ -671,11 +623,9 @@ function normalizeBreachState(value: string): BudgetBreachState {
 }
 
 // ---------------------------------------------------------------------------
-// Scheduler helper. A provider's polling is paused ONLY when the master flag is
-// on, the provider is opted in, and it carries a durable pause. Gating the skip
-// on the master flag makes BUDGET_AUTO_CONTROLS_ENABLED=false a clean
-// kill-switch: flipping it off immediately resumes polling of every provider
-// regardless of any residual DB state.
+// Scheduler helper. Polling is paused ONLY for an **owner-set** durable pause
+// while master + per-provider opt-in are both on. Master flag off is a global
+// kill-switch that immediately resumes all polling.
 // ---------------------------------------------------------------------------
 export function budgetPollingPaused(
   provider: {
@@ -686,4 +636,216 @@ export function budgetPollingPaused(
 ): boolean {
   if (!budgetAutoControlsEnabled(env)) return false;
   return Boolean(provider.budgetControlsEnabled) && provider.budgetPausedAt != null;
+}
+
+// ---------------------------------------------------------------------------
+// Owner manual controls (session API). Auto-path never pauses; these do.
+// ---------------------------------------------------------------------------
+
+export type ManualBudgetControlAction =
+  | "enable"
+  | "disable"
+  | "pause"
+  | "resume";
+
+export interface ManualBudgetControlInput {
+  action: ManualBudgetControlAction;
+  /** Required for pause: refuse when coverage is untrusted. */
+  spendCoverage?: string | null;
+  monthlyBudgetUsd?: number | null;
+  spentUsd?: number | null;
+  /** Variable usage portion; pause refused when breach is fixed-fee-only. */
+  observedVariableUsageUsd?: number | null;
+  fixedAccruedUsd?: number | null;
+  reason?: string | null;
+  now?: Date;
+}
+
+export interface ManualBudgetControlResult {
+  ok: true;
+  action: ManualBudgetControlAction;
+  providerId: string;
+  budgetControlsEnabled: boolean;
+  budgetPausedAt: Date | null;
+  keyDisableRecommended: boolean;
+  budgetBreachState: string;
+}
+
+export class ManualBudgetControlError extends Error {
+  constructor(
+    message: string,
+    readonly status: number = 400
+  ) {
+    super(message);
+    this.name = "ManualBudgetControlError";
+  }
+}
+
+export async function applyManualBudgetControl(
+  providerId: string,
+  input: ManualBudgetControlInput,
+  prismaClient: BudgetControlsPrisma = prisma
+): Promise<ManualBudgetControlResult> {
+  const now = input.now ?? new Date();
+  const periodStart = monthStartUtc(now);
+  const provider = await prismaClient.provider.findUnique({
+    where: { id: providerId },
+    select: {
+      id: true,
+      budgetControlsEnabled: true,
+      budgetBreachState: true,
+      budgetBreachStreak: true,
+      budgetPausedAt: true,
+      keyDisableRecommended: true,
+    },
+  });
+  if (!provider) {
+    throw new ManualBudgetControlError("Provider not found", 404);
+  }
+
+  let budgetControlsEnabled = provider.budgetControlsEnabled;
+  let budgetPausedAt: Date | null = provider.budgetPausedAt;
+  let budgetPauseReason: string | null = null;
+  let keyDisableRecommended = provider.keyDisableRecommended;
+  let budgetBreachState = normalizeBreachState(provider.budgetBreachState);
+  let budgetBreachStreak = provider.budgetBreachStreak;
+  const events: BudgetControlEventDraft[] = [];
+
+  switch (input.action) {
+    case "enable":
+      budgetControlsEnabled = true;
+      events.push({
+        action: "controls_enabled",
+        reason: "Owner enabled budget controls for this provider.",
+        breachState: budgetBreachState,
+        thresholdUsd: null,
+        observedSpendUsd: input.spentUsd ?? null,
+        breachStreak: budgetBreachStreak,
+        periodStart,
+      });
+      break;
+    case "disable":
+      budgetControlsEnabled = false;
+      budgetPausedAt = null;
+      budgetPauseReason = null;
+      keyDisableRecommended = false;
+      budgetBreachState = "ok";
+      budgetBreachStreak = 0;
+      events.push({
+        action: "controls_disabled",
+        reason: "Owner disabled budget controls; pause and recommendations cleared.",
+        breachState: "ok",
+        thresholdUsd: null,
+        observedSpendUsd: input.spentUsd ?? null,
+        breachStreak: 0,
+        periodStart,
+      });
+      break;
+    case "pause": {
+      const coverage = (input.spendCoverage ?? "").toLowerCase();
+      if (coverage !== "complete") {
+        throw new ManualBudgetControlError(
+          "Refuse to pause polling when spendCoverage is not complete — untrusted spend must not hide the provider.",
+          400
+        );
+      }
+      const variable = input.observedVariableUsageUsd ?? 0;
+      const fixed = input.fixedAccruedUsd ?? 0;
+      const spent = input.spentUsd ?? 0;
+      const budget = input.monthlyBudgetUsd;
+      if (budget != null && budget > 0 && spent >= budget && variable <= 0.005 && fixed >= budget) {
+        throw new ManualBudgetControlError(
+          "Refuse to pause for a fixed-subscription-only breach — raise the monthly budget or model the fee correctly instead of blinding the poll.",
+          400
+        );
+      }
+      if (!budgetControlsEnabled) {
+        budgetControlsEnabled = true;
+        events.push({
+          action: "controls_enabled",
+          reason: "Owner enabled controls as part of a manual pause.",
+          breachState: budgetBreachState,
+          thresholdUsd: null,
+          observedSpendUsd: spent,
+          breachStreak: budgetBreachStreak,
+          periodStart,
+        });
+      }
+      budgetPausedAt = now;
+      budgetPauseReason =
+        input.reason?.trim() ||
+        "Owner manually paused polling for this provider.";
+      budgetBreachState = "paused";
+      events.push({
+        action: "pause_manual",
+        reason: budgetPauseReason,
+        breachState: "paused",
+        thresholdUsd: budget,
+        observedSpendUsd: spent,
+        breachStreak: budgetBreachStreak,
+        periodStart,
+      });
+      break;
+    }
+    case "resume":
+      budgetPausedAt = null;
+      budgetPauseReason = null;
+      if (budgetBreachState === "paused") {
+        budgetBreachState = "breached";
+      }
+      events.push({
+        action: "resume_manual",
+        reason: "Owner manually resumed polling for this provider.",
+        breachState: budgetBreachState,
+        thresholdUsd: null,
+        observedSpendUsd: input.spentUsd ?? null,
+        breachStreak: budgetBreachStreak,
+        periodStart,
+      });
+      break;
+    default:
+      throw new ManualBudgetControlError(`Unknown action: ${String(input.action)}`);
+  }
+
+  await withInternalUsageWriteAdmission(async () => {
+    await prismaClient.$transaction(async (tx) => {
+      await tx.provider.update({
+        where: { id: providerId },
+        data: {
+          budgetControlsEnabled,
+          budgetPausedAt,
+          budgetPauseReason,
+          keyDisableRecommended,
+          budgetBreachState,
+          budgetBreachStreak,
+          budgetControlLastActionAt: now,
+          budgetControlPeriodStart: periodStart,
+        },
+      });
+      for (const event of events) {
+        await tx.budgetControlEvent.create({
+          data: {
+            providerId,
+            action: event.action,
+            reason: event.reason,
+            breachState: event.breachState,
+            thresholdUsd: event.thresholdUsd,
+            observedSpendUsd: event.observedSpendUsd,
+            breachStreak: event.breachStreak,
+            periodStart: event.periodStart,
+          },
+        });
+      }
+    });
+  });
+
+  return {
+    ok: true,
+    action: input.action,
+    providerId,
+    budgetControlsEnabled,
+    budgetPausedAt,
+    keyDisableRecommended,
+    budgetBreachState,
+  };
 }

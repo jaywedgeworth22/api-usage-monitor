@@ -260,19 +260,19 @@ export async function GET(request: Request) {
   // without starting the blocking probe at all.
   const databaseHealthCheckCompatibilityRequested =
     process.env.RENDER_READINESS_HTTP_COMPATIBILITY === "true";
-  const [database, scheduler, backup, startup] = await Promise.all([
-    databaseHealthCheckCompatibilityRequested
-      ? Promise.resolve(skippedDatabaseCheck())
-      : checkDatabase(),
-    Promise.resolve(getSchedulerRuntimeStatus()),
-    Promise.resolve(getBackupRuntimeStatus()),
-    Promise.resolve(getStartupRuntimeStatus()),
-  ]);
-  // Budget-breach control observability. Default-OFF is zero added cost: with
-  // BUDGET_AUTO_CONTROLS_ENABLED unset we skip the DB entirely. When enabled we
-  // add two trivial counts, fully fail-safe (a failure yields nulls) and never
-  // feeding into `ok` — a control-layer problem must not flip readiness.
-  const budgetControls = await budgetControlsReadiness();
+  // Budget-breach control observability runs inside the same Promise.all as
+  // the other probes so it cannot serialize behind a stalled DB check and
+  // bypass readiness timeout/cache shapes (owner review F5).
+  const [database, scheduler, backup, startup, budgetControls] =
+    await Promise.all([
+      databaseHealthCheckCompatibilityRequested
+        ? Promise.resolve(skippedDatabaseCheck())
+        : checkDatabase(),
+      Promise.resolve(getSchedulerRuntimeStatus()),
+      Promise.resolve(getBackupRuntimeStatus()),
+      Promise.resolve(getStartupRuntimeStatus()),
+      budgetControlsReadiness(),
+    ]);
   const schedulerReadiness = getSchedulerReadiness();
   // A preview/cold-standby host deliberately disables its scheduler to avoid
   // becoming a second SQLite writer. That intentional circuit breaker must not
