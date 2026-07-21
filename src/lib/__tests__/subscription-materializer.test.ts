@@ -441,7 +441,9 @@ describe("materializeDueSubscriptions + project attribution (integration)", () =
       subscriptionMonthToDateUsd: 200,
       fixedAccruedUsd: 200,
       estimatedApiEquivalentUsd: 9_000,
-      spentUsd: 247.25,
+      // Prepaid receipt cash is funding, not consumption — spentUsd uses usage only.
+      spentUsd: 245,
+      // Projection still floors on receipt when funding ≥ observed usage.
       projectedEomUsd: 247.25,
       spendCoverage: "complete",
     });

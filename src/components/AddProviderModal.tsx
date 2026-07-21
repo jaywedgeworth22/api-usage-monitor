@@ -531,18 +531,22 @@ export default function AddProviderModal({
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
         <div>
           <label className="block text-xs text-gray-500 mb-1 dark:text-gray-400">
-            Plan price / mo
+            Fixed cost add-on / mo
           </label>
           <input
-            aria-label="Plan price per month"
+            aria-label="Fixed cost add-on per month (not a Subscription)"
             type="number"
             min="0"
             step="0.01"
             value={fixedMonthlyCostUsd}
             onChange={(e) => setFixedMonthlyCostUsd(e.target.value)}
             placeholder="49"
+            title="Use this OR a Paid service Subscription for the same fee — not both. Both would double-count spend."
             className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 dark:border-gray-600 dark:bg-gray-900 dark:text-gray-100"
           />
+          <p className="mt-1 text-[11px] text-gray-500 dark:text-gray-400">
+            Not a Subscription. Do not also Track a paid service for the same fee.
+          </p>
         </div>
         <div>
           <label className="block text-xs text-gray-500 mb-1 dark:text-gray-400">

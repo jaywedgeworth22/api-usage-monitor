@@ -18,11 +18,14 @@ export async function fetchUsage(
     return errorResult(res.status, { note: "Agent Sync Relay health check failed" });
   }
 
+  // Health-only provider: never report complete $0 cash. A totalCost of 0 with
+  // no MTD scope was previously eligible for budget math as authoritative free.
   return {
     balance: null,
-    totalCost: 0,
+    totalCost: null,
     totalRequests: null,
     credits: null,
+    costScope: "unknown",
     rawData: { status: "UP", data: res.data },
   };
 }

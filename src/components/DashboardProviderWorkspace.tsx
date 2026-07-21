@@ -223,7 +223,9 @@ function providerSpend(provider: WorkspaceProvider): number | null {
   ) {
     return null;
   }
-  return provider.spentUsd ?? provider.latestSnapshot?.totalCost ?? provider.estimatedMonthlyCostUsd ?? 0;
+  // Never treat estimated monthly cost as "spent" — that is a forecast, not MTD cash.
+  if (provider.spentUsd != null) return provider.spentUsd;
+  return null;
 }
 
 function providerSpendLabel(provider: WorkspaceProvider): string {
@@ -1076,7 +1078,14 @@ export default function DashboardProviderWorkspace({
         financialsAggregated,
         spentUsd: money.spentUsd,
         projectedUsd: money.projectedEomUsd,
-        budgetUsd: onlyProvider?.plan?.monthlyBudgetUsd ?? null,
+        // Multi-key families: sum member budgets when any are set (not only the singleton).
+        budgetUsd: (() => {
+          const budgets = groupProviders
+            .map((p) => p.plan?.monthlyBudgetUsd)
+            .filter((v): v is number => v != null && Number.isFinite(v) && v > 0);
+          if (budgets.length === 0) return null;
+          return budgets.reduce((sum, v) => sum + v, 0);
+        })(),
         spendSortUsd: money.exact
           ? money.spentUsd ?? 0
           : Math.max(
@@ -1275,10 +1284,13 @@ export default function DashboardProviderWorkspace({
           <tbody>
             {visibleFamilies.map((family) => {
               const isCollapsed = collapsed[family.key] ?? !initiallyExpanded;
+              const familyHasPartial = family.providers.some(
+                (p) => p.isActive && p.spendCoverage === "partial"
+              );
               const familySpendLabel = family.spentUsd == null
                 ? "Cost not reported"
                 : `${formatCurrency(family.spentUsd)}${
-                    family.providers[0]?.spendCoverage === "partial" ? " known" : ""
+                    familyHasPartial || family.incompleteCostCount > 0 ? " known" : ""
                   }`;
               const onToggle = () =>
                 setCollapsed((current) => ({ ...current, [family.key]: !isCollapsed }));

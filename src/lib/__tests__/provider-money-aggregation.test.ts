@@ -188,8 +188,9 @@ describe("provider billing-account money aggregation", () => {
       NOW
     );
 
-    // variable=max($10 canonical, $4 pushed); fixed=$3+$5+$2+$5-$5.
-    expect(result.spentUsd).toBe(20);
+    // variable=max($10 canonical, $4 pushed)=10; plan fixed $3 suppressed when
+    // subscription MTD is present; fixed=$0+$5+$2+$5-$5=7 → spent=17.
+    expect(result.spentUsd).toBe(17);
   });
 
   it("ignores non-additive component records because only canonical budget fields enter the formula", () => {
@@ -238,5 +239,68 @@ describe("provider billing-account money aggregation", () => {
       openAi.projectedEomUsd! + 7
     );
     expect(result.ambiguousCostFamilyCount).toBe(1);
+    expect(result.incompleteCostFamilyCount).toBe(0);
+    expect(result.families.length).toBe(3);
+  });
+
+  it("excludes null-spend exact families from portfolio total instead of coercing to $0", () => {
+    const result = aggregateProviderPortfolioMoney(
+      [
+        member("unknown-only", {
+          name: "voyage",
+          spentUsd: null,
+          projectedEomUsd: 0,
+          snapshotCostUsd: null,
+        }),
+        member("known", {
+          name: "openai",
+          spentUsd: 10,
+          projectedEomUsd: 12,
+          snapshotCostUsd: 10,
+        }),
+      ],
+      NOW
+    );
+    expect(result.totalCost).toBeCloseTo(10);
+    expect(result.incompleteCostFamilyCount).toBe(1);
+  });
+
+  it("does not treat receipt cash as family variable spend", () => {
+    const result = aggregateProviderFamilyMoney(
+      [
+        member("with-receipt", {
+          snapshotCostUsd: 5,
+          spentUsd: 5,
+          receiptCashPaidUsd: 100,
+          pushedMonthToDateUsd: 0,
+        }),
+      ],
+      NOW
+    );
+    // Lone member pass-through keeps spentUsd from caller (5), not 100.
+    expect(result.spentUsd).toBe(5);
+  });
+
+  it("drops plan fixed when subscription MTD is present on multi-member family", () => {
+    const result = aggregateProviderFamilyMoney(
+      [
+        member("a", {
+          fixedMonthlyCostUsd: 20,
+          subscriptionMonthToDateUsd: 20,
+          snapshotCostUsd: 0,
+          spentUsd: 20,
+        }),
+        member("b", {
+          fixedMonthlyCostUsd: 0,
+          subscriptionMonthToDateUsd: 0,
+          snapshotCostUsd: 0,
+          spentUsd: 0,
+          pushedMonthToDateUsd: 0,
+        }),
+      ],
+      NOW
+    );
+    // plan fixed suppressed on member with subscription; only $20 sub + $0 snap
+    expect(result.spentUsd).toBeCloseTo(20);
   });
 });

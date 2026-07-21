@@ -414,9 +414,14 @@ export async function GET(request: NextRequest) {
       // conflated.
       costCoverageCaveat,
       alerts,
-      estimatedMonthlyCostUsd: alertState.estimatedMonthlyCostUsd,
-      spentUsd: canonicalBudget?.spentUsd ?? latestSnapshot?.totalCost ?? 0,
-      snapshotCostUsd: canonicalBudget?.snapshotCostUsd ?? latestSnapshot?.totalCost ?? null,
+      // Fail closed: never invent complete $0 or raw-snapshot "complete" when
+      // the canonical budget path is missing. Unknown spend stays null.
+      estimatedMonthlyCostUsd:
+        canonicalBudget != null
+          ? (canonicalBudget.spentUsd ?? alertState.estimatedMonthlyCostUsd)
+          : null,
+      spentUsd: canonicalBudget?.spentUsd ?? null,
+      snapshotCostUsd: canonicalBudget?.snapshotCostUsd ?? null,
       snapshotCostFetchedAt: canonicalBudget?.snapshotCostFetchedAt ?? null,
       snapshotCostWindowStart: canonicalBudget?.snapshotCostWindowStart ?? null,
       snapshotCostWindowEnd: canonicalBudget?.snapshotCostWindowEnd ?? null,
@@ -437,9 +442,7 @@ export async function GET(request: NextRequest) {
       pushedUnpricedEventCount: canonicalBudget?.pushedUnpricedEventCount ?? 0,
       pushedUnclassifiedCostEventCount:
         canonicalBudget?.pushedUnclassifiedCostEventCount ?? 0,
-      spendCoverage:
-        canonicalBudget?.spendCoverage ??
-        (latestSnapshot?.totalCost != null ? "complete" : "unknown"),
+      spendCoverage: canonicalBudget?.spendCoverage ?? "unknown",
       subscriptionMonthToDateUsd:
         canonicalBudget?.subscriptionMonthToDateUsd ?? 0,
       fixedMonthlyCostUsd: canonicalBudget?.fixedMonthlyCostUsd ?? 0,
@@ -448,7 +451,9 @@ export async function GET(request: NextRequest) {
       fixedCostConflict: canonicalBudget?.fixedCostConflict ?? false,
       forecastedSubscriptionRenewalsUsd:
         canonicalBudget?.forecastedSubscriptionRenewalsUsd ?? 0,
-      projectedEomUsd: canonicalBudget?.projectedEomUsd ?? alertState.projectedEomUsd,
+      projectedEomUsd:
+        canonicalBudget?.projectedEomUsd ??
+        (canonicalBudget != null ? alertState.projectedEomUsd : null),
       billingMode: alertState.billingMode,
       duplicateNameWarning:
         duplicateProviderIds.length > 1

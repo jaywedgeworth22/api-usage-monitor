@@ -129,9 +129,25 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  const provider = await prisma.provider.findUnique({ where: { id: input.providerId } });
+  const provider = await prisma.provider.findUnique({
+    where: { id: input.providerId },
+    include: { plan: { select: { fixedMonthlyCostUsd: true } } },
+  });
   if (!provider) {
     return NextResponse.json({ error: "providerId does not match a known provider" }, { status: 400 });
+  }
+  // Double-count guard: recurring fee is EITHER plan fixed OR a Subscription.
+  if (
+    provider.plan?.fixedMonthlyCostUsd != null &&
+    provider.plan.fixedMonthlyCostUsd > 0
+  ) {
+    return NextResponse.json(
+      {
+        error:
+          "This provider already has a Plan price / mo (fixedMonthlyCostUsd). Clear that field before adding a Subscription for the same recurring fee, or the two would double-count in spend.",
+      },
+      { status: 400 }
+    );
   }
   if (input.projectId) {
     const project = await prisma.project.findUnique({ where: { id: input.projectId } });

@@ -303,10 +303,13 @@ export async function GET(
     costCoverageCaveat,
     compliance,
     alerts,
-    estimatedMonthlyCostUsd: alertState.estimatedMonthlyCostUsd,
-    spentUsd: canonicalBudget?.spentUsd ?? latestSnapshot?.totalCost ?? 0,
-    snapshotCostUsd:
-      canonicalBudget?.snapshotCostUsd ?? latestSnapshot?.totalCost ?? null,
+    estimatedMonthlyCostUsd:
+      canonicalBudget != null
+        ? (canonicalBudget.spentUsd ?? alertState.estimatedMonthlyCostUsd)
+        : null,
+    // Fail closed: never invent complete $0 from a bare snapshot.
+    spentUsd: canonicalBudget?.spentUsd ?? null,
+    snapshotCostUsd: canonicalBudget?.snapshotCostUsd ?? null,
     snapshotCostFetchedAt: canonicalBudget?.snapshotCostFetchedAt ?? null,
     snapshotCostWindowStart: canonicalBudget?.snapshotCostWindowStart ?? null,
     snapshotCostWindowEnd: canonicalBudget?.snapshotCostWindowEnd ?? null,
@@ -327,9 +330,7 @@ export async function GET(
     pushedUnpricedEventCount: canonicalBudget?.pushedUnpricedEventCount ?? 0,
     pushedUnclassifiedCostEventCount:
       canonicalBudget?.pushedUnclassifiedCostEventCount ?? 0,
-    spendCoverage:
-      canonicalBudget?.spendCoverage ??
-      (latestSnapshot?.totalCost != null ? "complete" : "unknown"),
+    spendCoverage: canonicalBudget?.spendCoverage ?? "unknown",
     subscriptionMonthToDateUsd:
       canonicalBudget?.subscriptionMonthToDateUsd ?? 0,
     fixedMonthlyCostUsd: canonicalBudget?.fixedMonthlyCostUsd ?? 0,
@@ -339,7 +340,8 @@ export async function GET(
     forecastedSubscriptionRenewalsUsd:
       canonicalBudget?.forecastedSubscriptionRenewalsUsd ?? 0,
     projectedEomUsd:
-      canonicalBudget?.projectedEomUsd ?? alertState.projectedEomUsd,
+      canonicalBudget?.projectedEomUsd ??
+      (canonicalBudget != null ? alertState.projectedEomUsd : null),
     billingMode: alertState.billingMode,
     duplicateNameWarning:
       duplicateProviderIds.length > 1
@@ -354,7 +356,10 @@ export async function PUT(
 ) {
   const { id } = await params;
 
-  const existing = await prisma.provider.findUnique({ where: { id } });
+  const existing = await prisma.provider.findUnique({
+    where: { id },
+    include: { plan: { select: { fixedMonthlyCostUsd: true } } },
+  });
   if (!existing) {
     return NextResponse.json({ error: "Not found" }, { status: 404 });
   }
@@ -485,6 +490,28 @@ export async function PUT(
   }
   if (input.plan !== undefined) {
     const planData = toPrismaProviderPlanData(input.plan);
+    const nextFixed =
+      planData.fixedMonthlyCostUsd === undefined
+        ? existing.plan?.fixedMonthlyCostUsd
+        : planData.fixedMonthlyCostUsd;
+    if (nextFixed != null && Number(nextFixed) > 0) {
+      const activeSubscription = await prisma.subscription.findFirst({
+        where: {
+          providerId: id,
+          status: { in: ["active", "considering"] },
+        },
+        select: { id: true },
+      });
+      if (activeSubscription) {
+        return NextResponse.json(
+          {
+            error:
+              "This provider already has an active/considering Subscription. Clear Plan price / mo or cancel the Subscription — modeling the same fee both ways double-counts spend.",
+          },
+          { status: 400 }
+        );
+      }
+    }
     updateData.plan = {
       upsert: {
         create: planData,

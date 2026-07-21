@@ -18,6 +18,7 @@ import type { SubscriptionRow } from "@/components/SubscriptionsPanel";
 import DashboardProviderWorkspace from "@/components/DashboardProviderWorkspace";
 import OperationsOverview from "@/components/OperationsOverview";
 import { sumProviderFunds } from "@/lib/provider-financial-semantics";
+import { canonicalProviderKey } from "@/lib/provider-identity";
 import { aggregateProviderPortfolioMoney } from "@/lib/provider-money-aggregation";
 
 interface Provider {
@@ -345,14 +346,28 @@ export default function DashboardPage() {
   }, [fetchPortfolioData, fetchProviders, portfolioOpen]);
 
   const totalProviderFunds = sumProviderFunds(providers);
+  const portfolioMoney = aggregateProviderPortfolioMoney(providers);
   const {
     totalCost,
     totalProjectedMonthlyCost,
     ambiguousCostFamilyCount,
-  } = aggregateProviderPortfolioMoney(providers);
+    incompleteCostFamilyCount,
+  } = portfolioMoney;
   const incompleteCostProviderCount = providers.filter(
     (provider) => provider.isActive && provider.spendCoverage !== "complete"
   ).length;
+  const chartFamilies = portfolioMoney.families.map((family) => {
+    const members = providers.filter(
+      (p) => (canonicalProviderKey(p.name) || p.id) === family.key
+    );
+    const displayName =
+      members.find((m) => m.displayName)?.displayName ?? family.displayName;
+    return {
+      displayName,
+      projectedEomUsd: family.projectedEomUsd,
+      exact: family.exact,
+    };
+  });
   const attentionItems = providers.flatMap((provider) =>
     provider.alerts
       .filter((alert) => alert.severity !== "info")
@@ -439,7 +454,9 @@ export default function DashboardPage() {
         totalProviderFunds={totalProviderFunds}
         totalProjectedMonthlyCost={totalProjectedMonthlyCost}
         totalCost={totalCost}
-        incompleteCostProviderCount={incompleteCostProviderCount}
+        incompleteCostProviderCount={
+          incompleteCostProviderCount + incompleteCostFamilyCount
+        }
         ambiguousCostFamilyCount={ambiguousCostFamilyCount}
         attentionItemsCount={attentionItems.length}
         criticalCount={criticalCount}
@@ -500,7 +517,7 @@ export default function DashboardPage() {
               )}
             </div>
             <div className="space-y-8">
-              <DashboardCharts providers={providers} />
+              <DashboardCharts families={chartFamilies} />
               <SentryHealthCard />
             </div>
           </div>

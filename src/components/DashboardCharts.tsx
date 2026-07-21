@@ -11,27 +11,42 @@ import {
 } from "recharts";
 import { useTheme } from "next-themes";
 
-interface ChartProvider {
+/** Family-aggregated projection rows (must match portfolio KPI aggregation). */
+export interface ChartFamilySlice {
   displayName: string;
-  projectedEomUsd: number;
+  /** Exact family projection; null when unknown/ambiguous — excluded from pie. */
+  projectedEomUsd: number | null;
+  exact?: boolean;
 }
 
 interface DashboardChartsProps {
-  providers: ChartProvider[];
+  /** Prefer family-safe slices from aggregateProviderPortfolioMoney.families. */
+  families?: ChartFamilySlice[];
+  /** @deprecated per-provider rows double-count multi-key families; use families. */
+  providers?: ChartFamilySlice[];
 }
 
-export default function DashboardCharts({ providers }: DashboardChartsProps) {
+export default function DashboardCharts({
+  families,
+  providers,
+}: DashboardChartsProps) {
   const { resolvedTheme } = useTheme();
   
   const data = useMemo(() => {
-    return providers
-      .filter((p) => p.projectedEomUsd > 0)
+    const rows = families ?? providers ?? [];
+    return rows
+      .filter(
+        (p) =>
+          p.exact !== false &&
+          p.projectedEomUsd != null &&
+          p.projectedEomUsd > 0
+      )
       .map((p) => ({
         name: p.displayName,
-        value: p.projectedEomUsd,
+        value: p.projectedEomUsd as number,
       }))
       .sort((a, b) => b.value - a.value);
-  }, [providers]);
+  }, [families, providers]);
 
   // A nice set of colors for the pie chart slices
   const COLORS = [

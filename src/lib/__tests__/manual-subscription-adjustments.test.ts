@@ -273,9 +273,9 @@ describe("manual subscription adjustment events — money-math proof", () => {
       2
     );
 
-    // usageCost = max(observedVariableUsageUsd, receiptCash.paidUsd); both are
-    // 0 here (no metered usage or receipt events), so spentUsd = fixedAccruedUsd
-    // exactly — the negatives are not swallowed anywhere on the way to spentUsd.
+    // usageCost is observed variable usage only (receipt funding is separate);
+    // both usage and receipts are 0 here, so spentUsd = fixedAccruedUsd exactly —
+    // the negatives are not swallowed anywhere on the way to spentUsd.
     const expectedSpentUsd = 124.99 + netManualAdjustmentUsd;
     expect(anthropic!.spentUsd).toBeCloseTo(expectedSpentUsd, 2);
     expect(expectedSpentUsd).toBeCloseTo(148.12, 2);

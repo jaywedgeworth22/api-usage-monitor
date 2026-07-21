@@ -292,11 +292,20 @@ async function computeBudgetStatusUncached(now: Date): Promise<BudgetStatusRespo
       where: {
         fetchedAt: { gte: monthStart, lte: now },
         totalCost: { not: null },
+        // Cash eligibility: exclude daily windows and explicitly unknown
+        // scopes (health-check placeholders, non-MTD estimates). Legacy null
+        // scope remains eligible when the cost window is open-ended or starts
+        // this month — adapters that know MTD set calendar_month_to_date /
+        // billing_cycle_to_date.
         AND: [
           {
             OR: [
               { costScope: null },
-              { costScope: { not: "daily" } },
+              {
+                costScope: {
+                  in: ["calendar_month_to_date", "billing_cycle_to_date"],
+                },
+              },
             ],
           },
           {
@@ -603,17 +612,15 @@ async function computeBudgetStatusUncached(now: Date): Promise<BudgetStatusRespo
       0,
       (snapshotCostUsd ?? 0) - snapshotFixedCostIncludedUsd
     );
+    // Variable *consumption* only. max(snapshot, push) assumes one channel
+    // supersets the other (org MTD vs app subset). Prepaid receipt cash is
+    // funding, not usage — it stays in receiptCashPaidUsd and may floor EOM
+    // projection, but must not inflate spentUsd / budget breach on top-ups.
     const observedVariableUsageUsd = Math.max(
       snapshotVariableCostUsd,
       pushed.usagePushed
     );
-    // API prepaid-funding receipts and observed API usage are overlapping
-    // evidence of variable cash spend. Reconcile them with max(), while
-    // recurring subscriptions remain additive below.
-    const usageCost = Math.max(
-      observedVariableUsageUsd,
-      receiptCash.paidUsd
-    );
+    const usageCost = observedVariableUsageUsd;
     const liveExternalFixed = p.externalBilling.filter((record) => {
       return (
         isExternalBillingLinkCandidate(record, {
@@ -781,11 +788,20 @@ async function computeBudgetStatusUncached(now: Date): Promise<BudgetStatusRespo
       ) > 0.005 ||
       (snapshotCostIncludesUnknownFixed && pushed.subscriptionPushed > 0) ||
       linkedMaterializedFixedUsd - linkedFixedDedupeUsd > 0.005;
-    // Preserve every distinct fixed source. Collapse only the amount proven to
-    // represent the same provider billing identity through an explicit local
-    // Subscription link; equal prices alone are never treated as identity.
+    // Prefer a single fixed source of truth for cash: when subscription events
+    // already materialize the recurring fee, do NOT also add ProviderPlan
+    // fixedMonthlyCostUsd (operator double-model). Still surface fixedCostConflict
+    // so Settings can resolve the misconfiguration. Linked snapshot dedupe is
+    // unchanged below.
+    const planFixedInCashUsd =
+      fixedMonthlyCostUsd > 0 && pushed.subscriptionPushed > 0
+        ? 0
+        : fixedMonthlyCostUsd;
+    // Preserve every distinct *remaining* fixed source. Collapse only the amount
+    // proven to represent the same provider billing identity through an explicit
+    // local Subscription link; equal prices alone are never treated as identity.
     const fixedAccruedUsd =
-      fixedMonthlyCostUsd +
+      planFixedInCashUsd +
       pushed.subscriptionPushed +
       snapshotFixedCostIncludedUsd -
       linkedFixedDedupeUsd;

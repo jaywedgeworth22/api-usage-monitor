@@ -112,19 +112,23 @@ function aggregateExactAccount(
     (sum, member) => sum + money(member.receiptCashPaidUsd),
     0
   );
+  // Variable *consumption* only: prepaid receipt cash is funding evidence,
+  // not usage. max(snapshot, push) remains the usage merge (same-account
+  // multi-app: push is summed, snapshot is canonical once).
   const observedVariableUsd = Math.max(
     canonicalVariableUsd,
     pushedVariableUsd
   );
-  const variableSpendUsd = Math.max(observedVariableUsd, receiptCashUsd);
+  const variableSpendUsd = observedVariableUsd;
 
-  const localFixedUsd = members.reduce(
-    (sum, member) =>
-      sum +
-      money(member.fixedMonthlyCostUsd) +
-      money(member.subscriptionMonthToDateUsd),
-    0
-  );
+  // Prefer subscription events over plan fixed when both appear on a family
+  // member (double-count guard aligned with budget-status).
+  const localFixedUsd = members.reduce((sum, member) => {
+    const subscriptionUsd = money(member.subscriptionMonthToDateUsd);
+    const planFixedUsd =
+      subscriptionUsd > 0 ? 0 : money(member.fixedMonthlyCostUsd);
+    return sum + planFixedUsd + subscriptionUsd;
+  }, 0);
   const linkedFixedDedupeUsd = Math.min(
     canonicalFixedUsd,
     members.reduce(
@@ -134,9 +138,11 @@ function aggregateExactAccount(
   );
   const fixedAccruedUsd =
     localFixedUsd + canonicalFixedUsd - linkedFixedDedupeUsd;
+  // Receipt funding is a lumpy deposit: use it as a projection floor only,
+  // never as annualized consumption.
   const projectedVariableUsd =
     receiptCashUsd >= observedVariableUsd
-      ? receiptCashUsd
+      ? Math.max(receiptCashUsd, observedVariableUsd)
       : Math.max(
           receiptCashUsd,
           calculateEomForecast(observedVariableUsd, 0, now)
@@ -246,6 +252,17 @@ export function aggregateProviderPortfolioMoney(
   totalCost: number;
   totalProjectedMonthlyCost: number;
   ambiguousCostFamilyCount: number;
+  /** Families with exact=true but null spent (unknown/unpriced), excluded from total. */
+  incompleteCostFamilyCount: number;
+  /** Family-level rows for charts / UI that must match KPI aggregation. */
+  families: Array<{
+    key: string;
+    displayName: string;
+    spentUsd: number | null;
+    projectedEomUsd: number | null;
+    exact: boolean;
+    memberCount: number;
+  }>;
 } {
   const families = new Map<string, ProviderMoneyMember[]>();
   for (const provider of providers) {
@@ -258,14 +275,48 @@ export function aggregateProviderPortfolioMoney(
   let totalCost = 0;
   let totalProjectedMonthlyCost = 0;
   let ambiguousCostFamilyCount = 0;
-  for (const family of families.values()) {
+  let incompleteCostFamilyCount = 0;
+  const familyRows: Array<{
+    key: string;
+    displayName: string;
+    spentUsd: number | null;
+    projectedEomUsd: number | null;
+    exact: boolean;
+    memberCount: number;
+  }> = [];
+  for (const [key, family] of families.entries()) {
     const aggregate = aggregateProviderFamilyMoney(family, now);
+    const displayName =
+      family.find((m) => m.name)?.name ??
+      family[0]?.id ??
+      key;
+    familyRows.push({
+      key,
+      displayName,
+      spentUsd: aggregate.spentUsd,
+      projectedEomUsd: aggregate.projectedEomUsd,
+      exact: aggregate.exact,
+      memberCount: family.length,
+    });
     if (!aggregate.exact) {
       ambiguousCostFamilyCount += 1;
       continue;
     }
-    totalCost += aggregate.spentUsd ?? 0;
-    totalProjectedMonthlyCost += aggregate.projectedEomUsd ?? 0;
+    // Never coerce unknown (null) spend into an authoritative $0 portfolio total.
+    if (aggregate.spentUsd == null) {
+      incompleteCostFamilyCount += 1;
+      continue;
+    }
+    totalCost += aggregate.spentUsd;
+    if (aggregate.projectedEomUsd != null) {
+      totalProjectedMonthlyCost += aggregate.projectedEomUsd;
+    }
   }
-  return { totalCost, totalProjectedMonthlyCost, ambiguousCostFamilyCount };
+  return {
+    totalCost,
+    totalProjectedMonthlyCost,
+    ambiguousCostFamilyCount,
+    incompleteCostFamilyCount,
+    families: familyRows,
+  };
 }
