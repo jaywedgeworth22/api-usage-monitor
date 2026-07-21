@@ -62,6 +62,18 @@ describe("DashboardSummaryCards", () => {
     expect(html).toContain('href="#attention"');
   });
 
+  it("uses neutral styling and money-first order when alerts are zero (D2)", () => {
+    const html = renderSummary(0);
+
+    // Spend before alerts in DOM order
+    expect(html.indexOf("Tracked Spend This Month")).toBeLessThan(
+      html.indexOf("Open Alerts")
+    );
+    expect(html).toContain("All clear");
+    // Zero alerts should not use amber/red alarm colors on the count line
+    expect(html).toContain("text-gray-900 dark:text-gray-100");
+  });
+
   it("shows provider funds without inventing an aggregate credit total", () => {
     const html = renderSummary(0);
 

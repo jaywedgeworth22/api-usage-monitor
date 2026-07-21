@@ -3,20 +3,21 @@
 import { useEffect, useState } from "react";
 
 /**
- * Global display-density preference: "comfortable" (today's look, and the
- * default so existing users see no change) vs "compact" (reduced row
- * padding/height, secondary detail lines collapsed - but never removed
- * outright, see each surface's `title`/`<details>` fallback).
+ * Global display-density preference shared by Nav and the provider workspace
+ * (Wave D / D3 — one storage key, one default).
  *
- * Persisted to localStorage under DISPLAY_DENSITY_STORAGE_KEY and mirrored
- * onto <html> as a `density-<value>` class (see the inline script in
- * layout.tsx, which applies the stored value before hydration to avoid a
- * flash of the wrong density, and Nav.tsx, which owns the visible toggle).
+ * - "compact": reduced row padding/height; secondary detail collapsed into
+ *   title/`<details>` fallbacks (never removed outright).
+ * - "comfortable": roomier rows and always-visible secondary lines.
+ *
+ * Default is "compact" (aligned with the dashboard workspace default).
+ * Persisted under DISPLAY_DENSITY_STORAGE_KEY and mirrored onto <html> as
+ * `density-<value>` (see layout.tsx pre-hydration script + Nav toggle).
  */
 export type DisplayDensity = "compact" | "comfortable";
 
 export const DISPLAY_DENSITY_STORAGE_KEY = "display-density";
-export const DISPLAY_DENSITY_DEFAULT: DisplayDensity = "comfortable";
+export const DISPLAY_DENSITY_DEFAULT: DisplayDensity = "compact";
 
 /** Same-tab change notification - the browser's `storage` event only fires
  * in *other* tabs, so components reading the preference (ProviderTable,

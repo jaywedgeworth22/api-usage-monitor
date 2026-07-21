@@ -19,6 +19,12 @@ import type {
 import type { SubscriptionRow } from "@/components/SubscriptionsPanel";
 import SortHeader, { type SortDirection } from "@/components/table/SortHeader";
 import { costCoverageHelpText } from "@/lib/cost-coverage-help";
+import {
+  useDisplayDensity,
+  setStoredDisplayDensity,
+  getStoredDisplayDensity,
+  type DisplayDensity,
+} from "@/lib/display-density";
 import { providerFinancialSemantics } from "@/lib/provider-financial-semantics";
 import { aggregateProviderFamilyMoney } from "@/lib/provider-money-aggregation";
 import { canonicalProviderKey } from "@/lib/provider-identity";
@@ -194,7 +200,8 @@ export const INITIAL_SORT_DIRECTION = {
 } as const;
 
 const SORT_STORAGE_KEY = "usage-monitor:dashboard-sort";
-const DENSITY_STORAGE_KEY = "usage-monitor:dashboard-density";
+/** Legacy key — migrated once into the global display-density store (Wave D / D3). */
+const LEGACY_DENSITY_STORAGE_KEY = "usage-monitor:dashboard-density";
 
 const FILTER_CHIPS: ReadonlyArray<readonly [FilterChip, string]> = [
   ["all", "All"],
@@ -904,7 +911,10 @@ export default function DashboardProviderWorkspace({
 }: DashboardProviderWorkspaceProps) {
   const [query, setQuery] = useState("");
   const [filterChip, setFilterChip] = useState<FilterChip>("all");
-  const [density, setDensity] = useState<Density>("compact");
+  // Unified with Nav global density (Wave D / D3). Legacy workspace key is
+  // migrated once into DISPLAY_DENSITY_STORAGE_KEY on first mount.
+  const density = useDisplayDensity();
+  const setDensity = (next: DisplayDensity) => setStoredDisplayDensity(next);
   const [sortField, setSortField] = useState<WorkspaceSortField>("attention");
   const [sortDirection, setSortDirection] = useState<SortDirection>("desc");
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
@@ -929,9 +939,24 @@ export default function DashboardProviderWorkspace({
           }
         }
       }
-      const rawDensity = window.localStorage.getItem(DENSITY_STORAGE_KEY);
-      if (isDensity(rawDensity)) {
-        setDensity(rawDensity);
+      // One-time migrate legacy workspace density into the global key.
+      const legacy = window.localStorage.getItem(LEGACY_DENSITY_STORAGE_KEY);
+      if (isDensity(legacy)) {
+        const current = getStoredDisplayDensity();
+        // Prefer explicit global if already set; otherwise adopt legacy.
+        if (
+          !window.localStorage.getItem("display-density") &&
+          isDensity(legacy)
+        ) {
+          setStoredDisplayDensity(legacy);
+        } else if (current) {
+          // no-op — global already authoritative
+        }
+        try {
+          window.localStorage.removeItem(LEGACY_DENSITY_STORAGE_KEY);
+        } catch {
+          // ignore
+        }
       }
     } catch {
       // Ignore corrupted/unavailable storage — fall back to defaults.
@@ -948,11 +973,10 @@ export default function DashboardProviderWorkspace({
         SORT_STORAGE_KEY,
         JSON.stringify({ field: sortField, direction: sortDirection })
       );
-      window.localStorage.setItem(DENSITY_STORAGE_KEY, density);
     } catch {
       // Ignore write failures (private mode, quota, etc.).
     }
-  }, [sortField, sortDirection, density, hydratedFromStorage]);
+  }, [sortField, sortDirection, hydratedFromStorage]);
 
   const handleSort = (field: WorkspaceSortField) => {
     if (field === "attention") {

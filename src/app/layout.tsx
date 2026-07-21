@@ -31,7 +31,7 @@ export default function RootLayout({
             __html: `
               (function() {
                 try {
-                  var d = localStorage.getItem('display-density') || 'comfortable';
+                  var d = localStorage.getItem('display-density') || 'compact';
                   document.documentElement.classList.add('density-' + d);
                 } catch (e) {}
               })();

@@ -10,6 +10,7 @@ import {
 } from "@/components/ProviderCard";
 import SentryHealthCard from "@/components/SentryHealthCard";
 import DashboardSummaryCards from "@/components/DashboardSummaryCards";
+import CostCoverageLegend from "@/components/CostCoverageLegend";
 import ExternalTelemetryPanel, { type ExternalUsageSummary } from "@/components/ExternalTelemetryPanel";
 import ProjectsPanel, { type ProjectBudgetStatus } from "@/components/ProjectsPanel";
 import type { ExternalBillingRecord } from "@/components/ExternalBillingDetails";
@@ -300,23 +301,13 @@ export default function DashboardPage() {
     };
   }, [fetchProviders]);
 
-  // Shared open+scroll routine for the "Portfolio detail" accordion: used both by the
-  // #attention hash-open effect below and by DashboardSummaryCards' Open Alerts cell so a
-  // re-click while the hash is already #attention (and the accordion was re-closed) still works.
+  // Always-visible Attention strip (Wave D / D1). Scroll only — no longer
+  // buried inside the Portfolio detail accordion.
   const openAttentionPanel = useCallback(() => {
-    setPortfolioOpen(true);
-    if (portfolioDetailsRef.current) portfolioDetailsRef.current.open = true;
     window.requestAnimationFrame(() => {
       document.getElementById("attention")?.scrollIntoView({ block: "start" });
     });
   }, []);
-
-  useEffect(() => {
-    if (!portfolioOpen || window.location.hash !== "#attention") return;
-    window.requestAnimationFrame(() => {
-      document.getElementById("attention")?.scrollIntoView({ block: "start" });
-    });
-  }, [portfolioOpen]);
 
   useEffect(() => {
     if (!portfolioOpen) return;
@@ -463,6 +454,78 @@ export default function DashboardPage() {
         onAlertsNavigate={openAttentionPanel}
       />
 
+      <div
+        id="attention"
+        className="bg-white dark:bg-gray-800 rounded-xl border border-gray-200 dark:border-gray-700 overflow-hidden"
+      >
+        <div className="px-4 py-3 sm:px-6 border-b border-gray-100 dark:border-gray-700 flex flex-wrap items-center justify-between gap-2">
+          <h2 className="text-sm font-semibold text-gray-800 dark:text-gray-100">
+            Attention
+          </h2>
+          <Link
+            href="/settings"
+            className="text-xs font-medium text-blue-600 dark:text-blue-400"
+          >
+            Manage budgets
+          </Link>
+        </div>
+        {attentionItems.length === 0 ? (
+          <div className="px-4 py-4 sm:px-6 text-sm text-gray-500 dark:text-gray-400">
+            No payment, budget, or limit alerts.
+          </div>
+        ) : (
+          <div className="divide-y divide-gray-100 dark:divide-gray-700">
+            {attentionItems.slice(0, 8).map(({ provider, alert }, index) => (
+                <div
+                  key={`${provider.id}-${index}-${alert.message.slice(0, 24)}`}
+                  className="flex flex-wrap items-start justify-between gap-3 px-4 py-3 sm:px-6 hover:bg-gray-50 dark:hover:bg-gray-900/40"
+                >
+                  <div className="min-w-0 flex-1">
+                    <p className="text-sm font-medium text-gray-900 dark:text-gray-100">
+                      {provider.displayName}
+                      {provider.label ? ` - ${provider.label}` : ""}
+                    </p>
+                    <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">
+                      {alert.message}
+                    </p>
+                    <div className="mt-1.5 flex flex-wrap gap-2">
+                      <Link
+                        href={`/providers/${provider.id}`}
+                        className="text-xs font-medium text-blue-600 dark:text-blue-400"
+                      >
+                        Open provider
+                      </Link>
+                      <Link
+                        href={`/providers/${provider.id}`}
+                        className="text-xs font-medium text-blue-600 dark:text-blue-400"
+                      >
+                        Edit budget
+                      </Link>
+                    </div>
+                  </div>
+                  <span
+                    className={`text-xs font-medium px-2 py-1 rounded-full shrink-0 ${
+                      alert.severity === "critical"
+                        ? "bg-red-50 text-red-700 dark:bg-red-950/40 dark:text-red-300"
+                        : "bg-amber-50 text-amber-700 dark:bg-amber-950/40 dark:text-amber-300"
+                    }`}
+                  >
+                    {alert.severity}
+                  </span>
+                </div>
+            ))}
+            {attentionItems.length > 8 && (
+              <div className="px-4 py-3 sm:px-6 text-xs text-gray-500 dark:text-gray-400">
+                +{attentionItems.length - 8} more — open a provider or filter
+                the workspace by Alerts only.
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+
+      <CostCoverageLegend />
+
       <DashboardProviderWorkspace providers={providers} subscriptions={subscriptions} />
 
       <OperationsOverview />
@@ -522,46 +585,6 @@ export default function DashboardPage() {
             </div>
           </div>
 
-          <div id="attention" className="bg-white dark:bg-gray-800 rounded-xl border border-gray-200 dark:border-gray-700 overflow-hidden">
-            <div className="px-6 py-4 border-b border-gray-100 dark:border-gray-700 flex items-center justify-between">
-              <h2 className="text-sm font-semibold text-gray-800">Attention</h2>
-              <Link href="/settings" className="text-xs font-medium text-blue-600">
-                Manage budgets
-              </Link>
-            </div>
-            {attentionItems.length === 0 ? (
-              <div className="px-6 py-5 text-sm text-gray-500">
-                No payment, budget, or limit alerts.
-              </div>
-            ) : (
-              <div className="divide-y divide-gray-100">
-                {attentionItems.slice(0, 8).map(({ provider, alert }, index) => (
-                  <Link
-                    key={`${provider.id}-${index}`}
-                    href={`/providers/${provider.id}`}
-                    className="flex items-start justify-between gap-4 px-6 py-4 hover:bg-gray-50"
-                  >
-                    <div>
-                      <p className="text-sm font-medium text-gray-900">
-                        {provider.displayName}
-                        {provider.label ? ` - ${provider.label}` : ""}
-                      </p>
-                      <p className="text-xs text-gray-500 mt-0.5">{alert.message}</p>
-                    </div>
-                    <span
-                      className={`text-xs font-medium px-2 py-1 rounded-full ${
-                        alert.severity === "critical"
-                          ? "bg-red-50 text-red-700"
-                          : "bg-amber-50 text-amber-700"
-                      }`}
-                    >
-                      {alert.severity}
-                    </span>
-                  </Link>
-                ))}
-              </div>
-            )}
-          </div>
         </div>
         )}
       </details>

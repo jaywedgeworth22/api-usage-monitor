@@ -73,7 +73,7 @@ export default function Nav() {
                 </svg>
               </div>
               <span className="text-lg font-semibold text-gray-900 dark:text-gray-100">
-                API Monitor
+                Usage Monitor
               </span>
             </Link>
             <div className="hidden gap-1 sm:flex">

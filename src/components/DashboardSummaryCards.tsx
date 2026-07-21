@@ -21,34 +21,19 @@ export default function DashboardSummaryCards({
   criticalCount,
   onAlertsNavigate,
 }: DashboardSummaryCardsProps) {
+  // Money-first KPI order (Wave D / D2): spend → projection → funds → alerts.
+  // Zero open alerts use neutral gray so "0" is not amber-alarm coloring.
+  const alertsTone =
+    criticalCount > 0
+      ? "text-red-600 dark:text-red-400"
+      : attentionItemsCount > 0
+        ? "text-amber-600 dark:text-amber-400"
+        : "text-gray-900 dark:text-gray-100";
+
   return (
     <div
       className="grid grid-cols-2 gap-px overflow-hidden rounded-xl border border-gray-200 bg-gray-100 sm:grid-cols-4 dark:border-gray-700 dark:bg-gray-700"
     >
-      <div className="bg-white p-4 dark:bg-gray-800">
-        <p className="text-[11px] font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400">
-          Open Alerts
-        </p>
-        <a
-          href="#attention"
-          onClick={onAlertsNavigate}
-          className="block hover:opacity-80 transition-opacity focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 dark:focus-visible:ring-blue-400"
-        >
-          <p
-            className={`mt-1 text-lg font-semibold tabular-nums ${
-              criticalCount > 0 ? "text-red-600 dark:text-red-400" : "text-amber-600 dark:text-amber-400"
-            }`}
-          >
-            {attentionItemsCount}
-          </p>
-          {criticalCount > 0 && (
-            <p className="mt-0.5 text-[11px] text-red-500 dark:text-red-400">{criticalCount} critical &rarr;</p>
-          )}
-          {criticalCount === 0 && attentionItemsCount > 0 && (
-            <p className="mt-0.5 text-[11px] text-amber-500 dark:text-amber-400">View details &rarr;</p>
-          )}
-        </a>
-      </div>
       <div className="bg-white p-4 dark:bg-gray-800">
         <p className="text-[11px] font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400">
           {incompleteCostProviderCount > 0 || ambiguousCostFamilyCount > 0
@@ -103,6 +88,29 @@ export default function DashboardSummaryCards({
         <p className="mt-0.5 text-[11px] text-gray-500 dark:text-gray-400">
           Excludes ambiguous, brokerage, and merchant assets
         </p>
+      </div>
+      <div className="bg-white p-4 dark:bg-gray-800">
+        <p className="text-[11px] font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400">
+          Open Alerts
+        </p>
+        <a
+          href="#attention"
+          onClick={onAlertsNavigate}
+          className="block hover:opacity-80 transition-opacity focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 dark:focus-visible:ring-blue-400"
+        >
+          <p className={`mt-1 text-lg font-semibold tabular-nums ${alertsTone}`}>
+            {attentionItemsCount}
+          </p>
+          {criticalCount > 0 && (
+            <p className="mt-0.5 text-[11px] text-red-500 dark:text-red-400">{criticalCount} critical &rarr;</p>
+          )}
+          {criticalCount === 0 && attentionItemsCount > 0 && (
+            <p className="mt-0.5 text-[11px] text-amber-500 dark:text-amber-400">View details &rarr;</p>
+          )}
+          {attentionItemsCount === 0 && (
+            <p className="mt-0.5 text-[11px] text-gray-500 dark:text-gray-400">All clear</p>
+          )}
+        </a>
       </div>
     </div>
   );

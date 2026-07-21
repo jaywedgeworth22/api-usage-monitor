@@ -17,6 +17,9 @@ import { usageUnitLabelForProvider } from "@/lib/provider-definitions";
 import { useDisplayDensity } from "@/lib/display-density";
 import { costCoverageHelpText } from "@/lib/cost-coverage-help";
 import { CostCoverageCaveatBanner, spendCoverageNoteText } from "./cost-coverage-caveat";
+import ProviderConnectionChecklist, {
+  buildProviderConnectionChecklist,
+} from "@/components/ProviderConnectionChecklist";
 
 /** Short display label for the raw pushed-cost-coverage enum, paired with
  * `costCoverageHelpText` as a title tooltip - same "Complete"/"Partial"/
@@ -328,6 +331,20 @@ export default function ProviderDetailPage() {
       </div>
 
       <CostCoverageCaveatBanner caveat={provider.costCoverageCaveat} />
+
+      <ProviderConnectionChecklist
+        items={buildProviderConnectionChecklist({
+          providerId: provider.id,
+          hasSnapshot: Boolean(latestReading),
+          hasBudget:
+            provider.plan?.monthlyBudgetUsd != null &&
+            provider.plan.monthlyBudgetUsd > 0,
+          spendCoverage,
+          isBlindOrPushOnly: /anthropic|voyage|robinhood/i.test(provider.name),
+          lastFetchedAt: latestReading?.fetchedAt ?? null,
+        })}
+        pushOnlyHint={/anthropic|voyage|robinhood/i.test(provider.name)}
+      />
 
       {snapshotWarning && (
         <p role="status" className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800 dark:border-amber-900 dark:bg-amber-950/40 dark:text-amber-200">
