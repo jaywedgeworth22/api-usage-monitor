@@ -159,9 +159,10 @@ export async function reconcileProviderUsage(
   // rows can share one canonical key (Provider.name has no unique constraint;
   // alias spellings collapse too). Attributing the whole bucket to each row
   // would report the same pushed dollars N times and manufacture false
-  // discrepancies on a perfectly reconciled month. Resolve one OWNER per key
-  // using the repo's existing identity tie-break; siblings get no pushed cost
-  // and are recorded as unverifiable rather than given a bogus delta.
+  // discrepancies on a perfectly reconciled month. Attributing to one owner
+  // row while siblings are recorded as unverifiable still generates a false
+  // discrepancy for a genuine split. Therefore, every row in a multi-row key
+  // is marked unverifiable.
   // Keyed off the PROVIDER ROWS, not the pushed buckets: two same-key rows are
   // ambiguous whether or not any telemetry has been pushed yet, and a bucket
   // that arrives later must not suddenly be double-counted.
@@ -176,25 +177,19 @@ export async function reconcileProviderUsage(
   for (const [key, ids] of rowsByCanonicalKey.entries()) {
     if (ids.length === 1) {
       ownerIdByCanonicalKey.set(key, ids[0]);
-      continue;
     }
-    const owner = resolveProviderIdentity(
-      key,
-      providers.map((provider) => ({ id: provider.id, name: provider.name }))
-    );
-    // Deterministic fallback if no candidate resolves, so ownership is never
-    // arbitrary across passes.
-    ownerIdByCanonicalKey.set(key, owner?.id ?? [...ids].sort()[0]);
+    // If ids.length > 1, no owner is set (remains undefined). Thus, all rows
+    // for this key will have ambiguous attribution.
   }
 
   for (const provider of providers) {
     const canonicalKey = canonicalProviderKey(provider.name);
     const ownerId = ownerIdByCanonicalKey.get(canonicalKey);
-    // Only the owning row is credited with the bucket. A sibling sharing the
-    // key is "ambiguous" — its own pushed slice cannot be separated here.
-    const ambiguousAttribution = ownerId != null && ownerId !== provider.id;
+    // If no single owner could be resolved, or this provider isn't the owner,
+    // the attribution is ambiguous and its pushed slice cannot be separated.
+    const ambiguousAttribution = ownerId == null || ownerId !== provider.id;
     const pushed =
-      ambiguousAttribution || ownerId == null
+      ambiguousAttribution
         ? { usagePushed: 0, eventCount: 0 }
         : pushedByCanonicalKey.get(canonicalKey) ?? {
             usagePushed: 0,
