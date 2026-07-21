@@ -24,7 +24,15 @@ export interface ProviderAlert {
     // Statistical spike/anomaly alerts (see anomaly-detection.ts). Consumed by
     // the generic providerId:code alert-delivery machinery like any other code.
     | "spend_anomaly"
-    | "request_anomaly";
+    | "request_anomaly"
+    // Advisory codes emitted by the budget-breach control layer (see
+    // budget-controls.ts / budget-status.ts). budget_control_paused surfaces a
+    // provider whose polling was auto-paused on a sustained budget breach;
+    // key_disable_recommended is advisory only and never reflects a credential
+    // mutation. Produced in budget-status.ts, not here — this file only carries
+    // the code names.
+    | "budget_control_paused"
+    | "key_disable_recommended";
   severity: AlertSeverity;
   message: string;
 }

@@ -19,7 +19,31 @@ CREATE TABLE "Provider" (
   "billingAccountIdentity" TEXT,
   "category" TEXT NOT NULL DEFAULT 'api',
   "label" TEXT,
+  "budgetControlsEnabled" BOOLEAN NOT NULL DEFAULT false,
+  "budgetBreachState" TEXT NOT NULL DEFAULT 'ok',
+  "budgetBreachStreak" INTEGER NOT NULL DEFAULT 0,
+  "budgetControlPeriodStart" DATETIME,
+  "budgetPausedAt" DATETIME,
+  "budgetPauseReason" TEXT,
+  "budgetPauseThresholdUsd" REAL,
+  "budgetPauseObservedSpendUsd" REAL,
+  "budgetControlLastActionAt" DATETIME,
+  "keyDisableRecommended" BOOLEAN NOT NULL DEFAULT false,
   "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE "BudgetControlEvent" (
+  "id" TEXT NOT NULL PRIMARY KEY,
+  "providerId" TEXT NOT NULL,
+  "action" TEXT NOT NULL,
+  "reason" TEXT NOT NULL,
+  "breachState" TEXT NOT NULL,
+  "thresholdUsd" REAL,
+  "observedSpendUsd" REAL,
+  "breachStreak" INTEGER,
+  "periodStart" DATETIME,
+  "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  CONSTRAINT "BudgetControlEvent_providerId_fkey" FOREIGN KEY ("providerId") REFERENCES "Provider" ("id") ON DELETE CASCADE ON UPDATE CASCADE
 );
 
 CREATE TABLE "Project" (
@@ -382,6 +406,8 @@ CREATE INDEX "ProviderAlertNotification_providerId_resolvedAt_idx" ON "ProviderA
 CREATE INDEX "ProviderAlertNotification_lastSentAt_idx" ON "ProviderAlertNotification"("lastSentAt");
 CREATE UNIQUE INDEX "ProviderAlertChannelDelivery_notificationId_channelKey_key" ON "ProviderAlertChannelDelivery"("notificationId", "channelKey");
 CREATE INDEX "ProviderAlertChannelDelivery_notificationId_channelKind_idx" ON "ProviderAlertChannelDelivery"("notificationId", "channelKind");
+CREATE INDEX "BudgetControlEvent_providerId_createdAt_idx" ON "BudgetControlEvent"("providerId", "createdAt");
+CREATE INDEX "BudgetControlEvent_action_createdAt_idx" ON "BudgetControlEvent"("action", "createdAt");
 `;
 
 export function setupPrismaSqliteTestDb(dbPath: string): void {

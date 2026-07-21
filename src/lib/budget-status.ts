@@ -30,6 +30,9 @@ import { deriveGeminiBillingStatus } from "@/lib/gemini-key-status";
 import { providerConfigForServer } from "@/lib/provider-secret-config";
 import { subscriptionChargeIdempotencyKey } from "@/lib/subscription-charge-identity";
 import { isLegacyMistralSpendLimitCostSnapshot } from "@/lib/mistral-snapshot-quarantine";
+// Type-only import — erased at compile time, so it introduces NO runtime import
+// cycle with budget-controls.ts (which imports computeBudgetStatus from here).
+import type { BudgetBreachState } from "@/lib/budget-controls";
 
 // Budget-status computation for the read endpoint (GET /api/budget-status).
 //
@@ -45,6 +48,19 @@ import { isLegacyMistralSpendLimitCostSnapshot } from "@/lib/mistral-snapshot-qu
 // in provider-alerts.ts (which treats fixedMonthlyCost + snapshot.totalCost as the monthly figure).
 
 const WARNING_RATIO = 0.8;
+
+// Local, dependency-free reader of the budget-controls master flag. Inlined
+// (rather than imported from budget-controls.ts) purely to avoid any runtime
+// import cycle on this money-path module; it must stay in sync with
+// budgetAutoControlsEnabled() in budget-controls.ts (asserted by a test).
+function budgetAutoControlsEnabledForStatus(): boolean {
+  const raw = process.env.BUDGET_AUTO_CONTROLS_ENABLED?.trim().toLowerCase();
+  return raw === "true" || raw === "1" || raw === "yes";
+}
+
+function normalizeBudgetBreachState(value: string): BudgetBreachState {
+  return value === "breached" || value === "paused" ? value : "ok";
+}
 
 export type BudgetStatusLevel = "ok" | "warning" | "exceeded" | "unconfigured";
 
@@ -91,6 +107,18 @@ export interface ProviderBudgetStatus {
    */
   projectedStatus: BudgetStatusLevel;
   alerts: ProviderAlert[];
+  // Budget-breach automated-control observability (default-off). These reflect
+  // the durable state written by src/lib/budget-controls.ts. keyDisableRecommended
+  // is advisory only and never reflects a credential mutation.
+  budgetControls: {
+    enabled: boolean;
+    breachState: BudgetBreachState;
+    pausedAt: string | null;
+    pauseReason: string | null;
+    pauseThresholdUsd: number | null;
+    pauseObservedSpendUsd: number | null;
+    keyDisableRecommended: boolean;
+  };
 }
 
 export interface BudgetStatusResponse {
@@ -192,6 +220,16 @@ async function computeBudgetStatusUncached(now: Date): Promise<BudgetStatusRespo
         secretConfig: true,
         isActive: true,
         refreshIntervalMin: true,
+        // Budget-breach control state (default-off). Surfaced on the DTO so the
+        // dashboard/API can show the spend-cap/breach state, and used to emit
+        // the advisory budget_control_paused / key_disable_recommended alerts.
+        budgetControlsEnabled: true,
+        budgetBreachState: true,
+        budgetPausedAt: true,
+        budgetPauseReason: true,
+        budgetPauseThresholdUsd: true,
+        budgetPauseObservedSpendUsd: true,
+        keyDisableRecommended: true,
         plan: {
           select: {
             billingMode: true,
@@ -934,6 +972,32 @@ async function computeBudgetStatusUncached(now: Date): Promise<BudgetStatusRespo
       });
     }
 
+    // Advisory budget-control alerts. Gated on the master flag AND the
+    // per-provider opt-in so that with controls off (the default) NO new alert
+    // is ever produced — behavior is byte-identical to notify-only. These are
+    // observability only; key_disable_recommended never reflects any credential
+    // change (key revocation is owner-only per the safety rules).
+    const budgetControlsActive =
+      budgetAutoControlsEnabledForStatus() && p.budgetControlsEnabled;
+    const budgetBreachState = normalizeBudgetBreachState(p.budgetBreachState);
+    if (budgetControlsActive && p.budgetPausedAt != null) {
+      budgetAlerts.push({
+        code: "budget_control_paused",
+        severity: "critical",
+        message:
+          p.budgetPauseReason ??
+          "Provider polling was automatically paused on a sustained budget breach.",
+      });
+    }
+    if (budgetControlsActive && p.keyDisableRecommended) {
+      budgetAlerts.push({
+        code: "key_disable_recommended",
+        severity: "warning",
+        message:
+          "RECOMMENDATION ONLY: budget breach suggests disabling or rotating this provider key. No credential has been modified.",
+      });
+    }
+
     let status: BudgetStatusLevel;
     let remainingUsd: number | null;
     let percentUsed: number | null;
@@ -1012,6 +1076,15 @@ async function computeBudgetStatusUncached(now: Date): Promise<BudgetStatusRespo
       status,
       projectedStatus,
       alerts: budgetAlerts,
+      budgetControls: {
+        enabled: p.budgetControlsEnabled,
+        breachState: budgetBreachState,
+        pausedAt: p.budgetPausedAt?.toISOString() ?? null,
+        pauseReason: p.budgetPauseReason,
+        pauseThresholdUsd: p.budgetPauseThresholdUsd,
+        pauseObservedSpendUsd: p.budgetPauseObservedSpendUsd,
+        keyDisableRecommended: p.keyDisableRecommended,
+      },
     };
   });
 

@@ -45,6 +45,16 @@ function provider(
     groupId: null,
     billingAccountIdentity: null,
     label: null,
+    budgetControlsEnabled: false,
+    budgetBreachState: "ok",
+    budgetBreachStreak: 0,
+    budgetControlPeriodStart: null,
+    budgetPausedAt: null,
+    budgetPauseReason: null,
+    budgetPauseThresholdUsd: null,
+    budgetPauseObservedSpendUsd: null,
+    budgetControlLastActionAt: null,
+    keyDisableRecommended: false,
     createdAt: new Date("2026-07-11T00:00:00.000Z"),
   };
 }

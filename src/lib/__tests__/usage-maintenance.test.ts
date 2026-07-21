@@ -225,6 +225,20 @@ describe("runUsageMaintenance", () => {
         pending: 0,
         reconciledCount: 0,
       },
+      // Budget-breach automated control layer (src/lib/budget-controls.ts) is
+      // default-off; with BUDGET_AUTO_CONTROLS_ENABLED unset in the test env,
+      // applyBudgetControls short-circuits to this zeroed, enabled:false shape.
+      budgetControls: {
+        enabled: false,
+        evaluated: 0,
+        breachesObserved: 0,
+        paused: 0,
+        resumed: 0,
+        recommendationsRaised: 0,
+        recommendationsCleared: 0,
+        auditRowsWritten: 0,
+        degraded: false,
+      },
     });
     expect(isUsageMaintenanceHealthy(result)).toBe(false);
     expect(deliverAlerts).toHaveBeenCalledOnce();

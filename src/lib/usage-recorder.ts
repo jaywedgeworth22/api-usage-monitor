@@ -26,6 +26,7 @@ import {
 } from "@/lib/snapshot-sync-status";
 import { withInternalUsageWriteAdmission } from "@/lib/ingest-admission";
 import { redactProviderRawData } from "@/lib/data-privacy";
+import { budgetPollingPaused } from "@/lib/budget-controls";
 const DEFAULT_PROVIDER_TIMEOUT_MS = 90_000;
 const providerAttemptTokens = new Map<string, symbol>();
 
@@ -254,6 +255,21 @@ export async function fetchAllDueProviders(): Promise<FetchAllProvidersResult> {
 
     for (const { snapshots, ...provider } of providers) {
       const startedAt = Date.now();
+      // Budget-breach control: a provider paused by the (default-off) automated
+      // control layer is cleanly skipped here, exactly like an interval-gated
+      // skip, so no further usage is incurred/observed. With
+      // BUDGET_AUTO_CONTROLS_ENABLED unset this is always false and the poll set
+      // is byte-identical to the notify-only path.
+      if (budgetPollingPaused(provider)) {
+        skipped++;
+        outcomes.push({
+          providerId: provider.id,
+          name: provider.name,
+          status: "skipped",
+          durationMs: Date.now() - startedAt,
+        });
+        continue;
+      }
       const latestSnapshot = snapshots[0];
       const intervalMs = provider.refreshIntervalMin * 60 * 1000;
       // Pushed quota/credit events intentionally create rawData-less

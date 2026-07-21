@@ -32,6 +32,10 @@ import {
   reconcileProviderUsage,
   type ProviderUsageReconciliationResult,
 } from "@/lib/provider-usage-reconciliation";
+import {
+  applyBudgetControls,
+  type BudgetControlsResult,
+} from "@/lib/budget-controls";
 
 export interface UsageMaintenanceResult {
   subscriptionAdoption: SubscriptionAdoptionMaintenanceResult;
@@ -41,6 +45,11 @@ export interface UsageMaintenanceResult {
   alerts: AlertMaintenanceResult;
   openrouterVerification?: OpenRouterVerificationResult;
   reconciliation?: ProviderUsageReconciliationResult;
+  // Budget-breach automated control actions. Default-off and fail-safe: the
+  // apply layer never throws (it degrades to notify-only internally). This is
+  // deliberately NOT folded into isUsageMaintenanceHealthy — a control-layer
+  // problem must never flip scheduler/readiness health.
+  budgetControls?: BudgetControlsResult;
 }
 
 export interface SubscriptionAdoptionMaintenanceError {
@@ -74,6 +83,7 @@ export interface UsageMaintenanceDependencies {
   deliverAlerts?: typeof deliverProviderAlerts;
   verifyOpenRouterGenerations?: typeof verifyOpenRouterGenerations;
   reconcileProviderUsage?: typeof reconcileProviderUsage;
+  runBudgetControls?: typeof applyBudgetControls;
 }
 
 const HEALTHY_CLOUDFLARE_LEGACY_HANDOFF_STATUSES = new Set<
@@ -248,6 +258,25 @@ export async function runUsageMaintenance(
       console.error("[usage-maintenance] Provider usage reconciliation failed:", error);
     }
 
+    // Budget-breach automated control actions run AFTER alerts so the pause/
+    // recommendation decision sees the same canonical spend the alert path just
+    // evaluated. applyBudgetControls is default-off and fully fail-safe (it
+    // never throws: it self-wraps its own SQLite writes with the internal
+    // admission lease and degrades to notify-only on any error), so the extra
+    // try/catch here is belt-and-suspenders — a control-layer failure can never
+    // break the poll/maintenance cycle.
+    let budgetControls: BudgetControlsResult | undefined;
+    try {
+      budgetControls = await (
+        dependencies.runBudgetControls ?? applyBudgetControls
+      )({});
+    } catch (error) {
+      console.error(
+        "[usage-maintenance] budget-controls stage failed unexpectedly; continuing notify-only",
+        error
+      );
+    }
+
     return {
       subscriptionAdoption,
       subscriptions,
@@ -256,6 +285,7 @@ export async function runUsageMaintenance(
       alerts,
       openrouterVerification,
       reconciliation,
+      budgetControls,
     };
   })();
 

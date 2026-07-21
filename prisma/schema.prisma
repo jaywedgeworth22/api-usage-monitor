@@ -34,6 +34,33 @@ model Provider {
   // credential; different credentials are not treated as different accounts.
   billingAccountIdentity String?
   label                 String?
+  // ---------------------------------------------------------------------------
+  // Budget-breach automated control state (additive; see src/lib/budget-controls.ts).
+  // Every field below is default-off / nullable so behavior is byte-identical to
+  // today's notify-only path UNLESS BUDGET_AUTO_CONTROLS_ENABLED=true AND this
+  // provider has budgetControlsEnabled=true. Pausing is reversible and audited;
+  // key-disable is a RECOMMENDATION only and never mutates a credential.
+  // ---------------------------------------------------------------------------
+  // Per-provider opt-in. The master env flag alone never acts on a provider.
+  budgetControlsEnabled Boolean                     @default(false)
+  // Spend-cap / breach state the dashboard shows and that gates the pause:
+  // "ok" | "breached" | "paused". Existing rows migrate as "ok".
+  budgetBreachState     String                      @default("ok")
+  // Consecutive sustained-breach observations in the current period (hysteresis
+  // counter; mirrors the scheduler provider_fetch_degraded consecutive-tick latch).
+  budgetBreachStreak    Int                         @default(0)
+  // UTC month-start the streak/pause is anchored to. A period roll resets both.
+  budgetControlPeriodStart DateTime?
+  // Durable, reversible pause. Null = polling is NOT paused by budget controls.
+  budgetPausedAt        DateTime?
+  budgetPauseReason     String?
+  budgetPauseThresholdUsd Float?
+  budgetPauseObservedSpendUsd Float?
+  // Cooldown anchor: timestamp of the last automated pause/resume (anti-flap).
+  budgetControlLastActionAt DateTime?
+  // Advisory only — a recommendation to disable/rotate the key. NEVER a
+  // credential mutation (key revocation is owner-only per the safety rules).
+  keyDisableRecommended Boolean                     @default(false)
   createdAt             DateTime                    @default(now())
   plan                  ProviderPlan?
   snapshots             UsageSnapshot[]
@@ -44,6 +71,35 @@ model Provider {
   externalBilling       ProviderExternalBilling[]
   externalBillingChargeCorrections ExternalBillingChargeCorrection[]
   usageReconciliations  ProviderUsageReconciliation[]
+  budgetControlEvents   BudgetControlEvent[]
+}
+
+// Append-only audit trail for every automated budget-control action (pause,
+// resume, key-disable recommendation, and observed/cleared breach transitions).
+// The control layer only ever INSERTs here — rows are never mutated or deleted —
+// so this is the durable evidence for the reversible/audited guarantee. It is
+// deliberately separate from ProviderAlertNotification: those track alert
+// delivery incidents; these record control-action provenance.
+model BudgetControlEvent {
+  id               String    @id @default(uuid())
+  providerId       String
+  provider         Provider  @relation(fields: [providerId], references: [id], onDelete: Cascade)
+  // pause | resume_breach_resolved | resume_period_roll | resume_controls_disabled |
+  // recommend_key_disable | clear_key_disable_recommendation |
+  // breach_observed | breach_cleared
+  action           String
+  reason           String
+  // Resulting breach state after this action ("ok" | "breached" | "paused").
+  breachState      String
+  thresholdUsd     Float?
+  observedSpendUsd Float?
+  breachStreak     Int?
+  // UTC month-start this action was evaluated against.
+  periodStart      DateTime?
+  createdAt        DateTime  @default(now())
+
+  @@index([providerId, createdAt])
+  @@index([action, createdAt])
 }
 
 model ProviderPlan {

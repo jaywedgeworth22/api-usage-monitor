@@ -414,6 +414,16 @@ export async function GET(request: NextRequest) {
       // conflated.
       costCoverageCaveat,
       alerts,
+      // Budget-breach control state (default-off; see budget-controls.ts).
+      budgetControls: canonicalBudget?.budgetControls ?? {
+        enabled: false,
+        breachState: "ok" as const,
+        pausedAt: null,
+        pauseReason: null,
+        pauseThresholdUsd: null,
+        pauseObservedSpendUsd: null,
+        keyDisableRecommended: false,
+      },
       // Fail closed: never invent complete $0 or raw-snapshot "complete" when
       // the canonical budget path is missing. Unknown spend stays null.
       estimatedMonthlyCostUsd:
