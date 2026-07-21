@@ -346,8 +346,24 @@ export async function fetchUsage(
     typeof config.adminApiKey === "string" ? config.adminApiKey.trim() : "";
   const costsApiKey = configuredAdminKey || apiKey;
 
+  // Wave E / E8: resolve organization Costs first. When it succeeds, skip the
+  // legacy month-range billing/usage endpoint (only used as totalCost fallback).
+  // Keep today's /v1/usage for request-count diagnostics; keep grants/subscription
+  // and cost component breakdowns either way.
+  const costsRes = await fetchOrganizationCosts(
+    costsApiKey,
+    monthStartUnix,
+    endTimeUnix
+  );
+  const costsSucceeded = costsRes.ok && costsRes.totalCost != null;
+
+  const skippedLegacyMonthRange = {
+    ok: false as const,
+    status: 0,
+    data: null as unknown,
+  };
+
   const [
-    costsRes,
     usageRes,
     billingRes,
     grantsRes,
@@ -356,14 +372,19 @@ export async function fetchUsage(
     lineItemCostsRes,
     apiKeyCostsRes,
   ] = await Promise.all([
-    fetchOrganizationCosts(costsApiKey, monthStartUnix, endTimeUnix),
     fetchJson(`https://api.openai.com/v1/usage?date=${today}`, { headers }),
-    fetchJson("https://api.openai.com/dashboard/billing/subscription", { headers }),
-    fetchJson("https://api.openai.com/dashboard/billing/credit_grants", { headers }),
-    fetchJson(
-      `https://api.openai.com/dashboard/billing/usage?start_date=${monthStart}&end_date=${today}`,
-      { headers }
-    ),
+    fetchJson("https://api.openai.com/dashboard/billing/subscription", {
+      headers,
+    }),
+    fetchJson("https://api.openai.com/dashboard/billing/credit_grants", {
+      headers,
+    }),
+    costsSucceeded
+      ? Promise.resolve(skippedLegacyMonthRange)
+      : fetchJson(
+          `https://api.openai.com/dashboard/billing/usage?start_date=${monthStart}&end_date=${today}`,
+          { headers }
+        ),
     fetchOrganizationCostComponents(
       costsApiKey,
       monthStartUnix,
@@ -397,6 +418,9 @@ export async function fetchUsage(
       totalCostUsd: costsRes.totalCost,
       pageCount: costsRes.pageCount,
     },
+    // Diagnostic: when true, legacy month-range billing/usage was not called
+    // because organization Costs already supplied MTD cash (E8).
+    legacyMonthRangeSkipped: costsSucceeded,
     organizationCostBreakdowns: {
       project_id: {
         available: projectCostsRes.ok,

@@ -84,3 +84,28 @@ describe("provider billing account identity input", () => {
     ).toThrow("billingAccountId cannot contain control characters");
   });
 });
+
+describe("self-burning probe refresh floors (E20)", () => {
+  it("rejects sub-hour refresh for Twelve Data and Unusual Whales", () => {
+    expect(() =>
+      parseProviderCreateInput({
+        name: "twelvedata",
+        displayName: "Twelve Data",
+        refreshIntervalMin: 5,
+      })
+    ).toThrow(/at least 60 minutes/);
+    expect(() =>
+      parseProviderUpdateInput({ refreshIntervalMin: 15 }, "unusualwhales")
+    ).toThrow(/at least 60 minutes/);
+  });
+
+  it("allows hourly-or-slower refresh for self-burning probes", () => {
+    expect(
+      parseProviderCreateInput({
+        name: "twelvedata",
+        displayName: "Twelve Data",
+        refreshIntervalMin: 60,
+      }).refreshIntervalMin
+    ).toBe(60);
+  });
+});

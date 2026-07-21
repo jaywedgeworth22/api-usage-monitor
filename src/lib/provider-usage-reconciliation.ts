@@ -85,6 +85,24 @@ export function reconciliationStatus(
     : "discrepancy";
 }
 
+/**
+ * Variable (usage) portion of a snapshot totalCost for reconciliation (Wave E / E12).
+ * Pushed telemetry is usage-only; comparing it to a snapshot that still includes
+ * plan fixed fees is apples-to-oranges and invents false discrepancies.
+ */
+export function snapshotVariableCostUsd(
+  snapshotTotalCostUsd: number,
+  fixedMonthlyCostUsd: number | null | undefined
+): number {
+  const fixed =
+    fixedMonthlyCostUsd != null &&
+    Number.isFinite(fixedMonthlyCostUsd) &&
+    fixedMonthlyCostUsd > 0
+      ? fixedMonthlyCostUsd
+      : 0;
+  return Math.max(0, snapshotTotalCostUsd - fixed);
+}
+
 export async function reconcileProviderUsage(
   now: Date = new Date()
 ): Promise<ProviderUsageReconciliationResult> {
@@ -111,6 +129,7 @@ export async function reconcileProviderUsage(
         id: true,
         name: true,
         type: true,
+        plan: { select: { fixedMonthlyCostUsd: true } },
         snapshots: {
           where: {
             fetchedAt: { gte: periodStart },
@@ -202,7 +221,15 @@ export async function reconcileProviderUsage(
       provider.name,
       provider.type
     ).billing.visibility;
-    const snapshotCost = provider.snapshots[0]?.totalCost ?? null;
+    const snapshotTotal = provider.snapshots[0]?.totalCost ?? null;
+    // Compare usage-pushed to the variable portion of the snapshot only (E12).
+    const snapshotCost =
+      snapshotTotal == null
+        ? null
+        : snapshotVariableCostUsd(
+            snapshotTotal,
+            provider.plan?.fixedMonthlyCostUsd
+          );
 
     let status: string;
     let verifiedCostUsd: number | null = null;

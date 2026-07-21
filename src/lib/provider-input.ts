@@ -139,7 +139,23 @@ function parseSecretConfigOperations(
   });
 }
 
-function parseRefreshInterval(value: unknown, fallback = 60): number {
+/**
+ * Self-burning probe adapters (each poll costs quota). Floor refresh so a
+ * mis-set 1-minute interval cannot burn the daily allowance (Wave E / E20).
+ * Keys are provider `name` values (case-insensitive).
+ */
+export const SELF_BURNING_PROBE_MIN_REFRESH_MIN: Readonly<
+  Record<string, number>
+> = {
+  twelvedata: 60,
+  unusualwhales: 60,
+};
+
+function parseRefreshInterval(
+  value: unknown,
+  fallback = 60,
+  providerName?: string
+): number {
   if (value === undefined || value === null || value === "") return fallback;
   const parsed = typeof value === "number" ? value : Number(value);
   if (!Number.isInteger(parsed)) {
@@ -148,6 +164,13 @@ function parseRefreshInterval(value: unknown, fallback = 60): number {
   if (parsed < 1 || parsed > MAX_REFRESH_INTERVAL_MIN) {
     throw new Error(
       `refreshIntervalMin must be between 1 and ${MAX_REFRESH_INTERVAL_MIN}`
+    );
+  }
+  const floorKey = providerName?.trim().toLowerCase() ?? "";
+  const floor = SELF_BURNING_PROBE_MIN_REFRESH_MIN[floorKey];
+  if (floor != null && parsed < floor) {
+    throw new Error(
+      `refreshIntervalMin for ${floorKey} must be at least ${floor} minutes (each poll consumes provider quota)`
     );
   }
   return parsed;
@@ -338,7 +361,11 @@ export function parseProviderCreateInput(body: Record<string, unknown>): Provide
     type,
     apiKey: cleanOptionalString(body.apiKey),
     config,
-    refreshIntervalMin: parseRefreshInterval(body.refreshIntervalMin),
+    refreshIntervalMin: parseRefreshInterval(
+      body.refreshIntervalMin,
+      60,
+      name
+    ),
     groupId: cleanOptionalString(body.groupId),
     billingAccountId: parseBillingAccountId(body.billingAccountId) ?? undefined,
     label: cleanOptionalString(body.label),
@@ -348,7 +375,9 @@ export function parseProviderCreateInput(body: Record<string, unknown>): Provide
 }
 
 export function parseProviderUpdateInput(
-  body: Record<string, unknown>
+  body: Record<string, unknown>,
+  /** Existing provider name for self-burning probe floors (Wave E / E20). */
+  existingProviderName?: string
 ): ProviderUpdateInput {
   const update: ProviderUpdateInput = {};
 
@@ -393,7 +422,11 @@ export function parseProviderUpdateInput(
   }
 
   if (body.refreshIntervalMin !== undefined) {
-    update.refreshIntervalMin = parseRefreshInterval(body.refreshIntervalMin);
+    update.refreshIntervalMin = parseRefreshInterval(
+      body.refreshIntervalMin,
+      60,
+      existingProviderName
+    );
   }
 
   if (body.groupId !== undefined) {
