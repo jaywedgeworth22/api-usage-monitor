@@ -245,8 +245,11 @@ describe("ProviderTable cost coverage", () => {
       }),
     ]);
 
-    expect(html).toContain("Cost coverage gap:");
-    expect(html).toContain("Usage-based costs (D1, R2, Workers, Queues overage) are not visible");
+    // Default density is compact (Wave D): short label + full text in title.
+    expect(html).toContain("Coverage gap");
+    expect(html).toContain(
+      "Usage-based costs (D1, R2, Workers, Queues overage) are not visible"
+    );
   });
 
   it("omits the cost coverage gap warning when the adapter did not flag one", () => {
@@ -260,6 +263,7 @@ describe("ProviderTable cost coverage", () => {
       }),
     ]);
 
+    expect(html).not.toContain("Coverage gap");
     expect(html).not.toContain("Cost coverage gap");
   });
 });
