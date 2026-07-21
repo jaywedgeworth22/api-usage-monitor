@@ -14,13 +14,15 @@
 #     S3 endpoint set (R2 always sets one) Litestream falls back to us-east-1 and
 #     R2 accepts any region for SigV4.
 
-# Point-in-time retention: keep 30 days of snapshot history, a fresh snapshot
-# every 24h. Litestream 0.5.x stores LTX files and GCs snapshots older than
-# `retention`; the finer-grained LTX/WAL window is governed by the default
-# l0-retention, which is sufficient here.
+# Point-in-time retention: keep 7 days of snapshot history, a fresh snapshot
+# every 24h. Was 720h (30d) — too large for the shared Hetzner Garage volume
+# (~14 GiB in ~3 days of LTX at prod write rate). 168h still covers weekly
+# restore drills; operator can raise later if Garage moves off the 75G box.
+# Litestream 0.5.x stores LTX files and GCs snapshots older than `retention`;
+# the finer-grained LTX/WAL window is governed by the default l0-retention.
 snapshot:
   interval: 24h
-  retention: 720h
+  retention: 168h
 
 dbs:
   - path: /data/prod.db

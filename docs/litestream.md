@@ -38,8 +38,9 @@ and makes `/api/ready` fail.
   version is already there) and safe to run even when replication is never enabled —
   the binary just sits unused.
 - `litestream.yml` — the replica config: `/data/prod.db`, single S3-type replica
-  populated entirely from `LITESTREAM_S3_*` env vars, `retention: 720h` /
-  `retention-check-interval: 24h` / `snapshot-interval: 24h` (30 days of history),
+  populated entirely from `LITESTREAM_S3_*` env vars, `retention: 168h` /
+  `snapshot-interval: 24h` (7 days of history; reduced from 720h/30d on 2026-07-21
+  after Garage on the shared Hetzner 75G disk grew past 14 GiB in a few days),
   copied from Socratic.Trade's config.
 - `scripts/start-with-litestream.sh` — `render.yaml`'s `startCommand`. If all four
   required `LITESTREAM_S3_*` vars are set and `bin/litestream` exists: restores from
