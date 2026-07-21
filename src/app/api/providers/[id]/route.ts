@@ -366,7 +366,7 @@ export async function PUT(
 
   let input;
   try {
-    input = parseProviderUpdateInput(await readJsonBody(request));
+    input = parseProviderUpdateInput(await readJsonBody(request), existing.name);
   } catch (error) {
     return NextResponse.json(
       { error: error instanceof Error ? error.message : "Invalid request" },

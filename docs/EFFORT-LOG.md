@@ -651,6 +651,7 @@ Protocol: /Users/jay/apps/EFFORT-LOG-PROTOCOL.md (canonical). Live board: this f
   _2026-07-15 (MONET): moved to Completed — stale duplicate row; work already merged (PR #58, squash `dfdb39e`, per this row's own trailing annotation) and docs/EFFORT-LOG.md mirror already corrected by PR #299 on 2026-07-15; the live board simply hadn't caught up. No further action needed._
 
 ## In Progress
+- **[GROK3] Wave E scale/coverage (E3/E8/E12/E16/E20) — IN PROGRESS 2026-07-21.** Branch `grok3/wave-e-scale`. OpenRouter activity MTD caveat; OpenAI skip legacy month-range when Costs ok; reconciliation variable-only vs fixed; LlamaIndex docs; self-burning refresh floors.
 - **[GROK3] Wave D operator UX (D1–D5) — IN PROGRESS 2026-07-21.** Branch `grok3/wave-d-ux`. Attention always-visible; money-first KPI + neutral zero alerts; density unify compact default + Nav Usage Monitor rename; cost-coverage legend; provider connection checklist + push/OTLP hint. #701 Wave C remainder merged.
 - **[GROK3] Wave C remainder (C3/C4/C7–C10) — IN PROGRESS 2026-07-21.** Branch `grok3/wave-c-remainder`. C3 observer fail-closed on supersede; C7 abort+backoff; C4 backup side-channel; C8 admission metrics; C9 hysteresis; C10 USAGE_READ_TOKEN prod. C1 cross-repo deferred. Prod lag: a1ae04b vs main eedd6f9c.
 

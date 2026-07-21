@@ -258,12 +258,32 @@ export async function fetchUsage(apiKey: string): Promise<UsageResult> {
     activitySummary = { available: false, status: activityRes.status };
   }
 
+  // Wave E / E3: when MTD cash is derived from /activity, surface an explicit
+  // coverage caveat so dashboards never present the estimate as invoice truth.
+  // Multi-workspace accounts are also incomplete in the keys enumeration.
+  const workspaceIds = new Set(
+    (keysResult.ok ? keysResult.keys : [])
+      .map((k) => k.workspaceId)
+      .filter((id): id is string => Boolean(id))
+  );
+  const multiWorkspace = workspaceIds.size > 1;
+  const costCoverageCaveat =
+    totalCost != null
+      ? {
+          code: "openrouter_activity_mtd_estimate",
+          message: multiWorkspace
+            ? "Month-to-date cost is estimated from OpenRouter /activity (not an invoice). Multiple workspaces were observed on keys; this v1 read only fully covers the default workspace, so spend may be understated."
+            : "Month-to-date cost is estimated from OpenRouter /activity rows since the UTC month start (trailing ~30 completed days), not from an invoice or statement. Treat as a best-effort estimate.",
+        }
+      : null;
+
   return {
     balance,
     totalCost,
     costWindowStart: totalCost != null ? monthStartDate : null,
     costWindowEnd: totalCost != null ? now : null,
     costScope: totalCost != null ? "calendar_month_to_date" : "unknown",
+    costCoverageCaveat,
     totalRequests,
     credits,
     rawData: {
@@ -275,6 +295,7 @@ export async function fetchUsage(apiKey: string): Promise<UsageResult> {
       keysAvailable: keysResult.ok,
       ...(keysResult.ok ? {} : { keysStatus: keysResult.status }),
       activity: activitySummary,
+      multiWorkspaceDetected: multiWorkspace,
       capabilities: {
         managementKeyConfirmed: true,
         accountCreditsAvailable: creditsRes.ok && balance != null,
