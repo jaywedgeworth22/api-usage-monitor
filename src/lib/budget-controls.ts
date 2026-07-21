@@ -780,7 +780,7 @@ export async function applyManualBudgetControl(
         action: "pause_manual",
         reason: budgetPauseReason,
         breachState: "paused",
-        thresholdUsd: budget,
+        thresholdUsd: budget ?? null,
         observedSpendUsd: spent,
         breachStreak: budgetBreachStreak,
         periodStart,
