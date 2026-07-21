@@ -28,15 +28,31 @@ public enum WidgetSnapshotBuilder {
                 )
             }
 
+        // Provider-scoped account totals (server summary is project-budget scoped).
+        let totalSpent = response.providers.reduce(0) { $0 + $1.spentUsd }
+        let totalBudget = response.providers
+            .compactMap(\.monthlyBudgetUsd)
+            .filter { $0 > 0 }
+            .reduce(0, +)
+        let projected = response.providers.reduce(0) { $0 + $1.projectedEomUsd }
+        let overBudget =
+            response.providers.contains { $0.status == .exceeded }
+            || (totalBudget > 0 && totalSpent >= totalBudget)
+        let warning =
+            overBudget
+            || response.providers.contains { $0.status == .warning }
+            || (totalBudget > 0 && totalSpent / totalBudget >= 0.8)
+        let percentUsed = totalBudget > 0 ? totalSpent / totalBudget : nil
+
         return WidgetSnapshot(
             generatedAt: response.generatedAtDate ?? Date(),
             month: response.month,
-            totalSpentUsd: summary.totalSpentUsd,
-            totalBudgetUsd: summary.totalBudgetUsd,
-            projectedEomUsd: response.providers.reduce(0) { $0 + $1.projectedEomUsd },
-            percentUsed: summary.percentUsed,
-            overBudget: summary.overBudget,
-            warning: summary.warning,
+            totalSpentUsd: totalSpent,
+            totalBudgetUsd: totalBudget,
+            projectedEomUsd: projected,
+            percentUsed: percentUsed,
+            overBudget: overBudget,
+            warning: warning,
             topMeters: meters
         )
     }

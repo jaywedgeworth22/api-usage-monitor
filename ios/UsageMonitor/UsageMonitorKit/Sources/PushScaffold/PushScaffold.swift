@@ -110,36 +110,39 @@ public enum PushScaffold {
     ///
     /// Only alerts at or above `minimumSeverity` are surfaced; `.info` is
     /// treated as non-interruptive and skipped by default.
+    /// Schedule local notifications for provider-scoped alerts. Prefer this
+    /// over the bare-alert overload so titles/ids include the provider name.
     @discardableResult
     public static func scheduleAlertNotifications(
-        for alerts: [ProviderAlert],
+        for items: [(providerTitle: String, providerId: String, alert: ProviderAlert)],
         minimumSeverity: AlertSeverity = .warning
     ) async -> [String] {
         let center = UNUserNotificationCenter.current()
-        let surfaced = alerts.filter { $0.severity.order <= minimumSeverity.order }
+        let surfaced = items.filter { $0.alert.severity.order <= minimumSeverity.order }
         guard !surfaced.isEmpty else { return [] }
 
-        // Avoid re-posting alerts already pending delivery.
         let pending = await center.pendingNotificationRequests().map(\.identifier)
         let pendingSet = Set(pending)
 
         var scheduled: [String] = []
-        for alert in surfaced {
-            let identifier = "\(PushIdentifiers.localAlertPrefix)\(alert.id)"
+        for item in surfaced {
+            // Include provider id so identical codes on two providers do not collide.
+            let identifier =
+                "\(PushIdentifiers.localAlertPrefix)\(item.providerId)|\(item.alert.id)"
             guard !pendingSet.contains(identifier) else { continue }
 
             let content = UNMutableNotificationContent()
-            content.title = alert.title
-            content.body = alert.message
+            content.title = "\(item.providerTitle): \(item.alert.title)"
+            content.body = item.alert.message
             content.sound = .default
             content.categoryIdentifier = PushIdentifiers.alertCategory
-            content.interruptionLevel = alert.severity.interruptionLevel
-            content.userInfo = PushDeepLink(tab: .alerts, alertCode: alert.code).userInfo
+            content.interruptionLevel = item.alert.severity.interruptionLevel
+            content.userInfo = PushDeepLink(tab: .alerts, alertCode: item.alert.code).userInfo
 
             let request = UNNotificationRequest(
                 identifier: identifier,
                 content: content,
-                trigger: nil // deliver now
+                trigger: nil
             )
             do {
                 try await center.add(request)
@@ -149,6 +152,18 @@ public enum PushScaffold {
             }
         }
         return scheduled
+    }
+
+    /// Legacy bare-alert path (no provider identity) — prefer the tuple overload.
+    @discardableResult
+    public static func scheduleAlertNotifications(
+        for alerts: [ProviderAlert],
+        minimumSeverity: AlertSeverity = .warning
+    ) async -> [String] {
+        await scheduleAlertNotifications(
+            for: alerts.map { (providerTitle: $0.title, providerId: "unknown", alert: $0) },
+            minimumSeverity: minimumSeverity
+        )
     }
 }
 

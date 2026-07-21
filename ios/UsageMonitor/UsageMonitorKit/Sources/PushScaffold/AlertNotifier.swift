@@ -45,32 +45,42 @@ public enum AlertNotifier {
 
     // MARK: Delivery
 
-    /// Deliver notifications for any newly-appeared alerts in `alerts`, deduped
-    /// against what was delivered on previous runs. No-ops when disabled or when
-    /// notifications aren't authorized. Returns the identifiers newly scheduled.
+    /// Deliver notifications for any newly-appeared **provider-scoped** alerts.
     @discardableResult
-    public static func deliver(for alerts: [ProviderAlert]) async -> [String] {
+    public static func deliver(
+        for items: [(providerTitle: String, providerId: String, alert: ProviderAlert)]
+    ) async -> [String] {
         guard isEnabled else { return [] }
 
         let status = await PushScaffold.authorizationStatus()
-        // `.authorized` and `.provisional` (quiet delivery) both permit posting.
         guard status == .authorized || status == .provisional else { return [] }
 
         let minimum = minimumSeverity
-        let surfaced = alerts.filter { $0.severity.order <= minimum.order }
-        let surfacedIDs = Set(surfaced.map(\.id))
+        let surfaced = items.filter { $0.alert.severity.order <= minimum.order }
+        // Provider-scoped identity so two providers with the same alert code
+        // do not suppress each other.
+        let surfacedIDs = Set(surfaced.map { "\($0.providerId)|\($0.alert.id)" })
 
-        // Alerts we've already notified about; anything no longer surfaced is
-        // pruned so a cleared-then-re-triggered alert can notify again.
         let previouslyDelivered = Set(defaults.stringArray(forKey: deliveredKey) ?? [])
-        let fresh = surfaced.filter { !previouslyDelivered.contains($0.id) }
+        let fresh = surfaced.filter {
+            !previouslyDelivered.contains("\($0.providerId)|\($0.alert.id)")
+        }
 
-        // Record the current surfaced set as "delivered" regardless — this both
-        // marks the fresh ones and prunes stale ids.
         defaults.set(Array(surfacedIDs), forKey: deliveredKey)
 
         guard !fresh.isEmpty else { return [] }
-        return await PushScaffold.scheduleAlertNotifications(for: fresh, minimumSeverity: minimum)
+        return await PushScaffold.scheduleAlertNotifications(
+            for: fresh,
+            minimumSeverity: minimum
+        )
+    }
+
+    /// Flat-alert convenience (no provider identity) — prefer the tuple overload.
+    @discardableResult
+    public static func deliver(for alerts: [ProviderAlert]) async -> [String] {
+        await deliver(for: alerts.map {
+            (providerTitle: $0.title, providerId: "unknown", alert: $0)
+        })
     }
 
     /// Testing/reset hook: forget the delivered-alert history.

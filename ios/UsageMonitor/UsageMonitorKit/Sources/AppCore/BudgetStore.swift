@@ -88,6 +88,15 @@ public final class BudgetStore {
         await fetch()
     }
 
+    /// Sign-out: drop in-memory and persisted money state so the next account
+    /// (or offline paint) cannot show the previous token's spend.
+    public func clearAll() async {
+        state = .idle
+        lastUpdated = nil
+        lastError = nil
+        await sink.clear()
+    }
+
     private func fetch() async {
         do {
             let response = try await apiClient.budgetStatus()

@@ -6,25 +6,23 @@ import Networking
 
 /// Root of the **ProjectBudgets** lane (tab `.projects`).
 ///
-/// Per-project budget tracking: a list of projects with spend-vs-budget meters,
-/// a project detail screen, and add/edit of a project budget. Budget data comes
-/// from the shared `BudgetStore` (the single authenticated fetch); local
-/// add/edit is layered on via `LocalProjectBudgetStore` until a backend
-/// mutation endpoint exists (see `ProjectBudgetEditing.swift`).
+/// Per-project budget tracking: a list of projects with spend-vs-budget meters
+/// and a project detail screen. Budget data comes from the shared
+/// `BudgetStore` (the single authenticated fetch). **Add/edit is disabled**
+/// until a bearer-reachable mutation API exists — local-only Save previously
+/// looked real but never hit the monitor (money-path hazard).
 ///
 /// Public entry point — keep `ProjectBudgetsRootView` + `public init()` stable.
 public struct ProjectBudgetsRootView: View {
     @Environment(BudgetStore.self) private var store
     /// Optional so previews (store-only) don't trap; the app injects it.
     @Environment(AppEnvironment.self) private var env: AppEnvironment?
-    @State private var editStore = LocalProjectBudgetStore()
     @State private var detailID: String?
-    @State private var sheet: SheetRoute?
 
     public init() {}
 
     private var mergedProjects: [ProjectBudgetStatus] {
-        ProjectBudgetsListModel.sorted(editStore.merged(with: store.projects))
+        ProjectBudgetsListModel.sorted(store.projects)
     }
 
     private var phase: ProjectBudgetsPhase {
@@ -41,35 +39,15 @@ public struct ProjectBudgetsRootView: View {
                 onRetry: { Task { await store.load() } },
                 onConnect: { env?.selectTab?(.settings) },
                 onSelect: { detailID = $0.id },
-                onAdd: { Haptics.tap(); sheet = .add }
+                onAdd: { /* mutations disabled until server write path exists */ }
             )
             .navigationTitle(AppTab.projects.title)
             .navigationBarTitleDisplayMode(.large)
-            .toolbar {
-                ToolbarItem(placement: .primaryAction) {
-                    Button {
-                        Haptics.tap()
-                        sheet = .add
-                    } label: {
-                        Image(systemName: "plus")
-                    }
-                    .accessibilityLabel("Add project budget")
-                }
-            }
             .navigationDestination(item: $detailID) { id in
                 projectDetail(id: id)
             }
-            .sheet(item: $sheet) { sheet in
-                editSheet(sheet)
-            }
             .task { await store.loadIfNeeded() }
         }
-    }
-
-    private enum SheetRoute: Identifiable {
-        case add
-        case edit(String)
-        var id: String { if case .edit(let id) = self { return "edit-\(id)" } else { return "add" } }
     }
 
     @ViewBuilder
@@ -77,7 +55,7 @@ public struct ProjectBudgetsRootView: View {
         if let project = mergedProjects.first(where: { $0.id == id }) {
             ProjectBudgetDetailView(
                 presentation: ProjectBudgetPresentation(project),
-                onEdit: { sheet = .edit(id) }
+                onEdit: nil
             )
         } else {
             EmptyState(
@@ -88,21 +66,6 @@ public struct ProjectBudgetsRootView: View {
         }
     }
 
-    @ViewBuilder
-    private func editSheet(_ sheet: SheetRoute) -> some View {
-        switch sheet {
-        case .add:
-            ProjectBudgetEditView(existing: nil, editStore: editStore) { saved in
-                detailID = saved.id
-            }
-        case .edit(let id):
-            ProjectBudgetEditView(
-                existing: mergedProjects.first(where: { $0.id == id }),
-                editStore: editStore,
-                onSaved: { _ in }
-            )
-        }
-    }
 }
 
 // MARK: - Content (pure, value-driven — previewable without a live store)

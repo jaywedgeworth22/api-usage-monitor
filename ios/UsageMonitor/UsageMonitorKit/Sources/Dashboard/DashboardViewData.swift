@@ -22,11 +22,21 @@ struct DashboardViewData: Equatable, Sendable {
     var summary: BudgetSummary { response.summary }
     var providers: [ProviderBudgetStatus] { response.providers }
 
-    // MARK: - Month-to-date totals
+    // MARK: - Month-to-date totals (provider-scoped account view)
+    //
+    // Server `summary` is project-budget scoped (totalBudgetUsd / overBudget /
+    // percentUsed come from *projects*). Mixing that with provider totalSpentUsd
+    // produces a false hero meter. Account Overview always derives spend +
+    // budget + health from **providers**.
 
-    var totalSpent: Double { summary.totalSpentUsd }
-    var totalBudget: Double { summary.totalBudgetUsd }
-    var remaining: Double { summary.remainingUsd }
+    var totalSpent: Double { providers.reduce(0) { $0 + $1.spentUsd } }
+
+    /// Sum of provider monthly budgets (ignores unconfigured providers).
+    var totalBudget: Double {
+        providers.compactMap(\.monthlyBudgetUsd).filter { $0 > 0 }.reduce(0, +)
+    }
+
+    var remaining: Double { totalBudget - totalSpent }
 
     /// A real total budget is configured (drives meter vs. plain-spend hero).
     var hasBudget: Bool { totalBudget > 0 }
@@ -37,8 +47,8 @@ struct DashboardViewData: Equatable, Sendable {
         return totalSpent / totalBudget
     }
 
-    /// Prefer the server's `percentUsed`; fall back to the computed fraction.
-    var percentUsedDisplay: Double { summary.percentUsed ?? spentFraction }
+    /// Provider-derived percent used (never project-summary percentUsed).
+    var percentUsedDisplay: Double { spentFraction }
 
     // MARK: - Projection (month-end)
 
@@ -67,11 +77,13 @@ struct DashboardViewData: Equatable, Sendable {
 
     // MARK: - Overall status
 
-    /// The account-level status the hero renders. Server flags win; an
-    /// all-unconfigured account reads neutral.
+    /// The account-level status the hero renders from **provider** statuses
+    /// (worst wins). Project-summary flags are intentionally ignored.
     var overallStatus: BudgetLevel {
-        if summary.overBudget { return .exceeded }
-        if summary.warning { return .warning }
+        if providers.contains(where: { $0.status == .exceeded }) { return .exceeded }
+        if hasBudget, totalSpent >= totalBudget { return .exceeded }
+        if providers.contains(where: { $0.status == .warning }) { return .warning }
+        if hasBudget, spentFraction >= 0.8 { return .warning }
         if configuredProviderCount == 0 { return .unconfigured }
         return .ok
     }

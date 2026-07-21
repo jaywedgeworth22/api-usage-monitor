@@ -44,12 +44,12 @@ struct BudgetTimelineProvider: TimelineProvider {
         // widget always looks representative; otherwise show real cached data.
         let snapshot = context.isPreview
             ? .placeholder
-            : (SharedStore.shared.read() ?? .placeholder)
+            : (SharedStore.shared.read() ?? .empty)
         completion(BudgetEntry(date: Date(), snapshot: snapshot))
     }
 
     func getTimeline(in context: Context, completion: @escaping (Timeline<BudgetEntry>) -> Void) {
-        let snapshot = SharedStore.shared.read() ?? .placeholder
+        let snapshot = SharedStore.shared.read() ?? .empty
         let entry = BudgetEntry(date: Date(), snapshot: snapshot)
         // The app refreshes the snapshot on foreground / background fetch; the
         // widget just re-reads periodically. 30 min is a battery-safe cadence

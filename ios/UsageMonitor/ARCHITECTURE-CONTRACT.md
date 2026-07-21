@@ -6,6 +6,12 @@ today (SPM package `UsageMonitorKit` + a thin app target + a widget extension).
 Do not re-architect it — extend it. If something here disagrees with the code,
 the code wins; fix the doc.
 
+**Status (2026-07-20):** Dashboard, Providers, Alerts, Project budgets (read-only),
+Settings, OfflineCache, Widget, and AppLock are **shipped features**, not
+placeholders. Account Overview / widget totals are **provider-scoped** (do not
+mix server project-summary budget with provider total spend). Project add/edit
+is disabled until a bearer mutation API exists.
+
 Toolchain on the build host: **Swift 6.4** (`swift --version`), **Xcode 27.0**
 (`xcodebuild -version`). Package targets iOS 17+.
 
@@ -269,7 +275,7 @@ files under `UsageMonitorKitTests` for their own logic.
 | **AppLock** | `Sources/AppLock/AppLockGate.swift` | `AppLockGate<Content> { … }` (wraps `RootView` in the app target) | `AppCore`, `DesignSystem` | Signature stays `AppLockGate { <content> }`. Read `env.settings.appLockEnabled`; gate with `LAContext.evaluatePolicy`, re-lock on `scenePhase == .background`; pass-through when disabled. `NSFaceIDUsageDescription` already in Info.plist. | Pass-through starter |
 | **OfflineCache** | `Sources/OfflineCache/` (`BudgetDiskCache`, `WidgetSnapshotBuilder`) | `BudgetDiskCache` (`save`/`load`/`clear`), `WidgetSnapshotBuilder.snapshot(from:maxMeters:)` | `Models`, `Networking`, `WidgetShared` | Model-free of AppCore. The app's `OfflineCacheSnapshotSink` (in `App/`) adapts it to `BudgetSnapshotSink` — writes disk cache + widget snapshot on each success, feeds offline first paint. | Working starter |
 | **WidgetShared** | `Sources/WidgetShared/` (`WidgetSnapshot`, `AppGroup`, `SharedStore`) | `WidgetSnapshot` (+ `.placeholder`), `AppGroup` (`identifier`, `containerURL`, `defaults`), `SharedStore.shared` (`read`/`write`) | `DesignSystem` | App group id `group.services.jays.usage.monitor` must match both `.entitlements`. Degrade gracefully (no force-unwrap) when the container is absent. | Working |
-| **Widget UI** | `UsageMonitorWidget/UsageMonitorWidgetBundle.swift` (app extension, **not** a Kit target) | `UsageMonitorWidgetBundle` (`@main`), `BudgetSummaryWidget`, `BudgetTimelineProvider` | `WidgetShared`, `DesignSystem` | Reads real cached data via `SharedStore.shared.read() ?? .placeholder`. Expand the SwiftUI views / supported families; keep it model/networking-free. | Working starter (small/medium) |
+| **Widget UI** | `UsageMonitorWidget/UsageMonitorWidgetBundle.swift` (app extension, **not** a Kit target) | `UsageMonitorWidgetBundle` (`@main`), `BudgetSummaryWidget`, `BudgetTimelineProvider` | `WidgetShared`, `DesignSystem` | Reads real cached data via `SharedStore.shared.read() ?? .empty` (zeros when unsigned-in). Gallery may use `.placeholder` curated sample only. | Working (small/medium) |
 | **PushScaffold** | `Sources/PushScaffold/PushScaffold.swift` | `PushScaffold` enum (`requestAuthorization()`, `setAPNsDeviceToken(_:)`) | `AppCore`, `Models` | Called from launch. Extend with categories/actions, APNs registration, local-notification scheduling from `[ProviderAlert]`. `UIBackgroundModes: remote-notification` + `BGTaskSchedulerPermittedIdentifiers` already declared. | Scaffold |
 
 ---

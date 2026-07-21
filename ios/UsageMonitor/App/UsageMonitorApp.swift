@@ -120,7 +120,17 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
         // notification for newly-crossed thresholds (gated on the user's
         // "Budget alerts" toggle + minimum severity, deduped across runs).
         BackgroundRefreshManager.shared.configure(
-            alertNotifier: { alerts in await AlertNotifier.deliver(for: alerts) }
+            // Honour Settings host override (same UserDefaults key as AppSettings).
+            makeClient: {
+                let host = UserDefaults.standard.string(forKey: "settings.baseHost") ?? ""
+                let configuration =
+                    APIConfiguration.fromUserInput(host) ?? .production
+                return APIClient(
+                    configuration: configuration,
+                    tokenStore: KeychainTokenStore()
+                )
+            },
+            alertNotifier: { items in await AlertNotifier.deliver(for: items) }
         )
         BackgroundRefreshManager.shared.register()
 

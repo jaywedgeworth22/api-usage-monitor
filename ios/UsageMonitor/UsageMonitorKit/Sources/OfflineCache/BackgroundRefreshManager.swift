@@ -39,7 +39,9 @@ public final class BackgroundRefreshManager: @unchecked Sendable {
     private var _makeClient: @Sendable () -> APIClient = { APIClient() }
     private var _cacheDirectory: URL?
     private var _earliestInterval: TimeInterval = 2 * 60 * 60
-    private var _alertNotifier: (@Sendable ([ProviderAlert]) async -> Void)?
+    private var _alertNotifier: (
+        @Sendable ([(providerTitle: String, providerId: String, alert: ProviderAlert)]) async -> Void
+    )?
 
     public init() {}
 
@@ -47,18 +49,19 @@ public final class BackgroundRefreshManager: @unchecked Sendable {
     /// - Parameters:
     ///   - makeClient: builds the `APIClient` used for the background fetch.
     ///     Defaults to `APIClient()` (production base URL + Keychain token).
+    ///     Pass a host-aware factory so staging overrides apply in background.
     ///   - cacheDirectory: where to persist the disk cache. Defaults to the app
     ///     group container so the cache is shared with the widget.
     ///   - earliestInterval: soonest the system should run the next refresh.
-    ///   - alertNotifier: invoked after a successful fetch with the flattened
-    ///     provider alerts, so the app can post budget notifications for newly
-    ///     crossed thresholds. Injected (rather than a direct `PushScaffold`
-    ///     call) to keep this lane `AppCore`-free. Defaults to no-op.
+    ///   - alertNotifier: invoked after a successful fetch with provider-scoped
+    ///     alerts for Lock Screen delivery.
     public func configure(
         makeClient: @escaping @Sendable () -> APIClient = { APIClient() },
         cacheDirectory: URL? = nil,
         earliestInterval: TimeInterval = 2 * 60 * 60,
-        alertNotifier: (@Sendable ([ProviderAlert]) async -> Void)? = nil
+        alertNotifier: (
+            @Sendable ([(providerTitle: String, providerId: String, alert: ProviderAlert)]) async -> Void
+        )? = nil
     ) {
         lock.lock(); defer { lock.unlock() }
         _makeClient = makeClient
@@ -82,7 +85,9 @@ public final class BackgroundRefreshManager: @unchecked Sendable {
         return _earliestInterval
     }
 
-    private var alertNotifier: (@Sendable ([ProviderAlert]) async -> Void)? {
+    private var alertNotifier: (
+        @Sendable ([(providerTitle: String, providerId: String, alert: ProviderAlert)]) async -> Void
+    )? {
         lock.lock(); defer { lock.unlock() }
         return _alertNotifier
     }
@@ -104,7 +109,16 @@ public final class BackgroundRefreshManager: @unchecked Sendable {
             // while the app is closed. The notifier dedupes across runs and
             // honours the user's toggle/severity — see `AlertNotifier`.
             if let alertNotifier {
-                await alertNotifier(response.providers.flatMap(\.alerts))
+                let items = response.providers.flatMap { provider in
+                    provider.alerts.map {
+                        (
+                            providerTitle: provider.title,
+                            providerId: provider.id,
+                            alert: $0
+                        )
+                    }
+                }
+                await alertNotifier(items)
             }
             return true
         } catch {

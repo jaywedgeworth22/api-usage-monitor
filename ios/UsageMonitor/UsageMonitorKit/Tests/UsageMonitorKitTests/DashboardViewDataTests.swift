@@ -23,24 +23,34 @@ final class DashboardViewDataTests: XCTestCase {
     func testTotalsFromSample() {
         let data = DashboardViewData(.sample)
         XCTAssertEqual(data.totalSpent, 461.55, accuracy: 0.001)
+        // Provider budgets only: 250+200+120 (voyage unconfigured).
         XCTAssertEqual(data.totalBudget, 570, accuracy: 0.001)
-        XCTAssertEqual(data.remaining, 126.50, accuracy: 0.001)
+        XCTAssertEqual(data.remaining, 570 - 461.55, accuracy: 0.001)
         XCTAssertTrue(data.hasBudget)
         XCTAssertEqual(data.spentFraction, 461.55 / 570, accuracy: 0.0001)
     }
 
-    func testPercentUsedPrefersSummaryThenFallsBack() {
+    func testPercentUsedIsProviderDerived() {
         let data = DashboardViewData(.sample)
-        XCTAssertEqual(data.percentUsedDisplay, 0.778, accuracy: 0.0001) // summary value
+        // Provider budgets 250+200+120=570; spend 461.55 → not project summary %.
+        XCTAssertEqual(data.percentUsedDisplay, 461.55 / 570, accuracy: 0.0001)
+    }
 
-        // No percentUsed on the summary → falls back to spent/budget.
+    func testProviderBudgetsOnlyWhenProjectsEmpty() {
+        // Server project summary can report totalBudgetUsd=0 while providers have budgets.
         var summary = BudgetSummary.sample
+        summary.totalBudgetUsd = 0
+        summary.overBudget = false
+        summary.warning = false
         summary.percentUsed = nil
         let response = BudgetStatusResponse(
             ok: true, generatedAt: "2026-07-19T09:15:00.000Z", month: "2026-07",
-            providers: ProviderBudgetStatus.sampleList, projects: nil, summary: summary
+            providers: ProviderBudgetStatus.sampleList, projects: [], summary: summary
         )
-        XCTAssertEqual(DashboardViewData(response).percentUsedDisplay, 461.55 / 570, accuracy: 0.0001)
+        let data = DashboardViewData(response)
+        XCTAssertTrue(data.hasBudget)
+        XCTAssertEqual(data.totalBudget, 570, accuracy: 0.001)
+        XCTAssertEqual(data.overallStatus, .exceeded) // sample list includes exceeded provider
     }
 
     func testNoBudgetYieldsZeroFractionNotDivideByZero() {
@@ -71,24 +81,22 @@ final class DashboardViewDataTests: XCTestCase {
 
     // MARK: - Status
 
-    func testOverallStatusFollowsSummaryFlags() {
+    func testOverallStatusFollowsProviderStatusesNotProjectSummary() {
         XCTAssertEqual(DashboardViewData(.sample).overallStatus, .exceeded)
 
-        var warnSummary = BudgetSummary.sample
-        warnSummary.overBudget = false
-        warnSummary.warning = true
+        // Project summary claims ok while a provider is warning → hero must warn.
+        var summary = BudgetSummary.sample
+        summary.overBudget = false
+        summary.warning = false
         let warn = BudgetStatusResponse(
             ok: true, generatedAt: "2026-07-19T09:15:00.000Z", month: "2026-07",
-            providers: ProviderBudgetStatus.sampleList, projects: nil, summary: warnSummary
+            providers: [.sampleWarning, .sampleOk], projects: nil, summary: summary
         )
         XCTAssertEqual(DashboardViewData(warn).overallStatus, .warning)
 
-        var okSummary = BudgetSummary.sample
-        okSummary.overBudget = false
-        okSummary.warning = false
         let ok = BudgetStatusResponse(
             ok: true, generatedAt: "2026-07-19T09:15:00.000Z", month: "2026-07",
-            providers: [.sampleOk], projects: nil, summary: okSummary
+            providers: [.sampleOk], projects: nil, summary: summary
         )
         XCTAssertEqual(DashboardViewData(ok).overallStatus, .ok)
     }

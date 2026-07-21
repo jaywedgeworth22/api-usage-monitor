@@ -13,6 +13,8 @@ public protocol BudgetSnapshotSink: Sendable {
     func store(_ response: BudgetStatusResponse) async
     /// Return the most recently cached response, if any, for offline first paint.
     func loadCached() async -> BudgetStatusResponse?
+    /// Drop all persisted money state (sign-out). Default no-op.
+    func clear() async
 }
 
 /// A no-op sink used when no caching integration is wired in (previews, tests).
@@ -20,4 +22,5 @@ public struct NullBudgetSnapshotSink: BudgetSnapshotSink {
     public init() {}
     public func store(_ response: BudgetStatusResponse) async {}
     public func loadCached() async -> BudgetStatusResponse? { nil }
+    public func clear() async {}
 }

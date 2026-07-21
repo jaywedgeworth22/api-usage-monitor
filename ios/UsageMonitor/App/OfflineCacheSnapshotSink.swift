@@ -3,6 +3,9 @@ import AppCore
 import Models
 import OfflineCache
 import WidgetShared
+#if canImport(WidgetKit)
+import WidgetKit
+#endif
 
 /// Bridges the `OfflineCache` + `WidgetShared` integrations to
 /// `AppCore.BudgetSnapshotSink`. Lives in the app target because it is the one
@@ -21,9 +24,23 @@ struct OfflineCacheSnapshotSink: BudgetSnapshotSink {
     func store(_ response: BudgetStatusResponse) async {
         BudgetDiskCache(directory: directory).save(response)
         SharedStore.shared.write(WidgetSnapshotBuilder.snapshot(from: response))
+        // Foreground pull-to-refresh must refresh the home-screen widget too;
+        // do not wait for the next BGAppRefresh (~hours).
+        #if canImport(WidgetKit) && os(iOS)
+        WidgetCenter.shared.reloadAllTimelines()
+        #endif
     }
 
     func loadCached() async -> BudgetStatusResponse? {
         BudgetDiskCache(directory: directory).load()
+    }
+
+    /// Clear disk cache + widget snapshot (sign-out).
+    func clear() async {
+        BudgetDiskCache(directory: directory).clear()
+        SharedStore.shared.write(.empty)
+        #if canImport(WidgetKit) && os(iOS)
+        WidgetCenter.shared.reloadAllTimelines()
+        #endif
     }
 }

@@ -7,7 +7,8 @@ import Models
 /// button opens the add/edit form seeded with this project.
 struct ProjectBudgetDetailView: View {
     let presentation: ProjectBudgetPresentation
-    let onEdit: () -> Void
+    /// `nil` hides Edit — project mutation is not available on the bearer API.
+    var onEdit: (() -> Void)? = nil
 
     var body: some View {
         RefreshableScrollView(onRefresh: {}) {
@@ -21,12 +22,14 @@ struct ProjectBudgetDetailView: View {
         .navigationTitle(presentation.title)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
-            ToolbarItem(placement: .primaryAction) {
-                Button {
-                    Haptics.tap()
-                    onEdit()
-                } label: {
-                    Text("Edit")
+            if let onEdit {
+                ToolbarItem(placement: .primaryAction) {
+                    Button {
+                        Haptics.tap()
+                        onEdit()
+                    } label: {
+                        Text("Edit")
+                    }
                 }
             }
         }

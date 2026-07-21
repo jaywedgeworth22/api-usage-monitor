@@ -151,14 +151,15 @@ final class SettingsViewModel {
         }
     }
 
-    /// Remove the stored token (sign out). Clears the field and returns to the
-    /// empty state.
+    /// Remove the stored token (sign out). Clears the field, budget store,
+    /// disk cache, and widget snapshot so the prior account's money never lingers.
     func removeToken() {
         guard let env else { return }
         try? env.setToken(nil)
         tokenInput = ""
         isTokenRevealed = false
         phase = .idle
+        Task { await env.budgetStore.clearAll() }
         Haptics.warning()
     }
 
