@@ -1,21 +1,26 @@
 import { NextRequest, NextResponse } from "next/server";
 import { computeProjectBudgetStatus } from "@/lib/budget-status";
-import { tokenFromRequest, safeEqual } from "@/lib/ingest-auth";
+import {
+  tokenFromRequest,
+  safeEqual,
+  resolveUsageReadToken,
+} from "@/lib/ingest-auth";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-// Read token: a dedicated USAGE_READ_TOKEN if configured, otherwise the ingest token is reused
-// (a consuming app that can push already holds it). Keeping a separate read token optional lets an
-// operator hand out read-only access without granting ingest.
-function expectedToken(): string | undefined {
-  return process.env.USAGE_READ_TOKEN?.trim() || process.env.USAGE_INGEST_TOKEN?.trim() || undefined;
-}
-
+// Read token: dedicated USAGE_READ_TOKEN preferred; ingest fallback only outside
+// production (or when USAGE_READ_TOKEN_ALLOW_INGEST_FALLBACK=true). See C10.
 export async function GET(request: NextRequest) {
-  const expected = expectedToken();
+  const expected = resolveUsageReadToken();
   if (!expected) {
-    return NextResponse.json({ error: "Budget status is not configured" }, { status: 503 });
+    return NextResponse.json(
+      {
+        error:
+          "Budget status is not configured (set USAGE_READ_TOKEN in production)",
+      },
+      { status: 503 }
+    );
   }
   const actual = tokenFromRequest(request, "x-usage-ingest-token");
   if (!actual || !safeEqual(actual, expected)) {

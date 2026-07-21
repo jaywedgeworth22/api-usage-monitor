@@ -651,7 +651,9 @@ Protocol: /Users/jay/apps/EFFORT-LOG-PROTOCOL.md (canonical). Live board: this f
   _2026-07-15 (MONET): moved to Completed — stale duplicate row; work already merged (PR #58, squash `dfdb39e`, per this row's own trailing annotation) and docs/EFFORT-LOG.md mirror already corrected by PR #299 on 2026-07-15; the live board simply hadn't caught up. No further action needed._
 
 ## In Progress
-- **[GROK3] Wave C storms/ops — PARTIAL 2026-07-20.** DONE in-branch: C2 Retry-After 30s (ingest+OTLP 429), C5 uptime `ready?strict=1` + db/scheduler ok, C6 `projectedStatus` on ProviderBudgetStatus. STILL PLANNED: C1 producer circuit breakers (cross-repo), C3 deploy observer, C4 backup truth, C7 abort adapter HTTP, C8 admission metrics, C9 hysteresis, C10 USAGE_READ_TOKEN prod ops. PR opening with Waves A–C partial.
+- **[GROK3] Wave C remainder (C3/C4/C7–C10) — IN PROGRESS 2026-07-21.** Branch `grok3/wave-c-remainder`. C3 observer fail-closed on supersede; C7 abort+backoff; C4 backup side-channel; C8 admission metrics; C9 hysteresis; C10 USAGE_READ_TOKEN prod. C1 cross-repo deferred. Prod lag: a1ae04b vs main eedd6f9c.
+
+- **[GROK3] Wave C storms/ops — PARTIAL 2026-07-21.** DONE (prior PR #640): C2/C5/C6. IN PROGRESS on `grok3/wave-c-remainder`: C3/C4/C7/C8/C9/C10. STILL PLANNED: C1 producer circuit breakers (cross-repo).
 
 - **[GROK3] Wave A money trust (A1–A6) — COMPLETE 2026-07-20 (pending PR).** Branch `grok3/wave-a-money-trust`. Null-safe portfolio/providers totals; family chart slices; receipt cash out of spentUsd (funding vs usage); plan fixed suppressed when subscription events exist + API guards; agent-sync totalCost null + unknown scope excluded from cash; family partial "known" + multi budget sum. Focused money tests 151 green; tsc clean. Next: Wave B iOS.
 
@@ -745,14 +747,14 @@ _Source: `docs/audits/2026-07-20-grok3-full-app-expert-review.md` (14 specialist
 #### Wave C — Storms, producers, ops monitors (P0/P1)
 - **[GROK3-C1] Producer retry-storm contract (ST/CT/OTLP wrappers) (P0, L, cross-repo) — PLANNED.** Honor Retry-After; exponential backoff + circuit breaker; treat HTTP 202 as success regardless of `accepted`; never spin on `accepted: 0`. Cross-board rows on Socratic.Trade / Congress.Trade / shared as needed. Evidence: historical OOM→35rps overage.
 - **[GROK3-C2] Lengthen server 429 Retry-After on ingest/OTLP rate limits (P0, S) — PLANNED.** Raise from 1s to ≥5–30s when enabled; prefer auth-identity buckets over shared CF IP alone. Files: `otlp/v1/metrics/route.ts`, ingest usage route, `rate-limit.ts`.
-- **[GROK3-C3] Oracle auto-deploy wedge + false-green observer (P0, M) — PLANNED.** Alert on blocked-sha / revision lag vs main / all-writers-stopped; GH observer must not exit 0 solely on supersede without live SHA. Files: `deploy/oracle/auto-deploy.sh`, `.github/workflows/oracle-production-deploy.yml`. Effort log already notes ~24h lag class.
-- **[GROK3-C4] Backup truth beyond LITESTREAM_ACTIVE env (P0/P1, M) — PLANNED.** Do not treat ready backup check as replica health; add LTX age side-channel or hard-depend Garage Sentry monitor. File: `runtime-health.ts`.
+- **[GROK3-C3] Oracle auto-deploy wedge + false-green observer (P0, M) — IN PROGRESS (GROK3 wave-c-remainder).** Alert on blocked-sha / revision lag vs main / all-writers-stopped; GH observer must not exit 0 solely on supersede without live SHA. Files: `deploy/oracle/auto-deploy.sh`, `.github/workflows/oracle-production-deploy.yml`. Effort log already notes ~24h lag class.
+- **[GROK3-C4] Backup truth beyond LITESTREAM_ACTIVE env (P0/P1, M) — IN PROGRESS (GROK3 wave-c-remainder).** Do not treat ready backup check as replica health; add LTX age side-channel or hard-depend Garage Sentry monitor. File: `runtime-health.ts`.
 - **[GROK3-C5] Uptime probe: ready?strict=1 + deploy-grade fields (P1, S) — PLANNED.** File: `.github/workflows/uptime-monitor.yml`.
 - **[GROK3-C6] Projected budget status for throttle consumers (P1, M) — PLANNED.** `status` today ignores `projectedEomUsd`; add `projectedStatus` or elevate when EOM projection exceeds budget. File: `budget-status.ts`. Cross-app ST throttle loop.
-- **[GROK3-C7] Abort adapter HTTP on provider timeout + failure/429 cross-tick backoff (P1, M) — PLANNED.** Pass AbortSignal into `fetchJson`; exponential skip after failures; skip known-blind without invoking adapter. Files: `usage-recorder.ts`, `adapters/helpers.ts`.
-- **[GROK3-C8] Admission/lease metrics + long-hold deferral (P1, M) — PLANNED.** Emit reject rate, lease hold p95, waiter depth; soft time-box non-money maintenance under pressure.
-- **[GROK3-C9] Budget alert hysteresis + stable billing_sync messaging (P1, S) — PLANNED.** Reduce warn↔exceed / billing flap noise.
-- **[GROK3-C10] Distinct USAGE_READ_TOKEN required in production (P1, S, ops) — PLANNED.** Stop read≡ingest fallback for budget-status/subscriptions; set Oracle env. Security blast-radius finding.
+- **[GROK3-C7] Abort adapter HTTP on provider timeout + failure/429 cross-tick backoff (P1, M) — IN PROGRESS (GROK3 wave-c-remainder).** Pass AbortSignal into `fetchJson`; exponential skip after failures; skip known-blind without invoking adapter. Files: `usage-recorder.ts`, `adapters/helpers.ts`.
+- **[GROK3-C8] Admission/lease metrics + long-hold deferral (P1, M) — IN PROGRESS (GROK3 wave-c-remainder).** Emit reject rate, lease hold p95, waiter depth; soft time-box non-money maintenance under pressure.
+- **[GROK3-C9] Budget alert hysteresis + stable billing_sync messaging (P1, S) — IN PROGRESS (GROK3 wave-c-remainder).** Reduce warn↔exceed / billing flap noise.
+- **[GROK3-C10] Distinct USAGE_READ_TOKEN required in production (P1, S, ops) — IN PROGRESS (GROK3 wave-c-remainder).** Stop read≡ingest fallback for budget-status/subscriptions; set Oracle env. Security blast-radius finding.
 
 #### Wave D — Operator UX, mobile, Attention (P1)
 - **[GROK3-D1] Attention as primary workflow (P1, M) — PLANNED.** Always-visible critical strip; “+N more” beyond 8; deep-link to edit budget; actionable CTAs. Files: `page.tsx`, summary cards, settings deep links.

@@ -8,6 +8,7 @@ import {
   getSchedulerRuntimeStatus,
   getStartupRuntimeStatus,
 } from "@/lib/runtime-health";
+import { getIngestAdmissionMetrics } from "@/lib/ingest-admission";
 
 export const dynamic = "force-dynamic";
 
@@ -281,7 +282,12 @@ export async function GET(request: Request) {
   const schedulerRequired =
     process.env.USAGE_SCHEDULER_ENABLED?.trim().toLowerCase() !== "false";
   const schedulerReady = !schedulerRequired || schedulerReadiness.ok;
-  const backupReady = !backup.required || backup.active;
+  // Backup: required implies active env flag. When a replica side-channel is
+  // configured (Wave C / C4), replicaOk === false fails ready even if
+  // LITESTREAM_ACTIVE is true so Garage/R2 death is not silent.
+  const backupReady =
+    !backup.required ||
+    (backup.active && backup.replicaOk !== false);
   const startupReady = !startup.required || startup.active;
   const ok = database.ok && schedulerReady && backupReady && startupReady;
   const databaseOnlyFailure =
@@ -346,6 +352,9 @@ export async function GET(request: Request) {
       // when enabled, how many providers are currently budget-paused / carry a
       // (advisory) key-disable recommendation.
       budgetControls,
+      // Observability only (Wave C / C8): process-local ingest admission
+      // reject/admit counters + waiter depth. Not a readiness gate.
+      admission: getIngestAdmissionMetrics(),
     },
   };
 

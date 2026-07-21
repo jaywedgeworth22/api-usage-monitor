@@ -1,6 +1,7 @@
 import { lookup } from "node:dns/promises";
 import https from "node:https";
 import net from "node:net";
+import { AsyncLocalStorage } from "node:async_hooks";
 
 /**
  * Generic, adapter-agnostic signal that totalCost is known-incomplete for a
@@ -269,6 +270,9 @@ export interface FetchJsonOptions {
   security?: "trusted" | "untrusted";
 }
 
+/** Optional outer AbortSignal for provider-timeout cancellation across adapter fetches. */
+export const adapterHttpAbortStorage = new AsyncLocalStorage<AbortSignal>();
+
 export async function fetchJson(
   url: string,
   init?: RequestInit,
@@ -287,6 +291,17 @@ export async function fetchJson(
   // a GET, but gate on method explicitly rather than assuming.
   const method = (init?.method ?? "GET").toUpperCase();
   const isRetryable = method === "GET";
+  // Compose provider-timeout ALS signal (if any) with caller init.signal.
+  const outer = adapterHttpAbortStorage.getStore();
+  if (outer) {
+    init = {
+      ...init,
+      signal:
+        init?.signal && init.signal !== outer
+          ? AbortSignal.any([outer, init.signal])
+          : outer,
+    };
+  }
 
   let attempt = 0;
    

@@ -11,6 +11,7 @@ interface IngestAdmissionState {
 const globalForIngestAdmission = globalThis as typeof globalThis & {
   __apiUsageMonitorIngestAdmission?: IngestAdmissionState;
   __apiUsageMonitorInternalAdmissionContext?: AsyncLocalStorage<symbol>;
+  __apiUsageMonitorIngestAdmissionMetrics?: IngestAdmissionMetrics;
 };
 
 const state =
@@ -26,6 +27,57 @@ const internalAdmissionContext =
   globalForIngestAdmission.__apiUsageMonitorInternalAdmissionContext ??
   (globalForIngestAdmission.__apiUsageMonitorInternalAdmissionContext =
     new AsyncLocalStorage<symbol>());
+
+/** Process-local admission counters for ops (Wave C / C8). Not persisted. */
+export interface IngestAdmissionMetrics {
+  httpAdmits: number;
+  httpRejects: number;
+  internalAcquires: number;
+  /** High-water mark of internalWaiters length observed since process start. */
+  maxWaiterDepth: number;
+  /** Rolling sum of HTTP lease hold times (ms) for a coarse average. */
+  httpHoldMsTotal: number;
+  httpHoldSamples: number;
+}
+
+const metrics: IngestAdmissionMetrics =
+  globalForIngestAdmission.__apiUsageMonitorIngestAdmissionMetrics ??
+  (globalForIngestAdmission.__apiUsageMonitorIngestAdmissionMetrics = {
+    httpAdmits: 0,
+    httpRejects: 0,
+    internalAcquires: 0,
+    maxWaiterDepth: 0,
+    httpHoldMsTotal: 0,
+    httpHoldSamples: 0,
+  });
+
+export function getIngestAdmissionMetrics(): IngestAdmissionMetrics & {
+  held: boolean;
+  waiterDepth: number;
+  httpHoldMsAvg: number | null;
+} {
+  return {
+    ...metrics,
+    held: state.owner !== null,
+    waiterDepth: state.internalWaiters.length,
+    httpHoldMsAvg:
+      metrics.httpHoldSamples > 0
+        ? metrics.httpHoldMsTotal / metrics.httpHoldSamples
+        : null,
+  };
+}
+
+export function resetIngestAdmissionMetricsForTests(): void {
+  if (process.env.NODE_ENV !== "test") {
+    throw new Error("Ingest admission metrics can only be reset in tests");
+  }
+  metrics.httpAdmits = 0;
+  metrics.httpRejects = 0;
+  metrics.internalAcquires = 0;
+  metrics.maxWaiterDepth = 0;
+  metrics.httpHoldMsTotal = 0;
+  metrics.httpHoldSamples = 0;
+}
 
 export const INGEST_ADMISSION_RETRY_AFTER_SECONDS = 5;
 export const OTLP_METRICS_DISABLED_RETRY_AFTER_SECONDS = 300;
@@ -47,20 +99,30 @@ export function isOtlpMetricsIngestEnabled(
  * retry while the original write is still running.
  */
 export function tryAcquireIngestAdmission(): (() => void) | null {
-  if (state.owner !== null || state.internalWaiters.length > 0) return null;
+  if (state.owner !== null || state.internalWaiters.length > 0) {
+    metrics.httpRejects += 1;
+    return null;
+  }
 
   const owner = Symbol("ingest-admission-owner");
   state.owner = owner;
-  return releaseFor(owner);
+  metrics.httpAdmits += 1;
+  const acquiredAt = Date.now();
+  const release = releaseFor(owner, acquiredAt);
+  return release;
 }
 
-function releaseFor(owner: symbol): () => void {
+function releaseFor(owner: symbol, acquiredAtMs?: number): () => void {
   let released = false;
 
   return () => {
     if (released) return;
     released = true;
     if (state.owner !== owner) return;
+    if (acquiredAtMs != null) {
+      metrics.httpHoldMsTotal += Math.max(0, Date.now() - acquiredAtMs);
+      metrics.httpHoldSamples += 1;
+    }
     const next = state.internalWaiters.shift();
     if (!next) {
       state.owner = null;
@@ -76,6 +138,7 @@ async function acquireInternalUsageWriteAdmissionLease(): Promise<{
   release: () => void;
 }> {
   const owner = Symbol("internal-usage-write-admission-owner");
+  metrics.internalAcquires += 1;
   if (state.owner === null && state.internalWaiters.length === 0) {
     state.owner = owner;
     return { owner, release: releaseFor(owner) };
@@ -83,6 +146,9 @@ async function acquireInternalUsageWriteAdmissionLease(): Promise<{
 
   const release = await new Promise<() => void>((resolve) => {
     state.internalWaiters.push({ owner, resolve });
+    if (state.internalWaiters.length > metrics.maxWaiterDepth) {
+      metrics.maxWaiterDepth = state.internalWaiters.length;
+    }
   });
   return { owner, release };
 }
