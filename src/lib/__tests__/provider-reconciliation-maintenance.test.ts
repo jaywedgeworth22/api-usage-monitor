@@ -322,10 +322,11 @@ describe("reconcileProviderUsage", () => {
     // same pushed dollars a second time (that would fabricate a discrepancy on
     // a perfectly reconciled month).
     const credited = rows.filter((row) => row.reportedCostUsd > 0);
-    expect(credited.length).toBeLessThanOrEqual(1);
+    expect(credited.length).toBe(0);
     const ambiguous = rows.filter((row) => row.status === "unverifiable");
-    expect(ambiguous).toHaveLength(1);
+    expect(ambiguous).toHaveLength(2);
     expect(ambiguous[0].deltaUsd).toBeNull();
+    expect(ambiguous[1].deltaUsd).toBeNull();
   });
 
   it("records a discrepancy when provider-reported cost exceeds pushed telemetry", async () => {
