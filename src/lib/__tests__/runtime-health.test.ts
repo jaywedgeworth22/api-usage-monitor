@@ -91,13 +91,38 @@ describe("runtime health state", () => {
       service: "usage-prod",
       revision: "abc123",
     });
-    expect(getBackupRuntimeStatus()).toEqual({ required: true, active: true });
+    expect(getBackupRuntimeStatus()).toEqual({
+      required: true,
+      active: true,
+      envOnly: true,
+      replicaOk: null,
+      replicaAgeSeconds: null,
+      reason: "env_active_unverified",
+    });
     expect(getStartupRuntimeStatus()).toEqual({
       required: false,
       active: false,
       entrypoint: null,
     });
   });
+
+  it("treats missing replica side-channel as unhealthy when configured (C4)", () => {
+    vi.stubEnv("LITESTREAM_REQUIRED", "true");
+    vi.stubEnv("LITESTREAM_ACTIVE", "true");
+    vi.stubEnv(
+      "LITESTREAM_REPLICA_STATUS_PATH",
+      "/tmp/usage-monitor-missing-replica-status.json"
+    );
+
+    expect(getBackupRuntimeStatus()).toMatchObject({
+      required: true,
+      active: true,
+      envOnly: false,
+      replicaOk: false,
+      reason: "replica_status_missing",
+    });
+  });
+
 
   it("tolerates one transient failure but fails repeated, stalled, and stale ticks", () => {
     vi.stubEnv("SCHEDULER_STALE_AFTER_MS", "1000");

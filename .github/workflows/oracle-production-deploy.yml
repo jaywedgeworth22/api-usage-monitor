@@ -51,10 +51,21 @@ jobs:
           main_sha=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq '.object.sha')
           if [[ "$main_sha" != "$TARGET_SHA" ]]; then
             echo "Revision $TARGET_SHA was superseded by $main_sha before observation began."
+            # Do not treat supersession as success — that masks a stuck deploy
+            # when merges land faster than Oracle can catch up (Wave C / C3).
             echo "superseded=true" >> "$GITHUB_ENV"
+            echo "oracle_observer_outcome=superseded" >> "$GITHUB_ENV"
           else
             echo "superseded=false" >> "$GITHUB_ENV"
+            echo "oracle_observer_outcome=pending" >> "$GITHUB_ENV"
           fi
+
+      - name: Fail when observation target was already superseded
+        if: env.superseded == 'true'
+        shell: bash
+        run: |
+          echo "::error::Oracle deploy observer target was superseded by a newer main SHA before verification. This is not success — check host auto-deploy lag / blocked-sha."
+          exit 1
 
       - name: Wait for exact Oracle production revision
         if: env.superseded != 'true'
@@ -67,7 +78,10 @@ jobs:
               main_sha=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq '.object.sha')
               if [[ "$main_sha" != "$TARGET_SHA" ]]; then
                 echo "Revision $TARGET_SHA was superseded by $main_sha while waiting."
-                exit 0
+                echo "oracle_observer_outcome=superseded" >> "$GITHUB_ENV"
+                # Fail the wait step so the workflow is not false-green. A later
+                # main SHA will run its own observer; this one did not verify.
+                exit 1
               fi
             fi
 

@@ -1,12 +1,29 @@
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it } from "vitest";
 import {
   acquireInternalUsageWriteAdmission,
+  getIngestAdmissionMetrics,
   isOtlpMetricsIngestEnabled,
+  resetIngestAdmissionMetricsForTests,
   tryAcquireIngestAdmission,
   withInternalUsageWriteAdmission,
 } from "../ingest-admission";
 
 describe("ingest admission", () => {
+  beforeEach(() => {
+    resetIngestAdmissionMetricsForTests();
+  });
+
+  it("records http admit/reject metrics (C8)", () => {
+    const release = tryAcquireIngestAdmission();
+    expect(release).not.toBeNull();
+    expect(tryAcquireIngestAdmission()).toBeNull();
+    release?.();
+    const m = getIngestAdmissionMetrics();
+    expect(m.httpAdmits).toBe(1);
+    expect(m.httpRejects).toBe(1);
+    expect(m.held).toBe(false);
+  });
+
   it("keeps OTLP metrics enabled unless explicitly set to false", () => {
     expect(isOtlpMetricsIngestEnabled(undefined)).toBe(true);
     expect(isOtlpMetricsIngestEnabled("")).toBe(true);

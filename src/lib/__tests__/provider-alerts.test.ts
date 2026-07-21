@@ -1,6 +1,30 @@
 import { describe, expect, it } from "vitest";
-import { buildProviderAlertState } from "@/lib/provider-alerts";
+import {
+  buildProviderAlertState,
+  resolveBudgetAlertTier,
+} from "@/lib/provider-alerts";
 import type { AnomalyResult } from "@/lib/anomaly-detection";
+
+describe("resolveBudgetAlertTier hysteresis (C9)", () => {
+  it("enters warning at 80% and exceeded at 100% from ok", () => {
+    expect(resolveBudgetAlertTier(79, 100, "ok")).toBe("ok");
+    expect(resolveBudgetAlertTier(80, 100, "ok")).toBe("warning");
+    expect(resolveBudgetAlertTier(100, 100, "ok")).toBe("exceeded");
+  });
+
+  it("stays exceeded until spend clears below 95%", () => {
+    expect(resolveBudgetAlertTier(96, 100, "exceeded")).toBe("exceeded");
+    expect(resolveBudgetAlertTier(94, 100, "exceeded")).toBe("warning");
+    expect(resolveBudgetAlertTier(74, 100, "exceeded")).toBe("ok");
+  });
+
+  it("stays in warning until spend clears below 75%", () => {
+    expect(resolveBudgetAlertTier(76, 100, "warning")).toBe("warning");
+    expect(resolveBudgetAlertTier(74, 100, "warning")).toBe("ok");
+    expect(resolveBudgetAlertTier(100, 100, "warning")).toBe("exceeded");
+  });
+});
+
 
 describe("buildProviderAlertState snapshot capability", () => {
   it("keeps budget alerts but suppresses impossible snapshot alerts for push/manual tracking", () => {

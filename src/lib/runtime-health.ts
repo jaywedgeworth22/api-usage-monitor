@@ -1,3 +1,4 @@
+import { existsSync, readFileSync, statSync } from "node:fs";
 import packageJson from "../../package.json";
 import type { CloudflareLegacyHandoffStatus } from "@/lib/external-billing-subscription-adoption";
 
@@ -264,14 +265,123 @@ export function getRuntimeIdentity(): {
   };
 }
 
-export function getBackupRuntimeStatus(): {
+export interface BackupRuntimeStatus {
   required: boolean;
   active: boolean;
-} {
-  return {
-    required: process.env.LITESTREAM_REQUIRED === "true",
-    active: process.env.LITESTREAM_ACTIVE === "true",
-  };
+  /**
+   * True when readiness only knows the startup env flag (`LITESTREAM_ACTIVE`),
+   * not a side-channel proof that the Garage/R2 replica is advancing.
+   * Monitors should not treat env-only backup as replica health (Wave C / C4).
+   */
+  envOnly: boolean;
+  /** null = no side-channel configured; false = side-channel says unhealthy/stale. */
+  replicaOk: boolean | null;
+  replicaAgeSeconds: number | null;
+  reason: string | null;
+}
+
+/**
+ * Backup readiness. Prefer an optional side-channel status file written by the
+ * host/Litestream/Garage monitor (`LITESTREAM_REPLICA_STATUS_PATH`) so `/api/ready`
+ * does not lie when only `LITESTREAM_ACTIVE=true` is set.
+ *
+ * Status file formats (either):
+ * - JSON: `{ "ok": true, "ageSeconds": 42, "checkedAt": "ISO" }`
+ * - Heartbeat: any file whose mtime is treated as last-success; age is now-mtime.
+ *
+ * `LITESTREAM_REPLICA_MAX_AGE_SECONDS` (default 3600) fails the side-channel when
+ * age exceeds the budget.
+ */
+export function getBackupRuntimeStatus(now = new Date()): BackupRuntimeStatus {
+  const required = process.env.LITESTREAM_REQUIRED === "true";
+  const active = process.env.LITESTREAM_ACTIVE === "true";
+  const statusPath = process.env.LITESTREAM_REPLICA_STATUS_PATH?.trim() || null;
+  const maxAgeRaw = process.env.LITESTREAM_REPLICA_MAX_AGE_SECONDS?.trim();
+  const maxAgeSeconds = maxAgeRaw
+    ? Number.parseInt(maxAgeRaw, 10)
+    : 3600;
+  const maxAge =
+    Number.isFinite(maxAgeSeconds) && maxAgeSeconds > 0 ? maxAgeSeconds : 3600;
+
+  if (!statusPath) {
+    return {
+      required,
+      active,
+      envOnly: true,
+      replicaOk: null,
+      replicaAgeSeconds: null,
+      reason: active ? "env_active_unverified" : null,
+    };
+  }
+
+  try {
+    if (!existsSync(statusPath)) {
+      return {
+        required,
+        active,
+        envOnly: false,
+        replicaOk: false,
+        replicaAgeSeconds: null,
+        reason: "replica_status_missing",
+      };
+    }
+
+    const raw = readFileSync(statusPath, "utf8").trim();
+    let ageSeconds: number | null = null;
+    let sideOk = true;
+
+    if (raw.startsWith("{")) {
+      const parsed = JSON.parse(raw) as {
+        ok?: unknown;
+        ageSeconds?: unknown;
+        checkedAt?: unknown;
+      };
+      if (typeof parsed.ok === "boolean") {
+        sideOk = parsed.ok;
+      }
+      if (
+        typeof parsed.ageSeconds === "number" &&
+        Number.isFinite(parsed.ageSeconds) &&
+        parsed.ageSeconds >= 0
+      ) {
+        ageSeconds = parsed.ageSeconds;
+      } else if (typeof parsed.checkedAt === "string") {
+        const checkedMs = Date.parse(parsed.checkedAt);
+        if (Number.isFinite(checkedMs)) {
+          ageSeconds = Math.max(0, (now.getTime() - checkedMs) / 1000);
+        }
+      }
+    } else {
+      const mtimeMs = statSync(statusPath).mtimeMs;
+      ageSeconds = Math.max(0, (now.getTime() - mtimeMs) / 1000);
+    }
+
+    if (ageSeconds != null && ageSeconds > maxAge) {
+      sideOk = false;
+    }
+
+    return {
+      required,
+      active,
+      envOnly: false,
+      replicaOk: sideOk,
+      replicaAgeSeconds: ageSeconds,
+      reason: sideOk
+        ? null
+        : ageSeconds != null && ageSeconds > maxAge
+          ? "replica_status_stale"
+          : "replica_status_unhealthy",
+    };
+  } catch {
+    return {
+      required,
+      active,
+      envOnly: false,
+      replicaOk: false,
+      replicaAgeSeconds: null,
+      reason: "replica_status_unreadable",
+    };
+  }
 }
 
 export function getStartupRuntimeStatus(): {

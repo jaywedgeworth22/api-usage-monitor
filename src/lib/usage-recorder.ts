@@ -1,3 +1,4 @@
+import { adapterHttpAbortStorage } from "@/lib/adapters/helpers";
 import { prisma } from "@/lib/prisma";
 import { fetchProviderUsage } from "@/lib/adapters";
 import { AdapterError, type AdapterErrorCode } from "@/lib/adapters/helpers";
@@ -58,7 +59,9 @@ export async function recordProviderUsage(
   const attemptToken = Symbol(provider.id);
   providerAttemptTokens.set(provider.id, attemptToken);
   try {
-    const usage = await fetchProviderUsage(provider);
+    const usage = signal
+      ? await adapterHttpAbortStorage.run(signal, () => fetchProviderUsage(provider))
+      : await fetchProviderUsage(provider);
     assertProviderAttemptCurrent(provider.id, attemptToken, signal);
 
     const snapshot = await withInternalUsageWriteAdmission(async () => {
@@ -114,6 +117,31 @@ export async function recordProviderUsage(
       providerAttemptTokens.delete(provider.id);
     }
   }
+}
+
+// Process-local failure backoff after poll errors (15m → 30m → … cap 2h).
+// Prevents a permanently 429/5xx provider from being re-hit every tick.
+const providerPollFailureBackoff = new Map<
+  string,
+  { failures: number; nextAttemptAtMs: number }
+>();
+const POLL_FAILURE_BACKOFF_CAP_MS = 2 * 60 * 60 * 1000;
+
+function noteProviderPollFailure(providerId: string, nowMs: number): void {
+  const prev = providerPollFailureBackoff.get(providerId);
+  const failures = (prev?.failures ?? 0) + 1;
+  const delayMs = Math.min(
+    POLL_FAILURE_BACKOFF_CAP_MS,
+    15 * 60 * 1000 * 2 ** Math.min(failures - 1, 4)
+  );
+  providerPollFailureBackoff.set(providerId, {
+    failures,
+    nextAttemptAtMs: nowMs + delayMs,
+  });
+}
+
+function clearProviderPollFailure(providerId: string): void {
+  providerPollFailureBackoff.delete(providerId);
 }
 
 // Guards fetchAllDueProviders against concurrent callers (scheduler tick vs a
@@ -302,6 +330,23 @@ export async function fetchAllDueProviders(): Promise<FetchAllProvidersResult> {
         continue;
       }
 
+      // Cross-tick failure backoff (Wave C): after consecutive poll failures,
+      // skip until exponential backoff elapses (cap 2h). Success clears state.
+      const failureState = providerPollFailureBackoff.get(provider.id);
+      if (
+        failureState &&
+        now < failureState.nextAttemptAtMs
+      ) {
+        skipped++;
+        outcomes.push({
+          providerId: provider.id,
+          name: provider.name,
+          status: "skipped",
+          durationMs: Date.now() - startedAt,
+        });
+        continue;
+      }
+
       try {
         // Outer per-provider time budget: a single pathological adapter
         // (hung DNS, a fetchJson call whose own timeout got bypassed via a
@@ -340,6 +385,7 @@ export async function fetchAllDueProviders(): Promise<FetchAllProvidersResult> {
           if (timeoutHandle) clearTimeout(timeoutHandle);
         }
         successes++;
+        clearProviderPollFailure(provider.id);
         outcomes.push({
           providerId: provider.id,
           name: provider.name,
@@ -354,6 +400,7 @@ export async function fetchAllDueProviders(): Promise<FetchAllProvidersResult> {
         // healthy tick look broken even though no provider request was made.
         if (typed?.code === "UNSUPPORTED") {
           skipped++;
+          clearProviderPollFailure(provider.id);
           outcomes.push({
             providerId: provider.id,
             name: provider.name,
@@ -365,6 +412,7 @@ export async function fetchAllDueProviders(): Promise<FetchAllProvidersResult> {
         }
 
         failures++;
+        noteProviderPollFailure(provider.id, Date.now());
         errors.push({
           providerId: provider.id,
           name: provider.name,

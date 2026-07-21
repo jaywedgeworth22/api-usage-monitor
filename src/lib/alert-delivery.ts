@@ -2073,6 +2073,22 @@ export async function deliverProviderAlerts(options: {
   result.evaluatedProviders = providers.length;
 
   for (const provider of providers) {
+    // Budget hysteresis needs the prior open tier before we re-evaluate (C9).
+    const openBudgetCodes = await db.providerAlertNotification.findMany({
+      where: {
+        providerId: provider.id,
+        resolvedAt: null,
+        alertCode: { in: ["budget_exceeded", "budget_warning"] },
+      },
+      select: { alertCode: true },
+    });
+    const previousBudgetTier =
+      openBudgetCodes.some((row) => row.alertCode === "budget_exceeded")
+        ? ("exceeded" as const)
+        : openBudgetCodes.some((row) => row.alertCode === "budget_warning")
+          ? ("warning" as const)
+          : ("ok" as const);
+
     const alertState = buildProviderAlertState(
       {
         isActive: provider.isActive,
@@ -2081,18 +2097,61 @@ export async function deliverProviderAlerts(options: {
         plan: provider.plan,
         latestSnapshot: provider.snapshots[0] ?? null,
         reconciliationDiscrepancyUsd: provider.usageReconciliations?.[0]?.status === "discrepancy" ? provider.usageReconciliations[0].deltaUsd : null,
+        previousBudgetTier,
       },
       now
     );
     const canonical = canonicalByProviderId.get(provider.id);
     if (canonical && provider.isActive) {
+      // Prefer canonical money alerts, but re-derive budget_exceeded/warning
+      // with hysteresis against any open tier so boundary noise does not flap
+      // delivery (Wave C / C9).
       const nonBudgetAlerts = alertState.alerts.filter(
         (alert) =>
           alert.code !== "budget_exceeded" &&
           alert.code !== "budget_warning" &&
           alert.code !== "usage_reconciliation_discrepancy"
       );
-      alertState.alerts = [...nonBudgetAlerts, ...canonical.alerts];
+      const nonBudgetCanonical = canonical.alerts.filter(
+        (alert) =>
+          alert.code !== "budget_exceeded" && alert.code !== "budget_warning"
+      );
+      const hystereticBudget = buildProviderAlertState(
+        {
+          isActive: true,
+          refreshIntervalMin: provider.refreshIntervalMin,
+          snapshotExpected: false,
+          plan: provider.plan
+            ? {
+                ...provider.plan,
+                monthlyBudgetUsd: canonical.monthlyBudgetUsd,
+              }
+            : canonical.monthlyBudgetUsd != null
+              ? {
+                  billingMode: "actual",
+                  fixedMonthlyCostUsd: null,
+                  monthlyBudgetUsd: canonical.monthlyBudgetUsd,
+                  monthlyRequestLimit: null,
+                  lowBalanceUsd: null,
+                  lowCredits: null,
+                  renewalDate: null,
+                  mustKeepFunded: false,
+                }
+              : null,
+          latestSnapshot: null,
+          trackedSpendUsd: canonical.spentUsd,
+          previousBudgetTier: previousBudgetTier,
+        },
+        now
+      ).alerts.filter(
+        (alert) =>
+          alert.code === "budget_exceeded" || alert.code === "budget_warning"
+      );
+      alertState.alerts = [
+        ...nonBudgetAlerts,
+        ...nonBudgetCanonical,
+        ...hystereticBudget,
+      ];
     }
     const rawAlerts = alertState.alerts;
     const deliverableAlerts = rawAlerts.filter((alert) =>
