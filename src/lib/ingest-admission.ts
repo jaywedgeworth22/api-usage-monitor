@@ -83,13 +83,45 @@ export const INGEST_ADMISSION_RETRY_AFTER_SECONDS = 5;
 export const OTLP_METRICS_DISABLED_RETRY_AFTER_SECONDS = 300;
 
 /**
+ * Parse common "disabled" env spellings for emergency OTLP switches.
+ * Wave G / E9: honor false / 0 / off / no (case-insensitive), not only "false".
+ */
+function isEnvExplicitlyDisabled(configured: string | undefined): boolean {
+  const normalized = configured?.trim().toLowerCase();
+  return (
+    normalized === "false" ||
+    normalized === "0" ||
+    normalized === "off" ||
+    normalized === "no"
+  );
+}
+
+/**
  * Emergency receiver isolation is opt-out so deployments remain backward
- * compatible until an operator explicitly sets the variable to false.
+ * compatible until an operator explicitly disables the variable.
  */
 export function isOtlpMetricsIngestEnabled(
   configured = process.env.OTLP_METRICS_INGEST_ENABLED
 ): boolean {
-  return configured?.trim().toLowerCase() !== "false";
+  return !isEnvExplicitlyDisabled(configured);
+}
+
+/**
+ * Host system.* OTLP metrics (hardcoded provider "hetzner" in system-mapper)
+ * can flood ExternalUsageEvent if every process exports host gauges.
+ * Wave G / E9: opt-in only — set OTLP_SYSTEM_METRICS_INGEST_ENABLED=true to
+ * persist them. When unset/false, metrics route maps but does not write rows.
+ */
+export function isOtlpSystemMetricsIngestEnabled(
+  configured = process.env.OTLP_SYSTEM_METRICS_INGEST_ENABLED
+): boolean {
+  const normalized = configured?.trim().toLowerCase();
+  return (
+    normalized === "true" ||
+    normalized === "1" ||
+    normalized === "on" ||
+    normalized === "yes"
+  );
 }
 
 /**

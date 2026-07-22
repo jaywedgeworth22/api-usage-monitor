@@ -61,3 +61,14 @@ export function verifySessionToken(token: string | undefined | null): boolean {
   const expectedSig = crypto.createHmac("sha256", signingKey).update(String(expiresAt)).digest("hex");
   return safeEqual(sig, expectedSig);
 }
+
+/**
+ * Wave G / E18: route-level session re-check for mutators. Middleware already
+ * gates most dashboard routes; handlers that are excluded (e.g. subscriptions
+ * collection) or that want defense-in-depth should call this before writes.
+ */
+export function hasValidDashboardSession(request: {
+  cookies: { get: (name: string) => { value: string } | undefined };
+}): boolean {
+  return verifySessionToken(request.cookies.get(SESSION_COOKIE_NAME)?.value);
+}

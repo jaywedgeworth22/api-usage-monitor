@@ -2,6 +2,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import fs from "fs";
 import os from "os";
 import path from "path";
+import { NextRequest } from "next/server";
 import { setupPrismaSqliteTestDb } from "./setup-test-db";
 
 // Exercises the corrected per-project budget math end to end: explicit projectId
@@ -14,22 +15,41 @@ describe("project attribution (integration)", () => {
   let persistExternalUsageEvents: typeof import("../external-usage-events").persistExternalUsageEvents;
   let computeProjectBudgetStatus: typeof import("../budget-status").computeProjectBudgetStatus;
   let resolveProjectIdsByName: typeof import("../project-resolver").resolveProjectIdsByName;
+  let backfillProjectIdFromMetadataName: typeof import("../project-resolver").backfillProjectIdFromMetadataName;
   let createProject: typeof import("@/app/api/projects/route").POST;
+  let createSessionToken: typeof import("../auth").createSessionToken;
+  let SESSION_COOKIE_NAME: typeof import("../auth").SESSION_COOKIE_NAME;
 
   const NOW = new Date("2026-07-15T12:00:00.000Z");
   const occurredAt = new Date("2026-07-10T00:00:00.000Z");
+
+  function authedProjectRequest(body: unknown): NextRequest {
+    const token = createSessionToken();
+    return new NextRequest("http://localhost/api/projects", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        cookie: `${SESSION_COOKIE_NAME}=${token}`,
+      },
+      body: JSON.stringify(body),
+    });
+  }
 
   beforeAll(async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "project-attribution-test-"));
     dbPath = path.join(dir, "test.db");
     process.env.DATABASE_URL = `file:${dbPath}`;
+    process.env.SESSION_SECRET = "a".repeat(64);
     setupPrismaSqliteTestDb(dbPath);
 
     ({ prisma } = await import("@/lib/prisma"));
     ({ persistExternalUsageEvents } = await import("../external-usage-events"));
     ({ computeProjectBudgetStatus } = await import("../budget-status"));
-    ({ resolveProjectIdsByName } = await import("../project-resolver"));
+    ({ resolveProjectIdsByName, backfillProjectIdFromMetadataName } = await import(
+      "../project-resolver"
+    ));
     ({ POST: createProject } = await import("@/app/api/projects/route"));
+    ({ createSessionToken, SESSION_COOKIE_NAME } = await import("../auth"));
   }, 60_000);
 
   afterAll(async () => {
@@ -70,26 +90,73 @@ describe("project attribution (integration)", () => {
   });
 
   it("rejects canonically equivalent project aliases at creation", async () => {
-    const first = await createProject(
-      new Request("http://localhost/api/projects", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ name: "Congress.Trade" }),
-      })
-    );
-    const duplicate = await createProject(
-      new Request("http://localhost/api/projects", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ name: "congress-trade" }),
-      })
-    );
+    const first = await createProject(authedProjectRequest({ name: "Congress.Trade" }));
+    const duplicate = await createProject(authedProjectRequest({ name: "congress-trade" }));
 
     expect(first.status).toBe(200);
     expect(duplicate.status).toBe(400);
     expect(await prisma.project.findMany({ select: { name: true, nameKey: true } })).toEqual([
       { name: "Congress.Trade", nameKey: "congress-trade" },
     ]);
+  });
+
+  it("rejects project create without a dashboard session (Wave G / E18)", async () => {
+    const res = await createProject(
+      new NextRequest("http://localhost/api/projects", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ name: "No Session Project" }),
+      })
+    );
+    expect(res.status).toBe(401);
+  });
+
+  it("backfills metadata.project rows when a Project is created via API (Wave G / E6)", async () => {
+    await persistExternalUsageEvents([
+      {
+        idempotencyKey: "api-create-backfill-1",
+        sourceApp: "socratic-trade",
+        provider: "openai",
+        projectId: null,
+        billingMode: "actual",
+        metricType: "cost",
+        costUsd: 7,
+        occurredAt,
+        metadata: { project: "New Budget Project" },
+      },
+      {
+        idempotencyKey: "api-create-backfill-other",
+        sourceApp: "socratic-trade",
+        provider: "openai",
+        projectId: null,
+        billingMode: "actual",
+        metricType: "cost",
+        costUsd: 1,
+        occurredAt,
+        metadata: { project: "Unrelated" },
+      },
+    ]);
+
+    const res = await createProject(
+      authedProjectRequest({ name: "New Budget Project", monthlyBudgetUsd: 50 })
+    );
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.backfilledEvents).toBe(1);
+
+    const matched = await prisma.externalUsageEvent.findUniqueOrThrow({
+      where: { idempotencyKey: "api-create-backfill-1" },
+      select: { projectId: true },
+    });
+    const other = await prisma.externalUsageEvent.findUniqueOrThrow({
+      where: { idempotencyKey: "api-create-backfill-other" },
+      select: { projectId: true },
+    });
+    expect(matched.projectId).toBe(body.id);
+    expect(other.projectId).toBeNull();
+
+    // Helper is idempotent for already-attributed rows.
+    expect(await backfillProjectIdFromMetadataName(body.id, body.name)).toBe(0);
   });
 
   it("uses the same oldest canonical project for ingest and legacy budgets", async () => {

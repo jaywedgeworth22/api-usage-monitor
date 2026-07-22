@@ -24,12 +24,24 @@ describe("ingest admission", () => {
     expect(m.held).toBe(false);
   });
 
-  it("keeps OTLP metrics enabled unless explicitly set to false", () => {
+  it("keeps OTLP metrics enabled unless explicitly disabled (false/0/off/no)", () => {
     expect(isOtlpMetricsIngestEnabled(undefined)).toBe(true);
     expect(isOtlpMetricsIngestEnabled("")).toBe(true);
     expect(isOtlpMetricsIngestEnabled("true")).toBe(true);
-    expect(isOtlpMetricsIngestEnabled("0")).toBe(true);
     expect(isOtlpMetricsIngestEnabled("  FaLsE  ")).toBe(false);
+    expect(isOtlpMetricsIngestEnabled("0")).toBe(false);
+    expect(isOtlpMetricsIngestEnabled("off")).toBe(false);
+    expect(isOtlpMetricsIngestEnabled("NO")).toBe(false);
+  });
+
+  it("keeps OTLP system.* metrics disabled unless explicitly enabled (Wave G / E9)", async () => {
+    const { isOtlpSystemMetricsIngestEnabled } = await import("../ingest-admission");
+    expect(isOtlpSystemMetricsIngestEnabled(undefined)).toBe(false);
+    expect(isOtlpSystemMetricsIngestEnabled("")).toBe(false);
+    expect(isOtlpSystemMetricsIngestEnabled("false")).toBe(false);
+    expect(isOtlpSystemMetricsIngestEnabled("true")).toBe(true);
+    expect(isOtlpSystemMetricsIngestEnabled("1")).toBe(true);
+    expect(isOtlpSystemMetricsIngestEnabled("on")).toBe(true);
   });
 
   it("admits one writer and rejects overlap until it releases", () => {

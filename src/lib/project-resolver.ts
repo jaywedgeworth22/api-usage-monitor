@@ -1,6 +1,10 @@
 import { prisma } from "@/lib/prisma";
 import { canonicalProjectKey } from "@/lib/provider-identity";
 
+/** Bound how many null-projectId rows we scan on Project create (Wave G / E6). */
+const PROJECT_BACKFILL_SCAN_CAP = 50_000;
+const PROJECT_BACKFILL_UPDATE_CHUNK = 500;
+
 export interface ProjectIdentityCandidate {
   id: string;
   name: string;
@@ -60,4 +64,58 @@ export async function resolveProjectIdsByName(
   return new Map(
     [...buildCanonicalProjectIdMap(projects)].filter(([key]) => wanted.has(key))
   );
+}
+
+function projectNameFromMetadata(metadata: unknown): string | null {
+  if (!metadata || typeof metadata !== "object" || Array.isArray(metadata)) {
+    return null;
+  }
+  const raw = (metadata as Record<string, unknown>).project;
+  return typeof raw === "string" && raw.trim() ? raw : null;
+}
+
+/**
+ * Wave G / E6: when a Project is created, attach its id to raw
+ * ExternalUsageEvent rows that still have projectId null but carry a matching
+ * metadata.project name (case-insensitive via canonicalProjectKey).
+ *
+ * Does not rewrite historical daily rollups (those groupKey hashes already
+ * include the prior null projectId). Fresh MTD and live budget sums read raw
+ * rows inside the retention window and pick up the new projectId immediately.
+ *
+ * @returns number of raw rows updated
+ */
+export async function backfillProjectIdFromMetadataName(
+  projectId: string,
+  projectName: string
+): Promise<number> {
+  const nameKey = canonicalProjectKey(projectName);
+  if (!nameKey || !projectId) return 0;
+
+  const candidates = await prisma.externalUsageEvent.findMany({
+    where: { projectId: null },
+    select: { id: true, metadata: true },
+    take: PROJECT_BACKFILL_SCAN_CAP,
+    orderBy: { occurredAt: "desc" },
+  });
+
+  const matchingIds = candidates
+    .filter((row) => {
+      const rawName = projectNameFromMetadata(row.metadata);
+      return rawName != null && canonicalProjectKey(rawName) === nameKey;
+    })
+    .map((row) => row.id);
+
+  if (matchingIds.length === 0) return 0;
+
+  let updated = 0;
+  for (let i = 0; i < matchingIds.length; i += PROJECT_BACKFILL_UPDATE_CHUNK) {
+    const chunk = matchingIds.slice(i, i + PROJECT_BACKFILL_UPDATE_CHUNK);
+    const result = await prisma.externalUsageEvent.updateMany({
+      where: { id: { in: chunk }, projectId: null },
+      data: { projectId },
+    });
+    updated += result.count;
+  }
+  return updated;
 }
