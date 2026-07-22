@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import type { Prisma } from "@prisma/client";
+import type { UsageTelemetryErrorCode } from "@jaywedgeworth22/congress-trading-shared";
 import { prisma } from "@/lib/prisma";
 import {
   ExternalUsageIdempotencyCollisionError,
@@ -9,6 +10,7 @@ import {
 import {
   MAX_USAGE_TELEMETRY_BODY_BYTES,
   parseUsageTelemetryBatch,
+  parseUsageTelemetryV2Batch,
 } from "@/lib/usage-telemetry";
 import { createRateLimiter, getClientIp } from "@/lib/rate-limit";
 import {
@@ -42,33 +44,66 @@ export const dynamic = "force-dynamic";
 // fire-and-forget telemetry pushes while preventing abuse.
 const ingestRateLimiter = createRateLimiter(1_000, 10);
 
+function wantsUsageTelemetryV2(request: NextRequest): boolean {
+  return request.headers.get("x-usage-telemetry-version")?.trim() === "2";
+}
+
+function ingestError(
+  request: NextRequest,
+  status: number,
+  code: UsageTelemetryErrorCode,
+  message: string,
+  options: { retryAfterSeconds?: number } = {}
+) {
+  const headers = options.retryAfterSeconds == null
+    ? undefined
+    : { "Retry-After": String(options.retryAfterSeconds) };
+  if (!wantsUsageTelemetryV2(request)) {
+    return NextResponse.json({ error: message }, { status, headers });
+  }
+  return NextResponse.json(
+    {
+      ok: false,
+      schemaVersion: 2,
+      error: {
+        code,
+        message,
+        retryable: status === 429 || status >= 500,
+        ...(options.retryAfterSeconds == null
+          ? {}
+          : { retryAfterSeconds: options.retryAfterSeconds }),
+      },
+    },
+    { status, headers }
+  );
+}
+
 export async function POST(request: NextRequest) {
   const usageToken = process.env.USAGE_INGEST_TOKEN?.trim() ?? "";
   const receiptToken = process.env.BILLING_RECEIPT_INGEST_TOKEN?.trim() ?? "";
   if (!usageToken && !receiptToken) {
-    return NextResponse.json({ error: "Usage ingest is not configured" }, { status: 503 });
+    return ingestError(request, 503, "not_configured", "Usage ingest is not configured");
   }
   if (usageToken && receiptToken && safeEqual(usageToken, receiptToken)) {
-    return NextResponse.json(
-      { error: "Billing receipt ingest token must be distinct from usage ingest" },
-      { status: 503 }
+    return ingestError(
+      request,
+      503,
+      "not_configured",
+      "Billing receipt ingest token must be distinct from usage ingest"
     );
   }
 
   const ip = getClientIp(request);
   if (!ingestRateLimiter.check(ip)) {
-    return NextResponse.json(
-      { error: "Too many requests. Slow down." },
-      // Prefer longer backoff so multi-app producers do not re-burst every second
-      // after a shared Cloudflare-edge rate limit (see OTLP metrics path).
-      { status: 429, headers: { "Retry-After": "30" } }
-    );
+    return ingestError(request, 429, "rate_limited", "Too many requests. Slow down.", {
+      retryAfterSeconds: 30,
+    });
   }
 
   const usageAuthorized = isUsageIngestAuthorized(request);
   const receiptAuthorized = isBillingReceiptIngestAuthorized(request);
   if (!usageAuthorized && !receiptAuthorized) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    return ingestError(request, 401, "unauthorized", "Unauthorized");
   }
 
   // Reject a retry storm before decoding up to 4 MiB of JSON or doing any
@@ -76,13 +111,9 @@ export async function POST(request: NextRequest) {
   // remains the only request allowed to consume parsing/DB memory.
   const releaseAdmission = tryAcquireIngestAdmission();
   if (!releaseAdmission) {
-    return NextResponse.json(
-      { error: "Usage ingest is busy. Retry later." },
-      {
-        status: 503,
-        headers: { "Retry-After": String(INGEST_ADMISSION_RETRY_AFTER_SECONDS) },
-      }
-    );
+    return ingestError(request, 503, "receiver_busy", "Usage ingest is busy. Retry later.", {
+      retryAfterSeconds: INGEST_ADMISSION_RETRY_AFTER_SECONDS,
+    });
   }
 
   try {
@@ -92,13 +123,17 @@ export async function POST(request: NextRequest) {
         maxBytes: MAX_USAGE_TELEMETRY_BODY_BYTES,
         label: "Usage ingest payload",
       });
-      events = parseUsageTelemetryBatch(
-        JSON.parse(new TextDecoder().decode(bytes))
-      );
+      const payload = JSON.parse(new TextDecoder().decode(bytes));
+      events = wantsUsageTelemetryV2(request)
+        ? await parseUsageTelemetryV2Batch(payload)
+        : parseUsageTelemetryBatch(payload);
     } catch (error) {
-      return NextResponse.json(
-        { error: error instanceof Error ? error.message : "Invalid request" },
-        { status: error instanceof RequestBodyTooLargeError ? 413 : 400 }
+      const bodyTooLarge = error instanceof RequestBodyTooLargeError;
+      return ingestError(
+        request,
+        bodyTooLarge ? 413 : 400,
+        bodyTooLarge ? "payload_too_large" : "invalid_request",
+        error instanceof Error ? error.message : "Invalid request"
       );
     }
 
@@ -109,42 +144,50 @@ export async function POST(request: NextRequest) {
   // external caller cannot forge a materializer-owned charge that
   // budget-status cross-references by metadata.subscriptionId.
   if (events.some((event) => event.sourceApp === SUBSCRIPTION_SOURCE_APP)) {
-    return NextResponse.json(
-      { error: `sourceApp "${SUBSCRIPTION_SOURCE_APP}" is reserved` },
-      { status: 400 }
+    return ingestError(
+      request,
+      400,
+      "invalid_request",
+      `sourceApp "${SUBSCRIPTION_SOURCE_APP}" is reserved`
     );
   }
 
   const receiptLikeEvents = events.filter(looksLikeReceiptCashEvent);
   if (receiptLikeEvents.length > 0) {
     if (!receiptAuthorized) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+      return ingestError(request, 401, "unauthorized", "Unauthorized");
     }
     if (receiptLikeEvents.length !== events.length) {
-      return NextResponse.json(
-        { error: "Billing receipt and ordinary usage events cannot share a batch" },
-        { status: 400 }
+      return ingestError(
+        request,
+        400,
+        "invalid_request",
+        "Billing receipt and ordinary usage events cannot share a batch"
       );
     }
   } else if (!usageAuthorized) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    return ingestError(request, 401, "unauthorized", "Unauthorized");
   }
 
     const receiptTargets: Array<{ providerId: string; providerName: string }> = [];
     if (receiptLikeEvents.length > 0) {
       const hmacKey = process.env.BILLING_RECEIPT_HMAC_KEY?.trim() ?? "";
       if (hmacKey.length < 32) {
-        return NextResponse.json(
-          { error: "Billing receipt signature verification is not configured" },
-          { status: 503 }
+        return ingestError(
+          request,
+          503,
+          "not_configured",
+          "Billing receipt signature verification is not configured"
         );
       }
       for (const event of receiptLikeEvents) {
         const identity = receiptCashIdentity(event);
         if (!identity || !verifyReceiptCashEvent(event, hmacKey)) {
-          return NextResponse.json(
-            { error: "Billing receipt event signature or format is invalid" },
-            { status: 400 }
+          return ingestError(
+            request,
+            400,
+            "invalid_request",
+            "Billing receipt event signature or format is invalid"
           );
         }
         receiptTargets.push({
@@ -169,9 +212,11 @@ export async function POST(request: NextRequest) {
           canonicalProviderKey(provider.name) !==
             canonicalProviderKey(target.providerName)
         ) {
-          return NextResponse.json(
-            { error: "Billing receipt provider ID and provider name do not match" },
-            { status: 400 }
+          return ingestError(
+            request,
+            400,
+            "invalid_request",
+            "Billing receipt provider ID and provider name do not match"
           );
         }
       }
@@ -235,7 +280,7 @@ export async function POST(request: NextRequest) {
       );
     } catch (error) {
       if (error instanceof ExternalUsageIdempotencyCollisionError) {
-        return NextResponse.json({ error: error.message }, { status: 409 });
+        return ingestError(request, 409, "idempotency_conflict", error.message);
       }
       throw error;
     }
@@ -243,6 +288,24 @@ export async function POST(request: NextRequest) {
     // Cross-app status metrics integration: Generate UsageSnapshot rows for absolute metrics.
     await syncStatusToUsageSnapshot(persistResult.newEvents);
 
+    if (wantsUsageTelemetryV2(request)) {
+      const duplicates = Math.max(
+        0,
+        persistResult.attempted - persistResult.persisted - persistResult.skippedPrunedDuplicates
+      );
+      return NextResponse.json(
+        {
+          ok: true,
+          schemaVersion: 2,
+          received: persistResult.attempted,
+          persisted: persistResult.persisted,
+          duplicates,
+          pruned: persistResult.skippedPrunedDuplicates,
+          rejected: 0,
+        },
+        { status: 202 }
+      );
+    }
     return NextResponse.json(
       {
         ok: true,

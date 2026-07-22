@@ -652,6 +652,7 @@ Protocol: /Users/jay/apps/EFFORT-LOG-PROTOCOL.md (canonical). Live board: this f
 
 ## In Progress
 
+- **[CODEX] Shared usage telemetry v2 receiver — IN PROGRESS 2026-07-21.** Pin immutable `@jaywedgeworth22/congress-trading-shared#v2.0.0` (`19a077a4`), validate fresh producer traffic with the shared Zod v2 authority, derive canonical `producerId + eventId` idempotency, preserve producer/key/account/coverage references, and return explicit ACK counts plus typed retry/errors. The hand-written v1 parser remains only for durable legacy receipt/backlog replay; no dual-write. KEEPOUT: `src/lib/usage-telemetry.ts`, `src/app/api/ingest/usage/**` until merged.
 - **[CODEX] PR updater safety repair — IN PROGRESS 2026-07-21.** Follow-up to merged PR #717: replace the ineffective default-token third-party updater with a bounded GitHub CLI workflow that is inert until an owner supplies a separate write token. Preserve the iOS PR #716 worktree; do not touch Oracle deploy, DNS, writer, scheduler, production data, or secrets.
 - **[CODEX] iOS Xcode project signing/reference fix — IN PROGRESS 2026-07-21.** Isolate and push the existing `ios/UsageMonitor/UsageMonitor.xcodeproj/project.pbxproj` change as a dedicated PR; do not mix with Oracle deployment work.
 - **[CODEX] Oracle release-gate and host-script drift repair — IN PROGRESS 2026-07-21.** Restore reviewed deployment-script parity, address current CI blockers, and re-verify Oracle/public health. KEEPOUT: DNS, writer authority, scheduler, and production data unless a separate gate passes.
