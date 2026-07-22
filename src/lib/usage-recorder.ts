@@ -28,7 +28,7 @@ import {
 import { withInternalUsageWriteAdmission } from "@/lib/ingest-admission";
 import { redactProviderRawData } from "@/lib/data-privacy";
 import { budgetPollingPaused } from "@/lib/budget-controls";
-import { isDecommissionedBuiltInProvider } from "@/lib/provider-definitions";
+import { isDecommissionedProviderName } from "@/lib/provider-definitions";
 const DEFAULT_PROVIDER_TIMEOUT_MS = 90_000;
 const providerAttemptTokens = new Map<string, symbol>();
 
@@ -278,7 +278,7 @@ export async function fetchAllDueProviders(): Promise<FetchAllProvidersResult> {
     // retired service into a provider call. Startup normally deactivates
     // these rows; this filter is the fail-closed boundary.
     const providers = storedProviders.filter(
-      (provider) => !isDecommissionedBuiltInProvider(provider)
+      (provider) => !isDecommissionedProviderName(provider.name)
     );
 
     let successes = 0;

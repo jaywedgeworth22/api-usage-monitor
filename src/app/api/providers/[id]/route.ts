@@ -3,7 +3,7 @@ import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { decrypt, encrypt, encryptJson } from "@/lib/crypto";
 import { parseProviderUpdateInput, readJsonBody } from "@/lib/provider-input";
-import { isDecommissionedBuiltInProvider } from "@/lib/provider-definitions";
+import { isDecommissionedProviderName } from "@/lib/provider-definitions";
 import { buildProviderAlertState } from "@/lib/provider-alerts";
 import { computeBudgetStatus, bustBudgetStatusCache } from "@/lib/budget-status";
 import { toPrismaProviderPlanData } from "@/lib/provider-plan";
@@ -375,7 +375,7 @@ export async function PUT(
     );
   }
 
-  if (input.isActive === true && isDecommissionedBuiltInProvider(existing)) {
+  if (input.isActive === true && isDecommissionedProviderName(existing.name)) {
     return NextResponse.json(
       { error: "This built-in provider is dormant or retired and cannot be reactivated" },
       { status: 409 }

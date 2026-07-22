@@ -9,7 +9,7 @@ import type { AdapterInvocationContext } from "./helpers";
 import type { Provider } from "@prisma/client";
 import type { BuiltInProviderName } from "@/lib/provider-definitions";
 import { canonicalProviderKey } from "@/lib/provider-identity";
-import { isDecommissionedBuiltInProvider } from "@/lib/provider-definitions";
+import { isDecommissionedProviderName } from "@/lib/provider-definitions";
 import type { UsageResult } from "./openai";
 
 type AdapterFn = (
@@ -139,7 +139,7 @@ export async function fetchProviderUsage(
 ): Promise<UsageResult> {
   await loadAdapters();
 
-  if (isDecommissionedBuiltInProvider(provider)) {
+  if (isDecommissionedProviderName(provider.name)) {
     unsupportedError(
       `${provider.name}: this built-in provider is dormant or retired and is not polled`
     );

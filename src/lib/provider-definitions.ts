@@ -130,6 +130,15 @@ export function isDecommissionedBuiltInProvider(provider: {
   );
 }
 
+/**
+ * Creation and fetch boundaries use the canonical name without trusting a
+ * caller-supplied type. Otherwise a retired integration could be reintroduced
+ * as `custom` while still presenting itself as the retired provider.
+ */
+export function isDecommissionedProviderName(name: string): boolean {
+  return builtInProviderLifecycle(name) !== "active";
+}
+
 /** Built-ins offered when an operator creates a new connection. */
 export const ADDABLE_BUILT_IN_PROVIDERS = BUILT_IN_PROVIDERS.filter((provider) =>
   isBuiltInProviderActive(provider.name)

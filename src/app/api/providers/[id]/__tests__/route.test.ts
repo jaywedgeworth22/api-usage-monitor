@@ -64,13 +64,21 @@ describe("retired built-in provider boundaries", () => {
       );
       expect(response.status, name).toBe(409);
     }
+    const customAlias = await POST_COLLECTION(
+      new NextRequest("https://usage.jays.services/api/providers", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ name: "Vercel", displayName: "Custom Vercel", type: "custom" }),
+      })
+    );
+    expect(customAlias.status).toBe(409);
     expect(await prisma.provider.count()).toBe(0);
   });
 
   it("deactivates legacy rows without deleting their snapshots", async () => {
     const provider = await prisma.provider.create({
       data: {
-        name: "intrinio",
+        name: "InTrInIo",
         displayName: "Intrinio (legacy)",
         type: "builtin",
         snapshots: { create: { fetchedAt: new Date(), totalCost: 12.34 } },
@@ -84,12 +92,12 @@ describe("retired built-in provider boundaries", () => {
     expect(await prisma.usageSnapshot.count({ where: { providerId: provider.id } })).toBe(1);
   });
 
-  it("never permits a retired built-in to be reactivated", async () => {
+  it("never permits a retired canonical name to be reactivated through a custom type", async () => {
     const provider = await prisma.provider.create({
       data: {
         name: "vercel",
         displayName: "Vercel (legacy)",
-        type: "builtin",
+        type: "custom",
         isActive: false,
       },
     });

@@ -3,6 +3,7 @@ import {
   BUILT_IN_PROVIDERS,
   ADDABLE_BUILT_IN_PROVIDERS,
   builtInProviderLifecycle,
+  isDecommissionedProviderName,
   DEFAULT_USAGE_UNIT_LABEL,
   hasConfiguredProviderField,
   usageUnitLabelForProvider,
@@ -108,5 +109,7 @@ describe("built-in provider retirement", () => {
     expect(builtInProviderLifecycle("firecrawl")).toBe("dormant");
     expect(ADDABLE_BUILT_IN_PROVIDERS.some((provider) => provider.name === "firecrawl")).toBe(false);
     expect(builtInProviderLifecycle("openai")).toBe("active");
+    expect(isDecommissionedProviderName("  VeRcEl  ")).toBe(true);
+    expect(isDecommissionedProviderName("openai")).toBe(false);
   });
 });

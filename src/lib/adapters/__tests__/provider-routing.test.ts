@@ -207,6 +207,13 @@ describe("provider adapter credential routing", () => {
     }
   );
 
+  it("does not let a custom type bypass a retired canonical name", async () => {
+    await expect(fetchProviderUsage(provider("Vercel", "custom"))).rejects.toMatchObject({
+      code: "UNSUPPORTED",
+    });
+    expect(adapterMocks.custom).not.toHaveBeenCalled();
+  });
+
   it("does not fall back to custom for an unknown built-in slug", async () => {
     await expect(
       fetchProviderUsage(provider("future-provider", "builtin", {
