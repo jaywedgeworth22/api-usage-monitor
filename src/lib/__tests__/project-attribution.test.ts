@@ -108,12 +108,9 @@ describe("project attribution (integration)", () => {
 
   it("rejects project create without a dashboard session outside vitest (Wave G/H / E18)", async () => {
     // Under vitest, mutator session re-check is skipped so handlers can be unit
-    // tested without minting cookies. Production always enforces when
-    // SESSION_SECRET is set (see shouldEnforceDashboardSession).
+    // tested without minting cookies. Force-enforce by clearing VITEST.
     const prevVitest = process.env.VITEST;
-    const prevNodeEnv = process.env.NODE_ENV;
     delete process.env.VITEST;
-    process.env.NODE_ENV = "production";
     try {
       const res = await createProject(
         new NextRequest("http://localhost/api/projects", {
@@ -126,7 +123,6 @@ describe("project attribution (integration)", () => {
     } finally {
       if (prevVitest === undefined) delete process.env.VITEST;
       else process.env.VITEST = prevVitest;
-      process.env.NODE_ENV = prevNodeEnv;
     }
   });
 
