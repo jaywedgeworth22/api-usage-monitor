@@ -419,13 +419,14 @@ describe("computeProjectBudgetStatus stale-while-revalidate cache", () => {
     await new Promise((resolve) => setTimeout(resolve, 20));
     expect(heavyAggregationCallCount()).toBe(1);
 
-    // Stop further zero-TTL refreshes, release the blocked scan, and prove
-    // we still only paid for one groupBy (shared memo). Then wait for the
-    // project background refresh to settle so it cannot leak into the next test.
+    // Stop further zero-TTL refreshes, release the blocked scan. Under vitest
+    // the process memo is disabled, so the queued project refresh pays a
+    // second groupBy after the lease releases (still serialized, never
+    // concurrent). Production keeps the 5s memo so cold provider+project
+    // only scan once.
     process.env.BUDGET_STATUS_CACHE_TTL_MS = "60000";
     releaseMtdScan([]);
-    await new Promise((resolve) => setTimeout(resolve, 50));
-    expect(heavyAggregationCallCount()).toBe(1);
+    await waitUntil(async () => heavyAggregationCallCount() === 2);
     await waitUntil(async () =>
       (await computeProjectBudgetStatus(NOW)) !== firstProject
     );
