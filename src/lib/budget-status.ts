@@ -200,6 +200,333 @@ function forecastSubscriptionRenewals(
   return total;
 }
 
+// ---------------------------------------------------------------------------
+// Extracted pure functions from computeBudgetStatusUncached
+// ---------------------------------------------------------------------------
+
+/** One linked period entry produced by resolveLinkedPeriods. */
+export interface LinkedPeriodEntry {
+  materializedUsd: number;
+  representedSnapshotUsd: number;
+  observedAt: Date;
+}
+
+/** Input shape for resolveLinkedPeriods. */
+export interface ResolveLinkedPeriodsInput {
+  localFixed: Array<{
+    id: string;
+    costUsd: number;
+    currency: string;
+    externalBillingSource: string | null;
+    externalBillingId: string | null;
+    externalBillingManaged: boolean;
+    currentPeriodStart: Date | null;
+    nextRenewalAt: Date;
+    lastChargedPeriodStart: Date | null;
+  }>;
+  liveExternalFixed: Array<{
+    source: string;
+    externalId: string;
+    amountUsd: number | null;
+    currentPeriodStart: Date | null;
+    syncedAt: Date;
+  }>;
+  externalBillingChargeCorrections: Array<{
+    managedSubscriptionId: string;
+    originalPeriodStart: Date;
+    originalPeriodEnd: Date;
+    originalAmountUsd: number;
+    correctedAmountUsd: number;
+    observedAt: Date;
+  }>;
+  materializedChargeByIdempotencyKey: Map<string, {
+    subscriptionId: string;
+    costUsd: number;
+    occurredAt: Date;
+    windowStart: Date;
+    windowEnd: Date;
+  }>;
+}
+
+/**
+ * Resolve subscription-linked billing periods that overlap between local
+ * subscription records and live external billing data. Returns a map keyed
+ * by (subscriptionId, periodStart, periodEnd) with the materialized and
+ * represented snapshot amounts for each linked period.
+ */
+export function resolveLinkedPeriods(
+  input: ResolveLinkedPeriodsInput
+): Map<string, LinkedPeriodEntry> {
+  const { localFixed, liveExternalFixed, externalBillingChargeCorrections, materializedChargeByIdempotencyKey } = input;
+  const linkedPeriods = new Map<string, LinkedPeriodEntry>();
+
+  const addLinkedPeriod = (
+    subscriptionId: string,
+    periodStart: Date,
+    periodEnd: Date,
+    representedSnapshotUsd: number,
+    observedAt: Date,
+    expectedMaterializedUsd?: number
+  ) => {
+    const periodKey = `${subscriptionId}\u0000${periodStart.toISOString()}\u0000${periodEnd.toISOString()}`;
+    const materialized = materializedChargeByIdempotencyKey.get(
+      subscriptionChargeIdempotencyKey(subscriptionId, periodStart)
+    );
+    if (
+      !materialized ||
+      materialized.subscriptionId !== subscriptionId ||
+      materialized.occurredAt.getTime() !== periodStart.getTime() ||
+      materialized.windowStart.getTime() !== periodStart.getTime() ||
+      materialized.windowEnd.getTime() !== periodEnd.getTime() ||
+      (expectedMaterializedUsd != null &&
+        Math.abs(materialized.costUsd - expectedMaterializedUsd) > 1e-6)
+    ) {
+      return;
+    }
+    const existing = linkedPeriods.get(periodKey);
+    if (!existing || observedAt > existing.observedAt) {
+      linkedPeriods.set(periodKey, {
+        materializedUsd: materialized.costUsd,
+        representedSnapshotUsd,
+        observedAt,
+      });
+    }
+  };
+
+  for (const subscription of localFixed) {
+    if (!subscription.externalBillingSource || !subscription.externalBillingId) {
+      continue;
+    }
+    const externalRecord = liveExternalFixed.find(
+      (record) =>
+        record.source === subscription.externalBillingSource &&
+        record.externalId === subscription.externalBillingId
+    );
+    if (externalRecord) {
+      // Cast to satisfy the stricter external types — the original inline code
+      // in computeBudgetStatusUncached worked against Prisma-inferred shapes.
+      const exactCurrentTerms = canLinkSubscriptionToExternalBilling(
+        subscription as unknown as Parameters<typeof canLinkSubscriptionToExternalBilling>[0],
+        externalRecord as unknown as Parameters<typeof canLinkSubscriptionToExternalBilling>[1]
+      );
+      const chargedManagedCorrection =
+        subscription.externalBillingManaged &&
+        subscription.lastChargedPeriodStart?.getTime() ===
+          (subscription.currentPeriodStart as Date | null)?.getTime?.() &&
+        externalRecord.currentPeriodStart?.getTime() ===
+          (subscription.currentPeriodStart as Date | null)?.getTime?.();
+      if (exactCurrentTerms || chargedManagedCorrection) {
+        const materializedPeriod = exactCurrentTerms
+          ? resolveExternalBillingPeriod(externalRecord as unknown as Parameters<typeof resolveExternalBillingPeriod>[0])!
+          : {
+              start: subscription.currentPeriodStart!,
+              end: subscription.nextRenewalAt,
+            };
+        addLinkedPeriod(
+          subscription.id,
+          materializedPeriod.start,
+          materializedPeriod.end,
+          externalRecord.amountUsd ?? 0,
+          externalRecord.syncedAt
+        );
+      }
+    }
+  }
+
+  for (const correction of externalBillingChargeCorrections) {
+    addLinkedPeriod(
+      correction.managedSubscriptionId,
+      correction.originalPeriodStart,
+      correction.originalPeriodEnd,
+      correction.correctedAmountUsd,
+      correction.observedAt,
+      correction.originalAmountUsd
+    );
+  }
+
+  return linkedPeriods;
+}
+
+/** Output shape for reconcileFixedCosts. */
+export interface ReconciledFixedCosts {
+  representedSnapshotFixedUsd: number;
+  linkedMaterializedFixedUsd: number;
+  linkedSnapshotRepresentationUsd: number;
+  materializerLinkedSubscriptionPushedUsd: number;
+  linkedFixedDedupeUsd: number;
+  snapshotCostIncludesUnknownFixed: boolean;
+  fixedCostConflict: boolean;
+  planFixedInCashUsd: number;
+  fixedAccruedUsd: number;
+}
+
+export interface ReconcileFixedCostsInput {
+  linkedPeriods: Map<string, LinkedPeriodEntry>;
+  snapshotFixedCostIncludedUsd: number;
+  snapshotCostUsd: number | null;
+  latestCostSnapshotCostIncludesUnknownFixed: boolean;
+  subscriptionPushedUsd: number;
+  subscriptionPushedManualUsd: number;
+  fixedMonthlyCostUsd: number;
+}
+
+/**
+ * Reconcile fixed costs across linked subscription periods, pushed
+ * subscription events, and provider-plan fixed fees into a single
+ * deduplicated cash view.
+ */
+export function reconcileFixedCosts(
+  input: ReconcileFixedCostsInput
+): ReconciledFixedCosts {
+  const {
+    linkedPeriods,
+    snapshotFixedCostIncludedUsd,
+    snapshotCostUsd,
+    latestCostSnapshotCostIncludesUnknownFixed,
+    subscriptionPushedUsd,
+    subscriptionPushedManualUsd,
+    fixedMonthlyCostUsd,
+  } = input;
+
+  const representedSnapshotFixedUsd = [...linkedPeriods.values()].reduce(
+    (sum, period) => sum + period.representedSnapshotUsd,
+    0
+  );
+  // Do not spend proof from one fixed source against an unrelated/partial
+  // provider snapshot. The snapshot must cover every represented corrected
+  // amount before any exact linked historical events are replaced.
+  const linkedMaterializedFixedUsd =
+    snapshotFixedCostIncludedUsd + 0.005 >= representedSnapshotFixedUsd
+      ? [...linkedPeriods.values()].reduce(
+          (sum, period) => sum + period.materializedUsd,
+          0
+        )
+      : 0;
+  const linkedSnapshotRepresentationUsd =
+    linkedMaterializedFixedUsd > 0 ? representedSnapshotFixedUsd : 0;
+
+  const materializerLinkedSubscriptionPushedUsd = Math.max(
+    0,
+    subscriptionPushedUsd - subscriptionPushedManualUsd
+  );
+  const linkedFixedDedupeUsd =
+    snapshotFixedCostIncludedUsd > 0
+      ? Math.min(
+          materializerLinkedSubscriptionPushedUsd,
+          linkedMaterializedFixedUsd
+        )
+      : 0;
+  const snapshotCostIncludesUnknownFixed =
+    snapshotCostUsd != null
+      ? latestCostSnapshotCostIncludesUnknownFixed
+      : false;
+  const fixedCostConflict =
+    (fixedMonthlyCostUsd > 0 &&
+      (subscriptionPushedUsd > 0 || snapshotFixedCostIncludedUsd > 0)) ||
+    Math.min(
+      Math.max(
+        0,
+        snapshotFixedCostIncludedUsd - linkedSnapshotRepresentationUsd
+      ),
+      Math.max(0, subscriptionPushedUsd - linkedFixedDedupeUsd)
+    ) > 0.005 ||
+    (snapshotCostIncludesUnknownFixed && subscriptionPushedUsd > 0) ||
+    linkedMaterializedFixedUsd - linkedFixedDedupeUsd > 0.005;
+
+  // Prefer a single fixed source of truth for cash: when subscription events
+  // already materialize the recurring fee, do NOT also add ProviderPlan
+  // fixedMonthlyCostUsd (operator double-model).
+  const planFixedInCashUsd =
+    fixedMonthlyCostUsd > 0 && subscriptionPushedUsd > 0
+      ? 0
+      : fixedMonthlyCostUsd;
+
+  const fixedAccruedUsd =
+    planFixedInCashUsd +
+    subscriptionPushedUsd +
+    snapshotFixedCostIncludedUsd -
+    linkedFixedDedupeUsd;
+
+  return {
+    representedSnapshotFixedUsd,
+    linkedMaterializedFixedUsd,
+    linkedSnapshotRepresentationUsd,
+    materializerLinkedSubscriptionPushedUsd,
+    linkedFixedDedupeUsd,
+    snapshotCostIncludesUnknownFixed,
+    fixedCostConflict,
+    planFixedInCashUsd,
+    fixedAccruedUsd,
+  };
+}
+
+/**
+ * Compute the spend-coverage classification for a provider based on the
+ * presence/absence of various cost signals. This is a pure function of
+ * the input flags and provider metadata.
+ */
+export function computeSpendCoverage(input: {
+  hasUnknownCost: boolean;
+  hasPushedEvents: boolean;
+  pushedUnclassifiedCostEventCount: number;
+  hasKnownVariableCost: boolean;
+  fixedAccruedUsd: number;
+  receiptCashPaidUsd: number;
+  snapshotCostUsd: number | null;
+  snapshotCostCoverageIncomplete: boolean;
+  providerCanonicalKey: string;
+  geminiBillingIncomplete: boolean;
+}): CostCoverage {
+  const {
+    hasUnknownCost,
+    hasPushedEvents,
+    pushedUnclassifiedCostEventCount,
+    hasKnownVariableCost,
+    fixedAccruedUsd,
+    receiptCashPaidUsd,
+    snapshotCostUsd,
+    snapshotCostCoverageIncomplete,
+    providerCanonicalKey,
+    geminiBillingIncomplete,
+  } = input;
+
+  let spendCoverage: CostCoverage = hasUnknownCost
+    ? hasKnownVariableCost || fixedAccruedUsd > 0
+      ? "partial"
+      : pushedUnclassifiedCostEventCount > 0
+        ? "legacy_unknown"
+        : "unknown"
+    : hasPushedEvents || snapshotCostUsd != null
+      ? "complete"
+      : fixedAccruedUsd > 0 || receiptCashPaidUsd > 0
+        ? "partial"
+        : "unknown";
+
+  // Anthropic individual accounts and Mistral's currently published Admin
+  // Usage schema have no authoritative cash-total API.
+  if (
+    ["anthropic", "mistral"].includes(providerCanonicalKey) &&
+    snapshotCostUsd == null &&
+    hasPushedEvents &&
+    spendCoverage === "complete"
+  ) {
+    spendCoverage = "partial";
+  }
+
+  if (geminiBillingIncomplete && spendCoverage === "complete") {
+    spendCoverage =
+      hasKnownVariableCost || fixedAccruedUsd > 0 ? "partial" : "unknown";
+  }
+
+  if (snapshotCostCoverageIncomplete && spendCoverage === "complete") {
+    spendCoverage = hasKnownVariableCost || fixedAccruedUsd > 0
+      ? "partial"
+      : "unknown";
+  }
+
+  return spendCoverage;
+}
+
 async function computeBudgetStatusUncached(now: Date): Promise<BudgetStatusResponse> {
   const monthStart = monthStartUtc(now);
   const rawCutoff = getExternalEventRawCutoff(now);
@@ -678,6 +1005,7 @@ async function computeBudgetStatusUncached(now: Date): Promise<BudgetStatusRespo
       pushed.usagePushed
     );
     const usageCost = observedVariableUsageUsd;
+
     const liveExternalFixed = p.externalBilling.filter((record) => {
       return (
         isExternalBillingLinkCandidate(record, {
@@ -694,175 +1022,26 @@ async function computeBudgetStatusUncached(now: Date): Promise<BudgetStatusRespo
     const localFixed = p.subscriptions.filter(
       (subscription) => subscription.currency.toUpperCase() === "USD"
     );
-    const linkedPeriods = new Map<
-      string,
-      { materializedUsd: number; representedSnapshotUsd: number; observedAt: Date }
-    >();
-    const addLinkedPeriod = (
-      subscriptionId: string,
-      periodStart: Date,
-      periodEnd: Date,
-      representedSnapshotUsd: number,
-      observedAt: Date,
-      expectedMaterializedUsd?: number
-    ) => {
-      const periodKey = `${subscriptionId}\u0000${periodStart.toISOString()}\u0000${periodEnd.toISOString()}`;
-      const materialized = materializedChargeByIdempotencyKey.get(
-        subscriptionChargeIdempotencyKey(subscriptionId, periodStart)
-      );
-      if (
-        !materialized ||
-        materialized.subscriptionId !== subscriptionId ||
-        materialized.occurredAt.getTime() !== periodStart.getTime() ||
-        materialized.windowStart.getTime() !== periodStart.getTime() ||
-        materialized.windowEnd.getTime() !== periodEnd.getTime() ||
-        (expectedMaterializedUsd != null &&
-          Math.abs(materialized.costUsd - expectedMaterializedUsd) > 1e-6)
-      ) {
-        return;
-      }
-      const existing = linkedPeriods.get(periodKey);
-      if (!existing || observedAt > existing.observedAt) {
-        linkedPeriods.set(periodKey, {
-          materializedUsd: materialized.costUsd,
-          representedSnapshotUsd,
-          observedAt,
-        });
-      }
-    };
-    for (const subscription of localFixed) {
-      if (!subscription.externalBillingSource || !subscription.externalBillingId) {
-        continue;
-      }
-      const externalRecord = liveExternalFixed.find(
-        (record) =>
-          record.source === subscription.externalBillingSource &&
-          record.externalId === subscription.externalBillingId
-      );
-      if (externalRecord) {
-        const exactCurrentTerms = canLinkSubscriptionToExternalBilling(
-          subscription,
-          externalRecord
-        );
-        const chargedManagedCorrection =
-          subscription.externalBillingManaged &&
-          subscription.lastChargedPeriodStart?.getTime() ===
-            subscription.currentPeriodStart.getTime() &&
-          externalRecord.currentPeriodStart?.getTime() ===
-            subscription.currentPeriodStart.getTime();
-        if (exactCurrentTerms || chargedManagedCorrection) {
-          const materializedPeriod = exactCurrentTerms
-            ? resolveExternalBillingPeriod(externalRecord)!
-            : {
-                start: subscription.currentPeriodStart,
-                end: subscription.nextRenewalAt,
-              };
-          addLinkedPeriod(
-            subscription.id,
-            materializedPeriod.start,
-            materializedPeriod.end,
-            externalRecord.amountUsd ?? 0,
-            externalRecord.syncedAt
-          );
-        }
-      }
 
-    }
-    // Correction proofs were written only while the provider record was
-    // fresh/authoritative and only after verifying one exact local event. They
-    // remain historical overlap evidence if the source rolls/stales or an
-    // owner later edits/deletes the Subscription row; neither action deletes
-    // the already-materialized charge event. Stale evidence cannot create a
-    // new proof or settle a new collision.
-    for (const correction of p.externalBillingChargeCorrections) {
-      addLinkedPeriod(
-        correction.managedSubscriptionId,
-        correction.originalPeriodStart,
-        correction.originalPeriodEnd,
-        correction.correctedAmountUsd,
-        correction.observedAt,
-        correction.originalAmountUsd
-      );
-    }
-    const representedSnapshotFixedUsd = [...linkedPeriods.values()].reduce(
-      (sum, period) => sum + period.representedSnapshotUsd,
-      0
-    );
-    // Do not spend proof from one fixed source against an unrelated/partial
-    // provider snapshot. The snapshot must cover every represented corrected
-    // amount before any exact linked historical events are replaced.
-    const linkedMaterializedFixedUsd =
-      snapshotFixedCostIncludedUsd + 0.005 >= representedSnapshotFixedUsd
-        ? [...linkedPeriods.values()].reduce(
-            (sum, period) => sum + period.materializedUsd,
-            0
-          )
-        : 0;
-    const linkedSnapshotRepresentationUsd =
-      linkedMaterializedFixedUsd > 0 ? representedSnapshotFixedUsd : 0;
-    // A provider can correct a fixed charge after the linked historical event
-    // materialized. Once an included fixed-cost snapshot exists, subtract the
-    // full overlap proven by linked materialized/subscription evidence, even
-    // when that old event is larger than a downward-corrected snapshot. This
-    // makes $5 historical + $4 corrected snapshot resolve to $4 (and $5 + $6
-    // to $6), while never deducting more than either the linked event total or
-    // the subscription event channel actually contains.
-    //
-    // pushed.subscriptionPushed is additive across BOTH the materializer's own
-    // sourceApp="subscription" charge (the thing linkedMaterializedFixedUsd
-    // proves overlaps the snapshot) AND any manual adjustments (owner-directed
-    // historical corrections/refunds, sourceApp != SUBSCRIPTION_SOURCE_APP)
-    // that are never represented in the snapshot at all. Dedupe against only
-    // the materializer-linked slice — isolated by subtracting the tracked
-    // manual contribution — so a manual refund is never cancelled out by this
-    // dedupe, and clamp it at 0 so a refund that drives the isolated slice
-    // negative can never make the dedupe itself negative and ADD spend back
-    // (see subscriptionPushedManualUsd's doc comment in external-usage-events.ts).
-    const materializerLinkedSubscriptionPushedUsd = Math.max(
-      0,
-      pushed.subscriptionPushed - pushed.subscriptionPushedManualUsd
-    );
-    const linkedFixedDedupeUsd =
-      snapshotFixedCostIncludedUsd > 0
-        ? Math.min(
-            materializerLinkedSubscriptionPushedUsd,
-            linkedMaterializedFixedUsd
-          )
-        : 0;
-    const snapshotCostIncludesUnknownFixed =
-      snapshotCostUsd != null
-        ? latestCostSnapshot?.costIncludesUnknownFixed ?? false
-        : false;
-    const fixedCostConflict =
-      (fixedMonthlyCostUsd > 0 &&
-        (pushed.subscriptionPushed > 0 || snapshotFixedCostIncludedUsd > 0)) ||
-      Math.min(
-        Math.max(
-          0,
-          snapshotFixedCostIncludedUsd - linkedSnapshotRepresentationUsd
-        ),
-        Math.max(0, pushed.subscriptionPushed - linkedFixedDedupeUsd)
-      ) > 0.005 ||
-      (snapshotCostIncludesUnknownFixed && pushed.subscriptionPushed > 0) ||
-      linkedMaterializedFixedUsd - linkedFixedDedupeUsd > 0.005;
-    // Prefer a single fixed source of truth for cash: when subscription events
-    // already materialize the recurring fee, do NOT also add ProviderPlan
-    // fixedMonthlyCostUsd (operator double-model). Still surface fixedCostConflict
-    // so Settings can resolve the misconfiguration. Linked snapshot dedupe is
-    // unchanged below.
-    const planFixedInCashUsd =
-      fixedMonthlyCostUsd > 0 && pushed.subscriptionPushed > 0
-        ? 0
-        : fixedMonthlyCostUsd;
-    // Preserve every distinct *remaining* fixed source. Collapse only the amount
-    // proven to represent the same provider billing identity through an explicit
-    // local Subscription link; equal prices alone are never treated as identity.
-    const fixedAccruedUsd =
-      planFixedInCashUsd +
-      pushed.subscriptionPushed +
-      snapshotFixedCostIncludedUsd -
-      linkedFixedDedupeUsd;
-    const spentUsd = fixedAccruedUsd + usageCost;
+    // Delegate to extracted pure functions
+    const linkedPeriods = resolveLinkedPeriods({
+      localFixed,
+      liveExternalFixed,
+      externalBillingChargeCorrections: p.externalBillingChargeCorrections,
+      materializedChargeByIdempotencyKey,
+    });
+
+    const reconciled = reconcileFixedCosts({
+      linkedPeriods,
+      snapshotFixedCostIncludedUsd,
+      snapshotCostUsd,
+      latestCostSnapshotCostIncludesUnknownFixed: latestCostSnapshot?.costIncludesUnknownFixed ?? false,
+      subscriptionPushedUsd: pushed.subscriptionPushed,
+      subscriptionPushedManualUsd: pushed.subscriptionPushedManualUsd,
+      fixedMonthlyCostUsd,
+    });
+
+    const spentUsd = reconciled.fixedAccruedUsd + usageCost;
     const hasPushedEvents =
       pushed.pricedEventCount +
         pushed.unpricedEventCount +
@@ -874,41 +1053,20 @@ async function computeBudgetStatusUncached(now: Date): Promise<BudgetStatusRespo
       receiptCash.paidUsd > 0;
     const hasUnknownCost =
       pushed.unpricedEventCount > 0 || pushed.unclassifiedCostEventCount > 0;
-    let spendCoverage: CostCoverage = hasUnknownCost
-      ? hasKnownVariableCost || fixedAccruedUsd > 0
-        ? "partial"
-        : pushed.unclassifiedCostEventCount > 0
-          ? "legacy_unknown"
-          : "unknown"
-      : hasPushedEvents || snapshotCostUsd != null
-        ? "complete"
-        : fixedAccruedUsd > 0 || receiptCash.paidUsd > 0
-          ? "partial"
-          : "unknown";
-    // Anthropic individual accounts and Mistral's currently published Admin
-    // Usage schema have no authoritative cash-total API. A fully priced
-    // producer stream is complete for the events received, but cannot prove
-    // that every account request reached the monitor. Keep provider-level
-    // cash explicitly partial until an authoritative cost snapshot exists.
-    if (
-      ["anthropic", "mistral"].includes(canonicalProviderKey(p.name)) &&
-      snapshotCostUsd == null &&
-      hasPushedEvents &&
-      spendCoverage === "complete"
-    ) {
-      spendCoverage = "partial";
-    }
     const geminiBillingIncomplete =
       geminiBillingStatus != null && geminiBillingStatus.state !== "ready";
-    if (geminiBillingIncomplete && spendCoverage === "complete") {
-      spendCoverage =
-        hasKnownVariableCost || fixedAccruedUsd > 0 ? "partial" : "unknown";
-    }
-    if (snapshotCostCoverageIncomplete && spendCoverage === "complete") {
-      spendCoverage = hasKnownVariableCost || fixedAccruedUsd > 0
-        ? "partial"
-        : "unknown";
-    }
+    const spendCoverage = computeSpendCoverage({
+      hasUnknownCost,
+      hasPushedEvents,
+      pushedUnclassifiedCostEventCount: pushed.unclassifiedCostEventCount,
+      hasKnownVariableCost,
+      fixedAccruedUsd: reconciled.fixedAccruedUsd,
+      receiptCashPaidUsd: receiptCash.paidUsd,
+      snapshotCostUsd,
+      snapshotCostCoverageIncomplete,
+      providerCanonicalKey: canonicalProviderKey(p.name),
+      geminiBillingIncomplete,
+    });
     const forecastedSubscriptionRenewalsUsd = forecastSubscriptionRenewals(
       p.subscriptions,
       now
@@ -957,7 +1115,7 @@ async function computeBudgetStatusUncached(now: Date): Promise<BudgetStatusRespo
           fetchedAt: latestSnapshot?.fetchedAt ?? now,
         },
         trackedSpendUsd: spentUsd,
-        fixedAccruedUsd,
+        fixedAccruedUsd: reconciled.fixedAccruedUsd,
         reconciliationDiscrepancyUsd: p.usageReconciliations?.[0]?.status === "discrepancy" ? p.usageReconciliations[0].deltaUsd : null,
         anomalies: anomaliesByProviderId.get(p.id),
       },
@@ -971,7 +1129,7 @@ async function computeBudgetStatusUncached(now: Date): Promise<BudgetStatusRespo
         a.code === "spend_anomaly" ||
         a.code === "request_anomaly"
     );
-    if (fixedCostConflict) {
+    if (reconciled.fixedCostConflict) {
       budgetAlerts.push({
         code: "fixed_cost_conflict",
         severity: "warning",
@@ -1048,7 +1206,7 @@ async function computeBudgetStatusUncached(now: Date): Promise<BudgetStatusRespo
     // elevates when EOM projection would breach even if current spend is still ok.
     let projectedStatus: BudgetStatusLevel = status;
     if (monthlyBudgetUsd != null && monthlyBudgetUsd > 0) {
-      const projected = projectedVariableUsageUsd + fixedAccruedUsd + forecastedSubscriptionRenewalsUsd;
+      const projected = projectedVariableUsageUsd + reconciled.fixedAccruedUsd + forecastedSubscriptionRenewalsUsd;
       // projectedEomUsd is assigned below — compute inline for projectedStatus.
       const projectedEomForStatus = projected;
       if (projectedEomForStatus >= monthlyBudgetUsd) {
@@ -1078,7 +1236,7 @@ async function computeBudgetStatusUncached(now: Date): Promise<BudgetStatusRespo
         ? null
         : latestCostSnapshot?.costScope ?? null,
       snapshotFixedCostIncludedUsd,
-      snapshotCostIncludesUnknownFixed,
+      snapshotCostIncludesUnknownFixed: reconciled.snapshotCostIncludesUnknownFixed,
       pushedMonthToDateUsd,
       receiptCashPaidUsd: receiptCash.paidUsd,
       receiptCashEventCount: receiptCash.eventCount,
@@ -1090,13 +1248,13 @@ async function computeBudgetStatusUncached(now: Date): Promise<BudgetStatusRespo
       pushedUnclassifiedCostEventCount: pushed.unclassifiedCostEventCount,
       spendCoverage,
       subscriptionMonthToDateUsd: pushed.subscriptionPushed,
-      fixedAccruedUsd,
-      linkedFixedDedupeUsd,
-      fixedCostConflict,
+      fixedAccruedUsd: reconciled.fixedAccruedUsd,
+      linkedFixedDedupeUsd: reconciled.linkedFixedDedupeUsd,
+      fixedCostConflict: reconciled.fixedCostConflict,
       forecastedSubscriptionRenewalsUsd,
       spentUsd,
       projectedEomUsd:
-        fixedAccruedUsd +
+        reconciled.fixedAccruedUsd +
         projectedVariableUsageUsd +
         forecastedSubscriptionRenewalsUsd,
       remainingUsd,
