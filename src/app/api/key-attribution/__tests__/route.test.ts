@@ -398,5 +398,20 @@ describe("provider key attribution API", () => {
       identityId: second.id,
       effectiveFrom: new Date("2026-07-15T00:00:00.000Z"),
     });
+
+    const otherProvider = await prisma.provider.create({
+      data: { name: "anthropic", displayName: "Anthropic", type: "builtin" },
+    });
+    const otherProviderIdentity = await prisma.providerKeyIdentity.create({
+      data: { providerId: otherProvider.id, alias: "Other provider key" },
+    });
+    const sameProducerRefOnOtherProvider = await POST(request("POST", {
+      action: "create_binding",
+      identityId: otherProviderIdentity.id,
+      producerId: "congress-trade",
+      producerKeyRef: "openai-primary",
+      effectiveFrom: "2026-07-15T00:00:00.000Z",
+    }));
+    expect(sameProducerRefOnOtherProvider.status).toBe(201);
   });
 });
