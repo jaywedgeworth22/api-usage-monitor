@@ -32,14 +32,13 @@ Updated: 2026-07-21
 
 - XcodeGen generation: passed.
 - Generic iOS Simulator app/test-target `build-for-testing`: passed after the final security fixes.
-- Release simulator compile: pending rerun after rebase onto current `origin/main`.
-- Focused budget-route Vitest: 4/4 passed; TypeScript passed before the upstream rebase.
+- Release simulator compile: passed after fixing preview-only code that leaked into Release.
+- Focused budget-route Vitest: 4/4 passed; scoped ESLint and TypeScript passed after the upstream rebase.
 - `git diff --check`: passed.
 - XCTest execution is blocked because this machine has no installed iOS Simulator runtime; test-target
   compilation is green.
 
 ## Remaining release stages
 
-Rebase onto current `origin/main`, preserve its budget freshness headers, rerun Node 24 and Debug/Release
-gates, open a PR, resolve hosted review/checks, merge, and verify the deployed server SHA separately.
+Open a PR, resolve hosted review/checks, merge, and verify the deployed server SHA separately.
 The native binary still needs a real-device/App Store archive and TestFlight receipt before it is shipped.

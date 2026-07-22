@@ -24,12 +24,11 @@ only for continuous provider polling, ingest, webhooks, receipts, durable schedu
 
 ## Remaining
 
-1. Rebase on current `origin/main`, reconcile its budget freshness response headers, and rerun all gates.
-2. Publish through a PR, resolve review/checks, merge, and verify the exact deployed server revision.
-3. Run XCTest/UI/accessibility tests with an installed iOS 26+ Simulator or the owner's device.
-4. Add native project create/edit/allocation and safe provider credential/bootstrap flows before the web
+1. Publish through a PR, resolve review/checks, merge, and verify the exact deployed server revision.
+2. Run XCTest/UI/accessibility tests with an installed iOS 26+ Simulator or the owner's device.
+3. Add native project create/edit/allocation and safe provider credential/bootstrap flows before the web
    admin can be retired completely.
-5. Add server APNs device enrollment and durable remote delivery; local/background notification scaffolding
+4. Add server APNs device enrollment and durable remote delivery; local/background notification scaffolding
    is not an end-to-end push service.
-6. Keep continuous ingest, scheduled polling, webhook/receipt handling, backups, and time-critical alerts in
+5. Keep continuous ingest, scheduled polling, webhook/receipt handling, backups, and time-critical alerts in
    a thin service. iOS background execution is opportunistic and must not become the sole durable scheduler.

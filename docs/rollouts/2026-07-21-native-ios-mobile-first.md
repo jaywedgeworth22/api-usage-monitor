@@ -36,7 +36,10 @@ enabled in the tracked XcodeGen project, while headless builds disable signing o
 
 - XcodeGen generation passed.
 - Generic iOS Simulator app/test-target `build-for-testing` passed after final adversarial fixes.
+- Release iOS Simulator compile passed after fixing preview-only code that leaked into Release.
 - Focused budget-route Vitest passed 4/4.
+- Scoped ESLint and TypeScript passed after rebasing onto current `origin/main`; its budget freshness
+  response headers are preserved alongside the new session-auth path.
 - `git diff --check` passed.
 - Runtime XCTest is blocked only by the absence of an installed Simulator runtime.
 
