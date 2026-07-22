@@ -18,6 +18,7 @@ const subscriptions: MaterializeSubscriptionsResult = {
   examined: 2,
   charged: 1,
   eventsWritten: 1,
+  ambiguousPaused: 0,
 };
 const subscriptionAdoption: AdoptExternalBillingSubscriptionsResult = {
   examined: 2,
