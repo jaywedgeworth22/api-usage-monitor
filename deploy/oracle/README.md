@@ -105,7 +105,11 @@ and a full authenticated Garage restore whose SQLite integrity, foreign keys,
 and schema match production. The restore gets a bounded 15-minute transfer and
 quick-check window, followed by exactly one bounded 30-minute full SQLite
 integrity scan. This keeps acceptance fail-closed for a growing database
-without duplicating the same full scan inside Litestream and SQLite.
+without duplicating the same full scan inside Litestream and SQLite. Both the
+in-container restore process and the Docker client have ordered TERM/KILL
+bounds; scratch cleanup first proves no matching restore remains. The systemd
+transaction ceiling is three and a half hours so it exceeds the declared serial step
+budgets, while its separate stop grace still reserves time for rollback.
 
 The previous full-SHA image and up to five verified offline SQLite snapshots
 are retained. Automatic rollback changes code/image only and never replaces

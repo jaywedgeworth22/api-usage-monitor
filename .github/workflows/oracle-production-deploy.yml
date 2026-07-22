@@ -32,7 +32,7 @@ jobs:
        github.event.workflow_run.head_branch == 'main' &&
        github.event.workflow_run.conclusion == 'success')
     runs-on: ubuntu-latest
-    timeout-minutes: 130
+    timeout-minutes: 220
     environment:
       name: oracle-production
       url: https://usage.jays.services
@@ -78,7 +78,7 @@ jobs:
         run: |
           set -euo pipefail
           ready_url='https://usage.jays.services/api/ready?strict=1'
-          for attempt in $(seq 1 720); do
+          for attempt in $(seq 1 1260); do
             if (( attempt % 6 == 0 )); then
               main_sha=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq '.object.sha')
               if [[ "$main_sha" != "$TARGET_SHA" ]]; then
@@ -121,5 +121,5 @@ jobs:
             fi
             sleep 10
           done
-          echo "::error::Oracle production did not reach exact revision $TARGET_SHA within 120 minutes."
+          echo "::error::Oracle production did not reach exact revision $TARGET_SHA within 210 minutes."
           exit 1

@@ -14,7 +14,7 @@ SuccessExitStatus=75
 # Every target-controlled operation has its own hard timeout. The service-level
 # ceiling catches any unexpected wedge, then leaves enough TERM grace for the
 # bounded rollback transaction to finish before systemd may send SIGKILL.
-TimeoutStartSec=90min
+TimeoutStartSec=210min
 TimeoutStopSec=45min
 Nice=10
 IOSchedulingClass=best-effort
