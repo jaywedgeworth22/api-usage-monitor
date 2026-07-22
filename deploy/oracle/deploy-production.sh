@@ -682,8 +682,10 @@ ensure_public_caddy_hostname() {
             BEGIN { print public }
             $0 != "" && $0 != public && index($0, "sslip.io") == 0 && index($0, "132.226.90.164") == 0 { print }
           ' \
-        | paste -sd, -
+        | paste -sd ', ' -
     )"
+    # Caddy site addresses require ", " (comma+space), not bare commas.
+
     log "migrating stale USAGE_MONITOR_HOSTNAME away from deleted IP sslip labels."
     temporary="$(mktemp /etc/usage-monitor/.host.env.XXXXXX)" || return 1
     if ! awk -F= -v host="${rewritten}" '
