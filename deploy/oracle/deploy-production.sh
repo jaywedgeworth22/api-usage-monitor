@@ -38,6 +38,9 @@ readonly COMPOSE_TIMEOUT_SECONDS=300
 readonly MIN_ROOT_FREE_BYTES=$((8 * 1024 * 1024 * 1024))
 readonly MIN_DATA_FREE_BYTES=$((5 * 1024 * 1024 * 1024))
 readonly MAX_BACKUPS=5
+readonly MAX_BUILD_CACHE="8GB"
+readonly MIN_BUILD_CACHE_FREE="12GB"
+readonly RESERVED_BUILD_CACHE="4GB"
 
 TARGET_SHA="${1:-}"
 PREVIOUS_SHA=""
@@ -97,6 +100,71 @@ free_bytes() {
   local available block_size
   read -r available block_size < <(stat -f -c '%a %S' "${path}")
   printf '%s\n' "$((available * block_size))"
+}
+
+prune_unreferenced_application_images() {
+  local image_rows receipt_active="" receipt_previous="" repository tag referenced_containers
+
+  # Preserve both revisions named by the last committed receipt when it is
+  # available. PREVIOUS_SHA and TARGET_SHA are always protected independently,
+  # so a missing receipt cannot remove the running or candidate image.
+  if [[ -e "${RECEIPT_FILE}" || -L "${RECEIPT_FILE}" ]]; then
+    require_secure_root_file "${RECEIPT_FILE}" 600
+    if ! receipt_active="$(jq -er '.activeRevision | select(type == "string")' "${RECEIPT_FILE}")" || \
+      ! receipt_previous="$(jq -er '.previousRevision | select(type == "string")' "${RECEIPT_FILE}")"; then
+      die "deployment receipt is malformed; refusing image cleanup"
+    fi
+    if [[ ! "${receipt_active}" =~ ^[0-9a-f]{40}$ || \
+      ! "${receipt_previous}" =~ ^[0-9a-f]{40}$ ]]; then
+      die "deployment receipt contains an invalid revision; refusing image cleanup"
+    fi
+  fi
+
+  if ! image_rows="$(timeout 30 docker image ls --format '{{.Repository}} {{.Tag}}')"; then
+    die "could not enumerate local images for targeted cleanup"
+  fi
+
+  while read -r repository tag; do
+    [[ "${repository}" == "${APP_IMAGE_REPOSITORY}" ]] || continue
+    [[ "${tag}" =~ ^[0-9a-f]{40}$ ]] || continue
+    case "${tag}" in
+      "${PREVIOUS_SHA}"|"${TARGET_SHA}"|"${receipt_active}"|"${receipt_previous}")
+        continue
+        ;;
+    esac
+
+    if ! referenced_containers="$(timeout 30 docker ps -aq --filter "ancestor=${repository}:${tag}")"; then
+      die "could not verify container references for ${repository}:${tag}"
+    fi
+    if [[ -n "${referenced_containers}" ]]; then
+      log "preserving ${repository}:${tag}; a container still references it."
+      continue
+    fi
+
+    log "removing unreferenced application image ${repository}:${tag}."
+    if ! timeout --signal=TERM --kill-after=30s 180 \
+      docker image rm "${repository}:${tag}" >/dev/null; then
+      log "targeted removal of ${repository}:${tag} failed; disk preflight will decide whether deployment can continue."
+    fi
+  done <<<"${image_rows}"
+}
+
+prune_bounded_build_cache() {
+  # BuildKit cache is disposable, but pruning remains explicitly bounded. Keep
+  # a warm-cache floor, cap total cache, and target enough root headroom for the
+  # next image export. A cleanup failure is non-destructive; the ordinary disk
+  # preflight still fails closed before any writer mutation.
+  log "applying bounded unused BuildKit cache retention."
+  # buildx prune supports --max-used-space/--min-free-space/--reserved-space;
+  # plain `docker builder prune` does not (unknown-flag on standard Docker).
+  if ! timeout --signal=TERM --kill-after=30s 300 \
+    docker buildx prune \
+      --max-used-space="${MAX_BUILD_CACHE}" \
+      --min-free-space="${MIN_BUILD_CACHE_FREE}" \
+      --reserved-space="${RESERVED_BUILD_CACHE}" \
+      --force >/dev/null; then
+    log "bounded BuildKit cache cleanup failed; disk preflight will decide whether deployment can continue."
+  fi
 }
 
 compose_for_revision() {
@@ -908,6 +976,8 @@ if (( eligibility_status != 0 )); then
   exit "${eligibility_status}"
 fi
 
+prune_unreferenced_application_images
+prune_bounded_build_cache
 preflight_current_production
 
 if [[ "${PREVIOUS_SHA}" == "${TARGET_SHA}" ]]; then

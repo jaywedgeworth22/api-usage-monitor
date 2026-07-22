@@ -1,7 +1,14 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import {
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import os from "node:os";
 import path from "node:path";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -9,6 +16,7 @@ const read = (relativePath) =>
   readFileSync(path.join(repoRoot, relativePath), "utf8");
 
 const workflow = read(".github/workflows/oracle-production-deploy.yml");
+const uptimeWorkflow = read(".github/workflows/uptime-monitor.yml");
 const compose = read("deploy/oracle/compose.production.yaml");
 const composeDev = read("deploy/oracle/compose.yaml");
 const caddy = read("deploy/oracle/Caddyfile");
@@ -44,8 +52,12 @@ requireText(workflow, /workflow_run\.conclusion == 'success'/, "workflow must re
 requireText(workflow, /\.revision == \$revision/, "workflow must verify the exact production revision");
 requireText(workflow, /cancel-in-progress:\s*true/, "stale receipt observers should be cancelled");
 requireText(workflow, /seq 1 720/, "observer must allow the independent CodeQL and host build window");
+requireText(workflow, /ORACLE_ORIGIN_IPV4:\s*"141\.148\.182\.224"/, "observer must pin the reserved Oracle origin");
+requireText(workflow, /--resolve "usage\.jays\.services:443:\$\{ORACLE_ORIGIN_IPV4\}"/, "observer must bypass Cloudflare bot challenges without weakening TLS");
 forbidText(workflow, /secrets\./, "the observer workflow must not hold a production secret");
 forbidText(workflow, /ssh-keyscan|StrictHostKeyChecking=no/, "unsafe SSH bootstrap is forbidden");
+requireText(uptimeWorkflow, /ORACLE_ORIGIN_IPV4:\s*"141\.148\.182\.224"/, "GitHub uptime must pin the reserved Oracle origin");
+requireText(uptimeWorkflow, /--resolve "usage\.jays\.services:443:\$\{ORACLE_ORIGIN_IPV4\}"/, "GitHub uptime must avoid Cloudflare false failures while retaining TLS validation");
 requireText(ci, /npm run test:oracle-deploy/, "hosted CI must exercise deployment contracts");
 
 // Production uses the Cloudflare-proxied public hostname. The old sslip.io
@@ -119,6 +131,15 @@ for (const [pattern, message] of [
   [/-integrity-check full/, "post-cutover Garage restore"],
   [/name != '_deploy_heartbeat'/, "quoted exclusion for the unmanaged deployment heartbeat object"],
   [/verify_render_retirement/, "durable Render retirement proof"],
+  [/prune_unreferenced_application_images/, "targeted application-image retention"],
+  [/docker image ls --format '\{\{\.Repository\}\} \{\{\.Tag\}\}'/, "bounded image enumeration"],
+  [/\^\[0-9a-f\]\{40\}\$/, "immutable revision-tag cleanup filter"],
+  [/docker ps -aq --filter "ancestor=/, "container-reference protection before image removal"],
+  [/docker image rm "\$\{repository\}:\$\{tag\}"/, "exact-tag image removal"],
+  [/prune_bounded_build_cache/, "bounded BuildKit cache retention"],
+  [/--max-used-space="\$\{MAX_BUILD_CACHE\}"/, "BuildKit cache maximum"],
+  [/--min-free-space="\$\{MIN_BUILD_CACHE_FREE\}"/, "BuildKit free-space target"],
+  [/--reserved-space="\$\{RESERVED_BUILD_CACHE\}"/, "BuildKit retained-cache floor"],
   [/env-vars\/USAGE_SCHEDULER_ENABLED/, "exact Render scheduler lookup without pagination"],
   [/--kill-after=60s 2700/, "bounded target-controlled image build"],
   [/--kill-after=30s 900/, "bounded target-controlled scratch migration"],
@@ -128,7 +149,9 @@ for (const [pattern, message] of [
 ]) {
   requireText(deploy, pattern, `deploy script must enforce ${message}`);
 }
-forbidText(deploy, /reset --hard|docker (system|builder) prune|rm -rf/, "broad destructive cleanup is forbidden");
+forbidText(deploy, /reset --hard|docker system prune|rm -rf/, "broad destructive cleanup is forbidden");
+forbidText(deploy, /docker image (prune|rm -f)/, "image cleanup must not be broad or forced");
+assert.equal((deploy.match(/docker buildx prune/g) ?? []).length, 1, "only the one bounded BuildKit prune is allowed");
 forbidText(deploy, /name != "_deploy_heartbeat"/, "SQLite identifiers must not be shell-quote corrupted");
 forbidText(deploy, /set -x/, "deployment must never trace secrets");
 forbidText(deploy, /ltx[^\n]*-level all/, "full LTX history listing is forbidden (Coolify timeout false-block)");
@@ -151,6 +174,211 @@ requireText(service, /--no-build/, "boot must never build a mutable checkout");
 requireText(service, /--restart=no/, "systemd must keep Docker-level writer restart disabled");
 forbidText(service, /--restart=unless-stopped/, "Docker must not bypass the systemd data-mount gate");
 forbidText(deploy, /--restart=unless-stopped/, "accepted and rollback writers must remain systemd-gated");
+
+const retentionStart = deploy.indexOf("prune_unreferenced_application_images() {");
+const retentionEndMarker = "\n}\n\nprune_bounded_build_cache()";
+const retentionEnd = deploy.indexOf(retentionEndMarker, retentionStart);
+assert.ok(retentionStart >= 0 && retentionEnd > retentionStart, "retention function must be extractable for behavioral tests");
+const retentionFunction = deploy.slice(retentionStart, retentionEnd + 2);
+const cacheStart = deploy.indexOf("prune_bounded_build_cache() {");
+const cacheEndMarker = "\n}\n\ncompose_for_revision()";
+const cacheEnd = deploy.indexOf(cacheEndMarker, cacheStart);
+assert.ok(cacheStart >= 0 && cacheEnd > cacheStart, "cache function must be extractable for behavioral tests");
+const cacheFunction = deploy.slice(cacheStart, cacheEnd + 2);
+
+const retentionTemp = mkdtempSync(path.join(os.tmpdir(), "usage-monitor-image-retention-"));
+const receiptPath = path.join(retentionTemp, "current.json");
+const removalLog = path.join(retentionTemp, "removed.log");
+
+function runRetentionCase({
+  imageRows,
+  previousSha,
+  targetSha,
+  receiptActive = "",
+  receiptPrevious = "",
+  referencedImage = "",
+  failRemoval = "",
+  receipt = "regular",
+}) {
+  rmSync(receiptPath, { force: true });
+  rmSync(removalLog, { force: true });
+  if (receipt === "regular") {
+    writeFileSync(receiptPath, "{}\n", { mode: 0o600 });
+  } else if (receipt === "dangling") {
+    symlinkSync(path.join(retentionTemp, "missing-receipt.json"), receiptPath);
+  }
+
+  const harness = `
+set -Eeuo pipefail
+APP_IMAGE_REPOSITORY=usage-monitor
+PREVIOUS_SHA="$PREVIOUS_SHA_VALUE"
+TARGET_SHA="$TARGET_SHA_VALUE"
+RECEIPT_FILE="$RECEIPT_PATH_VALUE"
+die() { printf 'ERROR: %s\\n' "$*" >&2; return 1; }
+log() { printf '%s\\n' "$*" >&2; }
+require_secure_root_file() {
+  [[ -f "$1" && ! -L "$1" ]] || die "unsafe receipt"
+}
+jq() {
+  case "$2" in
+    *activeRevision*) [[ "$RECEIPT_ACTIVE_VALUE" != __FAIL__ ]] || return 1; printf '%s\\n' "$RECEIPT_ACTIVE_VALUE" ;;
+    *previousRevision*) [[ "$RECEIPT_PREVIOUS_VALUE" != __FAIL__ ]] || return 1; printf '%s\\n' "$RECEIPT_PREVIOUS_VALUE" ;;
+    *) return 2 ;;
+  esac
+}
+docker() {
+  if [[ "$1 $2" == "image ls" ]]; then
+    printf '%s\\n' "$IMAGE_ROWS_VALUE"
+    return 0
+  fi
+  if [[ "$1 $2" == "ps -aq" ]]; then
+    local image_ref="\${4#ancestor=}"
+    [[ "$image_ref" == "$REFERENCED_IMAGE_VALUE" ]] && printf 'container-id\\n'
+    return 0
+  fi
+  if [[ "$1 $2" == "image rm" ]]; then
+    printf '%s\\n' "$3" >> "$REMOVAL_LOG_VALUE"
+    [[ "$3" != "$FAIL_REMOVAL_VALUE" ]]
+    return
+  fi
+  return 2
+}
+timeout() {
+  while (( $# > 0 )) && [[ "$1" == --* ]]; do shift; done
+  (( $# > 0 )) || return 2
+  shift
+  "$@"
+}
+${retentionFunction}
+prune_unreferenced_application_images
+`;
+  return spawnSync("bash", ["-c", harness], {
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      IMAGE_ROWS_VALUE: imageRows,
+      PREVIOUS_SHA_VALUE: previousSha,
+      TARGET_SHA_VALUE: targetSha,
+      RECEIPT_PATH_VALUE: receiptPath,
+      RECEIPT_ACTIVE_VALUE: receiptActive,
+      RECEIPT_PREVIOUS_VALUE: receiptPrevious,
+      REFERENCED_IMAGE_VALUE: referencedImage,
+      FAIL_REMOVAL_VALUE: failRemoval,
+      REMOVAL_LOG_VALUE: removalLog,
+    },
+  });
+}
+
+function runBuildCacheCase({ fail = false } = {}) {
+  const cacheLog = path.join(retentionTemp, "cache.log");
+  rmSync(cacheLog, { force: true });
+  const harness = `
+set -Eeuo pipefail
+MAX_BUILD_CACHE=8GB
+MIN_BUILD_CACHE_FREE=12GB
+RESERVED_BUILD_CACHE=4GB
+log() { printf '%s\\n' "$*" >&2; }
+docker() {
+  printf '%s\\n' "$*" >> "$CACHE_LOG_VALUE"
+  [[ "$FAIL_CACHE_VALUE" != true ]]
+}
+timeout() {
+  while (( $# > 0 )) && [[ "$1" == --* ]]; do shift; done
+  (( $# > 0 )) || return 2
+  shift
+  "$@"
+}
+${cacheFunction}
+prune_bounded_build_cache
+`;
+  const result = spawnSync("bash", ["-c", harness], {
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      CACHE_LOG_VALUE: cacheLog,
+      FAIL_CACHE_VALUE: String(fail),
+    },
+  });
+  return { result, cacheLog };
+}
+
+try {
+  const revisions = Object.fromEntries(
+    ["previous", "target", "active", "receiptPrevious", "referenced", "removable"].map((name, index) => [
+      name,
+      String.fromCharCode(97 + index).repeat(40),
+    ]),
+  );
+  const protectedCase = runRetentionCase({
+    imageRows: [
+      `usage-monitor ${revisions.previous}`,
+      `usage-monitor ${revisions.target}`,
+      `usage-monitor ${revisions.active}`,
+      `usage-monitor ${revisions.receiptPrevious}`,
+      `usage-monitor ${revisions.referenced}`,
+      `usage-monitor ${revisions.removable}`,
+      "usage-monitor latest",
+      `other-repository ${"f".repeat(40)}`,
+    ].join("\n"),
+    previousSha: revisions.previous,
+    targetSha: revisions.target,
+    receiptActive: revisions.active,
+    receiptPrevious: revisions.receiptPrevious,
+    referencedImage: `usage-monitor:${revisions.referenced}`,
+  });
+  assert.equal(protectedCase.status, 0, protectedCase.stderr);
+  assert.equal(readFileSync(removalLog, "utf8"), `usage-monitor:${revisions.removable}\n`);
+
+  const missingReceipt = runRetentionCase({
+    imageRows: `usage-monitor ${revisions.removable}`,
+    previousSha: revisions.previous,
+    targetSha: revisions.target,
+    receipt: "missing",
+  });
+  assert.equal(missingReceipt.status, 0, missingReceipt.stderr);
+  assert.equal(readFileSync(removalLog, "utf8"), `usage-monitor:${revisions.removable}\n`);
+
+  const malformedReceipt = runRetentionCase({
+    imageRows: `usage-monitor ${revisions.removable}`,
+    previousSha: revisions.previous,
+    targetSha: revisions.target,
+    receiptActive: "not-a-revision",
+    receiptPrevious: revisions.receiptPrevious,
+  });
+  assert.notEqual(malformedReceipt.status, 0, "malformed receipt must fail closed");
+
+  const danglingReceipt = runRetentionCase({
+    imageRows: `usage-monitor ${revisions.removable}`,
+    previousSha: revisions.previous,
+    targetSha: revisions.target,
+    receipt: "dangling",
+  });
+  assert.notEqual(danglingReceipt.status, 0, "dangling receipt symlink must fail closed");
+
+  const failedRemoval = runRetentionCase({
+    imageRows: `usage-monitor ${revisions.removable}`,
+    previousSha: revisions.previous,
+    targetSha: revisions.target,
+    receiptActive: revisions.active,
+    receiptPrevious: revisions.receiptPrevious,
+    failRemoval: `usage-monitor:${revisions.removable}`,
+  });
+  assert.equal(failedRemoval.status, 0, failedRemoval.stderr);
+  assert.match(failedRemoval.stderr, /disk preflight will decide/);
+
+  const successfulCache = runBuildCacheCase();
+  assert.equal(successfulCache.result.status, 0, successfulCache.result.stderr);
+  assert.equal(
+    readFileSync(successfulCache.cacheLog, "utf8"),
+    "buildx prune --max-used-space=8GB --min-free-space=12GB --reserved-space=4GB --force\n",
+  );
+
+  const failedCache = runBuildCacheCase({ fail: true });
+  assert.equal(failedCache.result.status, 0, failedCache.result.stderr);
+  assert.match(failedCache.result.stderr, /disk preflight will decide/);
+} finally {
+  rmSync(retentionTemp, { recursive: true, force: true });
+}
 
 assert.deepEqual(
   {

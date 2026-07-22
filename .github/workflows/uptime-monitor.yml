@@ -43,8 +43,12 @@ jobs:
       # Actions tab/badge/GitHub notifications sees red immediately even
       # below this threshold.
       FAILURE_THRESHOLD: 3
-      INCIDENT_TITLE: "[Uptime] usage.jays.services readiness failure"
-      PAGERDUTY_DEDUP_KEY: "usage-monitor-uptime-readiness"
+      INCIDENT_TITLE: "[Uptime] Usage Monitor Oracle origin readiness failure"
+      PAGERDUTY_DEDUP_KEY: "usage-monitor-oracle-origin-readiness"
+      # GitHub-hosted runner IPs receive Cloudflare 403 bot challenges. Probe
+      # the reserved Oracle origin with the public hostname retained for TLS;
+      # UptimeRobot independently covers the Cloudflare-proxied public URL.
+      ORACLE_ORIGIN_IPV4: "141.148.182.224"
       # Optional. Unset until the owner adds the ALERT_PAGERDUTY_ROUTING_KEY
       # repo secret (Settings -> Secrets and variables -> Actions), matching
       # the fleet's ALERT_PAGERDUTY_ROUTING_KEY convention. Every step that
@@ -69,6 +73,7 @@ jobs:
             --max-time 10 \
             --retry 2 \
             --retry-all-errors \
+            --resolve "usage.jays.services:443:${ORACLE_ORIGIN_IPV4}" \
             --output "$body_file" \
             --write-out "%{http_code}" \
             "https://usage.jays.services/api/ready?strict=1") || http_code="000"
