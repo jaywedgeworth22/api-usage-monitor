@@ -106,15 +106,28 @@ describe("project attribution (integration)", () => {
     ]);
   });
 
-  it("rejects project create without a dashboard session (Wave G / E18)", async () => {
-    const res = await createProject(
-      new NextRequest("http://localhost/api/projects", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ name: "No Session Project" }),
-      })
-    );
-    expect(res.status).toBe(401);
+  it("rejects project create without a dashboard session outside vitest (Wave G/H / E18)", async () => {
+    // Under vitest, mutator session re-check is skipped so handlers can be unit
+    // tested without minting cookies. Production always enforces when
+    // SESSION_SECRET is set (see shouldEnforceDashboardSession).
+    const prevVitest = process.env.VITEST;
+    const prevNodeEnv = process.env.NODE_ENV;
+    delete process.env.VITEST;
+    process.env.NODE_ENV = "production";
+    try {
+      const res = await createProject(
+        new NextRequest("http://localhost/api/projects", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ name: "No Session Project" }),
+        })
+      );
+      expect(res.status).toBe(401);
+    } finally {
+      if (prevVitest === undefined) delete process.env.VITEST;
+      else process.env.VITEST = prevVitest;
+      process.env.NODE_ENV = prevNodeEnv;
+    }
   });
 
   it("backfills metadata.project rows when a Project is created via API (Wave G / E6)", async () => {
