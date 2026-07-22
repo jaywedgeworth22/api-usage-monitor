@@ -279,8 +279,12 @@ verify_backup_path() {
   dry_run_path="${DATA_DIR}/.deploy-garage-dry-run.db"
   unlink "${dry_run_path}" 2>/dev/null || true
 
+  # Freshness + max TXID come from level-0 LTX only. Full `-level all` lists
+  # thousands of compacted objects over the S3 link and has timed out the
+  # deploy gate (false "no parseable LTX") under Coolify load even when Garage
+  # was healthy. Level 0 is the uncompacted tip litestream is writing now.
   if ! read_backup_state; then
-    die "Garage returned no parseable LTX objects"
+    die "Garage returned no parseable level-0 LTX objects (list timeout, empty tip, or parse failure)"
     return 1
   fi
   if ! latest_epoch="$(date -u -d "${LAST_BACKUP_CREATED}" +%s)"; then
@@ -312,8 +316,10 @@ verify_backup_path() {
 
 read_backup_state() {
   local listing
-  if ! listing="$(timeout 120 docker exec "${APP_CONTAINER}" \
-    /app/bin/litestream ltx -config /app/litestream.yml -level all /data/prod.db)"; then
+  # Prefer level 0 (default) for TXID/freshness: small, current tip. See
+  # verify_backup_path comment. Full authenticity still covered by restore dry-run.
+  if ! listing="$(timeout 60 docker exec "${APP_CONTAINER}" \
+    /app/bin/litestream ltx -config /app/litestream.yml -level 0 /data/prod.db)"; then
     return 1
   fi
   set_backup_state_from_listing "${listing}"
@@ -323,7 +329,7 @@ read_backup_state_offline() {
   local revision="$1"
   local image="${APP_IMAGE_REPOSITORY}:${revision}"
   local listing
-  if ! listing="$(timeout --signal=TERM --kill-after=30s 180 \
+  if ! listing="$(timeout --signal=TERM --kill-after=15s 90 \
     docker run --rm --pull=never --read-only \
       --network "${APP_NETWORK}" \
       --env-file "${RUNTIME_ENV}" \
@@ -334,7 +340,7 @@ read_backup_state_offline() {
       -v "${DATA_DIR}:/data:ro" \
       --entrypoint /app/bin/litestream \
       "${image}" \
-      ltx -config /app/litestream.yml -level all /data/prod.db)"; then
+      ltx -config /app/litestream.yml -level 0 /data/prod.db)"; then
     return 1
   fi
   set_backup_state_from_listing "${listing}"

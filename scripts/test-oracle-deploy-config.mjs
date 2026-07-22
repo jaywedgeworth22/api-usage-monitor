@@ -113,6 +113,7 @@ for (const [pattern, message] of [
   [/lastTickSucceeded/, "fresh scheduler-tick acceptance"],
   [/wait_for_backup_advancement/, "post-cutover Garage TXID advancement"],
   [/capture_quiescent_backup_watermark/, "post-stop Garage watermark capture"],
+  [/ltx -config \/app\/litestream\.yml -level 0/, "level-0 LTX tip listing (not full history)"],
   [/-integrity-check full/, "post-cutover Garage restore"],
   [/name != '_deploy_heartbeat'/, "quoted exclusion for the unmanaged deployment heartbeat object"],
   [/verify_render_retirement/, "durable Render retirement proof"],
