@@ -8,7 +8,12 @@ import {
   SUBSCRIPTION_SOURCE_APP,
   subscriptionChargeIdempotencyKey,
 } from "@/lib/subscription-charge-identity";
-import { advancePeriod, isSubscriptionInterval, type SubscriptionInterval } from "@/lib/subscriptions";
+import {
+  advancePeriod,
+  isAmbiguousSubscriptionPeriodWindow,
+  isSubscriptionInterval,
+  type SubscriptionInterval,
+} from "@/lib/subscriptions";
 
 // Turns each active subscription's elapsed billing periods into synthetic
 // ExternalUsageEvent rows (metricType="subscription"), so recurring fees flow
@@ -33,6 +38,8 @@ export interface MaterializeSubscriptionsResult {
   examined: number;
   charged: number;
   eventsWritten: number;
+  /** Managed rows paused because their stored period window is not an exact cadence. */
+  ambiguousPaused: number;
 }
 
 interface SubscriptionChargePlanInput {
@@ -350,9 +357,45 @@ export async function materializeDueSubscriptions(
 
   let charged = 0;
   let eventsWritten = 0;
+  let ambiguousPaused = 0;
 
   for (const observedSubscription of subscriptions) {
     let subscription: DueSubscription = observedSubscription;
+
+    // Wave K / E13: external-managed rows with a non-exact period window are
+    // mid-period / provider-skew evidence — pause and skip inventing charges
+    // until reconcile rewrites exact bounds (never invent later terms).
+    // UTC-midnight calendar exception is only for the exact Cloudflare legacy
+    // handoff subscription id (env-gated), never general managed rows.
+    if (subscription.externalBillingManaged) {
+      const interval: SubscriptionInterval = isSubscriptionInterval(
+        subscription.interval
+      )
+        ? subscription.interval
+        : "monthly";
+      const intervalCount = Math.max(1, Math.trunc(subscription.intervalCount));
+      const legacyHandoffId =
+        process.env.CLOUDFLARE_LEGACY_HANDOFF_SUBSCRIPTION_ID?.trim() ?? "";
+      const allowUtcMidnightCalendarException =
+        legacyHandoffId.length > 0 && legacyHandoffId === subscription.id;
+      if (
+        isAmbiguousSubscriptionPeriodWindow(
+          subscription.currentPeriodStart,
+          subscription.nextRenewalAt,
+          interval,
+          intervalCount,
+          { allowUtcMidnightCalendarException }
+        )
+      ) {
+        await prisma.subscription.update({
+          where: { id: subscription.id },
+          data: { status: "paused", canceledAt: null, autoRenew: false },
+        });
+        ambiguousPaused += 1;
+        continue;
+      }
+    }
+
     let plan = planSubscriptionCharges(subscription, now);
     if (!plan) continue;
 
@@ -401,5 +444,10 @@ export async function materializeDueSubscriptions(
     charged += 1;
   }
 
-  return { examined: subscriptions.length, charged, eventsWritten };
+  return {
+    examined: subscriptions.length,
+    charged,
+    eventsWritten,
+    ambiguousPaused,
+  };
 }

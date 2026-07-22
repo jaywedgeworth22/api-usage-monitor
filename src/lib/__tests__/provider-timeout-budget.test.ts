@@ -84,7 +84,7 @@ function healthyMaintenanceResult() {
       cloudflareLegacyHandoff: "disabled" as const,
       degradedError: null,
     },
-    subscriptions: { examined: 0, charged: 0, eventsWritten: 0 },
+    subscriptions: { examined: 0, charged: 0, eventsWritten: 0, ambiguousPaused: 0 },
     providerRenewals: { examined: 0, advanced: 0 },
     retention: { skipped: true as const, reason: "interval" as const },
     alerts: {
@@ -328,7 +328,7 @@ describe("fetchAllDueProviders per-provider timeout budget", () => {
         },
         degradedError: null,
       },
-      subscriptions: { examined: 0, charged: 0, eventsWritten: 0 },
+      subscriptions: { examined: 0, charged: 0, eventsWritten: 0, ambiguousPaused: 0 },
       providerRenewals: { examined: 0, advanced: 0 },
       retention: { skipped: true as const, reason: "interval" as const },
       alerts: {
@@ -393,7 +393,7 @@ describe("fetchAllDueProviders per-provider timeout budget", () => {
         cloudflareLegacyHandoff: "disabled" as const,
         degradedError: null,
       },
-      subscriptions: { examined: 0, charged: 0, eventsWritten: 0 },
+      subscriptions: { examined: 0, charged: 0, eventsWritten: 0, ambiguousPaused: 0 },
       providerRenewals: { examined: 0, advanced: 0 },
       retention: { skipped: true as const, reason: "interval" as const },
       alerts: {
