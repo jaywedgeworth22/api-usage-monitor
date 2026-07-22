@@ -151,7 +151,7 @@ for (const [pattern, message] of [
 }
 forbidText(deploy, /reset --hard|docker system prune|rm -rf/, "broad destructive cleanup is forbidden");
 forbidText(deploy, /docker image (prune|rm -f)/, "image cleanup must not be broad or forced");
-assert.equal((deploy.match(/docker builder prune/g) ?? []).length, 1, "only the one bounded BuildKit prune is allowed");
+assert.equal((deploy.match(/docker buildx prune/g) ?? []).length, 1, "only the one bounded BuildKit prune is allowed");
 forbidText(deploy, /name != "_deploy_heartbeat"/, "SQLite identifiers must not be shell-quote corrupted");
 forbidText(deploy, /set -x/, "deployment must never trace secrets");
 forbidText(deploy, /ltx[^\n]*-level all/, "full LTX history listing is forbidden (Coolify timeout false-block)");
@@ -370,7 +370,7 @@ try {
   assert.equal(successfulCache.result.status, 0, successfulCache.result.stderr);
   assert.equal(
     readFileSync(successfulCache.cacheLog, "utf8"),
-    "builder prune --max-used-space=8GB --min-free-space=12GB --reserved-space=4GB --force\n",
+    "buildx prune --max-used-space=8GB --min-free-space=12GB --reserved-space=4GB --force\n",
   );
 
   const failedCache = runBuildCacheCase({ fail: true });
