@@ -17,6 +17,12 @@ export interface ProviderDefinition {
   // repurpose that scalar (e.g. Render stores bandwidth in MB), so they set a
   // truthful unit label here. Unset defaults to DEFAULT_USAGE_UNIT_LABEL.
   usageUnitLabel?: string;
+  /**
+   * Built-ins stay in this historical registry so existing records remain
+   * legible. Only `active` providers are offered for new connections or
+   * automatic credential/poll maintenance.
+   */
+  lifecycle?: "active" | "dormant" | "retired";
   needsConfig?: {
     fields: {
       key: string;
@@ -56,7 +62,7 @@ const DEFINITIONS = [
   { name: "mistral", displayName: "Mistral AI", type: "builtin", category: "LLM/AI", helpNote: "Reads organization and workspace usage metadata, payment/limit status, spend cap, and rate limits with a Backoffice Admin key. Published Mistral schemas do not yet expose a safe automatic cash-total field.", needsConfig: { fields: [{ key: "adminApiKey", label: "Backoffice Admin API key (optional)", placeholder: "Admin API key", type: "password" }] } },
   { name: "openrouter", displayName: "OpenRouter", type: "builtin", category: "LLM/AI", helpNote: "Reads this key's own usage and limit from GET /key with any key. An OpenRouter Management (Provisioning) API key additionally unlocks account-wide prepaid credit balance, every configured key's individual usage/limit without exposing secrets, and a derived calendar-month-to-date cost estimate from 30-day activity history. A standard inference key degrades to reporting only its own usage and limit." },
   { name: "github", displayName: "GitHub", type: "builtin", category: "Developer Platform", helpNote: "Directly reads GitHub enhanced-billing monthly net usage, organization/enterprise budget caps, and Copilot AI-credit/premium-request detail without browser access. Use a token with Administration read (organization) or Plan read (personal). Enterprise billing endpoints require a classic PAT and reject fine-grained PATs and GitHub App user or installation tokens. No REST endpoint exposes general plan price, renewal date, receipts, or payment method.", needsConfig: { fields: [{ key: "accountType", label: "Billing account type", placeholder: "organization", options: [{ value: "organization", label: "Organization" }, { value: "user", label: "Personal user" }, { value: "enterprise", label: "Enterprise" }] }, { key: "org", label: "Account login or slug", placeholder: "organization, user, or enterprise login", required: true }, { key: "apiOrigin", label: "Enterprise API origin (optional)", placeholder: "https://api.example.ghe.com", advanced: true }] } },
-  { name: "vercel", displayName: "Vercel", type: "builtin", category: "Developer Platform", helpNote: "Reads account/team billing and usage. Leave Team ID blank for the token owner's personal scope.", needsConfig: { fields: [{ key: "teamId", label: "Team ID (optional)", placeholder: "team_..." }] } },
+  { name: "vercel", displayName: "Vercel", type: "builtin", category: "Developer Platform", lifecycle: "retired", helpNote: "Legacy Vercel records are retained for historical reporting. New Vercel connections and automatic polling are retired because this deployment does not use Vercel." },
   { name: "render", displayName: "Render", type: "builtin", category: "Infrastructure", usageUnitLabel: "Bandwidth (MB)", helpNote: "Automatically inventories account services, Postgres databases, Key Value instances, paid plans, status, and attached disks from one read-only API key. The same key also polls account-wide bandwidth for the current UTC calendar month to date (matching Render's monthly bandwidth reset) via Render's metrics API, reported in whole megabytes through the usual request-count field so a monthly limit set in MB (e.g. 200000 for ~200 GB) triggers the existing request-limit budget alerts on a spike. Render does not expose invoice/overage cost here; a bandwidth-metrics failure degrades gracefully without affecting the rest of the inventory. Bandwidth is reported as partial (and the monthly total withheld) for accounts over 200 services, and on the one or two days at the end of a long month when Render's 30-day metrics floor cannot reach the 1st." },
   { name: "oracle", displayName: "Oracle Cloud Infrastructure", type: "builtin", category: "Infrastructure", usesApiKey: false, defaultRefreshIntervalMin: 360, helpNote: "Reads OCI Usage API cost for completed UTC days in the current month, configured tenancy budgets, and non-additive service cost detail using server-side RSA request signing. This connector accepts Oracle's documented commercial-realm (OC1) tenancy home regions and rejects other realms or unverified new regions rather than signing the wrong endpoint. OCI cost can publish up to 48 hours late, so the exact reported USD amount is labelled incomplete until delayed usage is visible. Configure an OCI user API signing key with USAGE_REPORT_READ (or USAGE_REPORT_MANAGE) for COST queries; USAGE_ANALYSIS_READ permits only USAGE_ONLY. The private key is encrypted and never persisted in snapshots. Optional comma-separated service names fetch resource-limit metadata only. OCI budgets are customer-rate-card currency: enter budget currency only after verifying it; generic current quota consumption, subscription tier, invoice, and renewal are not exposed through this connector.", needsConfig: { fields: [{ key: "tenancyOcid", label: "Tenancy OCID", placeholder: "ocid1.tenancy.oc1...", required: true }, { key: "userOcid", label: "User OCID", placeholder: "ocid1.user.oc1...", required: true }, { key: "fingerprint", label: "API signing key fingerprint", placeholder: "aa:bb:...", required: true }, { key: "privateKey", label: "API signing private key (PEM)", placeholder: "-----BEGIN PRIVATE KEY-----", required: true, type: "textarea" }, { key: "region", label: "Supported commercial-realm (OC1) tenancy home region", placeholder: "us-ashburn-1", required: true }, { key: "budgetCurrency", label: "Verified OCI budget currency (optional)", placeholder: "USD", advanced: true }, { key: "compartmentOcid", label: "Quota compartment OCID (optional; defaults to tenancy)", placeholder: "ocid1.compartment.oc1...", advanced: true }, { key: "limitServices", label: "Quota service names (optional, comma-separated)", placeholder: "compute,blockstorage", advanced: true }] } },
   { name: "pinecone", displayName: "Pinecone", type: "builtin", category: "Vector DB", helpNote: "Automatically inventories indexes and non-billable index statistics plus backups, collections, and assistants when those control-plane APIs are available. Pinecone billing cost and renewal are not exposed." },
@@ -64,9 +70,9 @@ const DEFINITIONS = [
   { name: "fmp", displayName: "FMP", type: "builtin", category: "Market Data", usesApiKey: false, helpNote: "No public usage API. This row is push/manual; no market-data call or key is used by polling." },
   { name: "finnhub", displayName: "Finnhub", type: "builtin", category: "Market Data", usesApiKey: false, helpNote: "No public account usage API. This row is push/manual; no market-data call or key is used by polling." },
   { name: "alphavantage", displayName: "Alpha Vantage", type: "builtin", category: "Market Data", usesApiKey: false, helpNote: "No public account usage API. This row is push/manual; no market-data call or key is used by polling." },
-  { name: "tradier", displayName: "Tradier", type: "builtin", category: "Brokerage", helpNote: "Reads documented API rate-limit headers and a brokerage account portfolio summary; portfolio equity is labeled separately and is never treated as provider spend or provider funds." },
+  { name: "tradier", displayName: "Tradier", type: "builtin", category: "Brokerage", lifecycle: "retired", helpNote: "Legacy Tradier records are retained for historical reporting. New broker connections and automatic polling are retired because their limited usage is not a monitored paid service." },
   { name: "marketstack", displayName: "Marketstack", type: "builtin", category: "Market Data", usesApiKey: false, helpNote: "No public account usage API. This row is push/manual; no market-data call or key is used by polling." },
-  { name: "intrinio", displayName: "Intrinio", type: "builtin", category: "Market Data", helpNote: "Reads the official per-feed current-usage, limit, remaining-call, and reset-window endpoint. Pricing remains manual." },
+  { name: "intrinio", displayName: "Intrinio", type: "builtin", category: "Market Data", lifecycle: "retired", helpNote: "Legacy Intrinio records are retained for historical reporting. New connections and automatic polling are retired." },
   { name: "tiingo", displayName: "Tiingo", type: "builtin", category: "Market Data", usesApiKey: false, helpNote: "No public account usage API. This row is push/manual; no API-test call or key is used by polling." },
   { name: "twelvedata", displayName: "Twelve Data", type: "builtin", category: "Market Data", defaultRefreshIntervalMin: 1440, usageUnitLabel: "API credits", helpNote: "Reads the current /api_usage response for plan plus separate minute and daily used/limit/remaining quotas, with legacy header fallback. Each poll consumes one API credit, so new connections default to daily sync. Price and renewal remain manual." },
   { name: "fintech-studios", displayName: "FinTech Studios", type: "builtin", category: "Market Data", defaultRefreshIntervalMin: 360, helpNote: "Reads the zero-credit /me account endpoint for tier, credit balance, monthly allowance, daily cap/usage/reset, and API rate-limit metadata. USD billing cost, invoices, and renewal are not exposed." },
@@ -83,16 +89,60 @@ const DEFINITIONS = [
   { name: "hetzner", displayName: "Hetzner Cloud", type: "builtin", category: "Infrastructure", helpNote: "Inventories servers, volumes, floating/primary IPs, load balancers, and snapshots and resolves provider-catalog monthly run-rate in the account currency with backup double-count guards. Accrued invoice cost is not exposed." },
   { name: "coolify", displayName: "Coolify", type: "builtin", category: "Infrastructure", helpNote: "Reads server reachability/usability and application deployment status (up/down, degraded) from a Coolify instance's REST API, plus a best-effort per-server inventory of its applications, databases, and services. Coolify is a self-hosted PaaS control plane, not a metered vendor, so this connector reports no cost, invoice, or subscription state - that is intentionally left blank rather than shown as $0. Live CPU/memory/disk utilization is pushed by Coolify's optional Sentinel agent into the instance's own database and is not exposed by any documented REST endpoint, so it is not read here. Defaults to the Coolify Cloud API; set Host for a self-hosted instance.", needsConfig: { fields: [{ key: "host", label: "Host (optional; defaults to Coolify Cloud)", placeholder: "https://coolify.example.com" }] } },
   { name: "apify", displayName: "Apify", type: "builtin", category: "Data", creditBased: true, helpNote: "Reads billing cycle, usage USD, maximum usage, active plan, base price, and included credits from official account APIs." },
-  { name: "firecrawl", displayName: "Firecrawl", type: "builtin", category: "Data", creditBased: true, helpNote: "Reads the authenticated team's current plan-credit allowance, remaining credits, available billing-period boundaries, and bounded month-by-month historical credit usage. Historical rows are non-money metadata and never retain API-key identifiers. Plan tier, USD cost, and renewal status remain unavailable; add-on credits can make remaining credits exceed the plan allowance." },
+  { name: "firecrawl", displayName: "Firecrawl", type: "builtin", category: "Data", lifecycle: "dormant", creditBased: true, helpNote: "Firecrawl support is retained but dormant until this deployment uses it. Historical records remain available; new connections and automatic polling are off." },
   { name: "llamaindex", displayName: "LlamaIndex Cloud", type: "builtin", category: "Data", defaultRefreshIntervalMin: 360, helpNote: "Discovers organizations and reads paginated UTC month-to-date product credits consumed from the beta usage-metrics control plane, optionally filtered by project. Remaining balance, USD cost, plan, and renewal are not exposed.", needsConfig: { fields: [{ key: "projectId", label: "Project ID (optional)", placeholder: "Project UUID" }, { key: "host", label: "Host (optional)", placeholder: "https://api.cloud.llamaindex.ai" }] } },
   { name: "stripe", displayName: "Stripe", type: "builtin", category: "Payments", helpNote: "Tracks merchant balance and actual month-to-date Stripe processing fees. Customer subscriptions and merchant revenue are never counted as provider cost." },
-  { name: "robinhood", displayName: "Robinhood", type: "builtin", category: "Brokerage", usesApiKey: false, helpNote: "No supported public retail usage or billing API. This row is push/manual; polling sends no key or account request." },
-  { name: "alpaca", displayName: "Alpaca", type: "builtin", category: "Brokerage", helpNote: "Reads account equity, cash, buying power, portfolio value, and status; brokerage assets are not provider spend.", needsConfig: { fields: [{ key: "apiSecret", label: "API secret", placeholder: "Alpaca API secret", required: true, type: "password" }, { key: "environment", label: "Environment (optional)", placeholder: "paper or live" }] } },
+  { name: "robinhood", displayName: "Robinhood", type: "builtin", category: "Brokerage", lifecycle: "retired", usesApiKey: false, helpNote: "Legacy Robinhood records are retained for historical reporting. New broker connections and automatic polling are retired." },
+  { name: "alpaca", displayName: "Alpaca", type: "builtin", category: "Brokerage", lifecycle: "retired", helpNote: "Legacy Alpaca records are retained for historical reporting. New broker connections and automatic polling are retired because their limited usage is not a monitored paid service." },
 ] as const satisfies readonly ProviderDefinition[];
 
 export type BuiltInProviderName = (typeof DEFINITIONS)[number]["name"];
 
 export const BUILT_IN_PROVIDERS: readonly ProviderDefinition[] = DEFINITIONS;
+
+export type BuiltInProviderLifecycle = NonNullable<ProviderDefinition["lifecycle"]>;
+
+export function builtInProviderLifecycle(
+  name: string,
+  providerType: string = "builtin"
+): BuiltInProviderLifecycle {
+  if (providerType.trim().toLowerCase() !== "builtin") return "active";
+  const definition = BUILT_IN_PROVIDERS.find(
+    (provider) => canonicalProviderKey(provider.name) === canonicalProviderKey(name)
+  );
+  return definition?.lifecycle ?? "active";
+}
+
+export function isBuiltInProviderActive(
+  name: string,
+  providerType: string = "builtin"
+): boolean {
+  return builtInProviderLifecycle(name, providerType) === "active";
+}
+
+export function isDecommissionedBuiltInProvider(provider: {
+  name: string;
+  type?: string | null;
+}): boolean {
+  return (
+    provider.type?.trim().toLowerCase() === "builtin" &&
+    !isBuiltInProviderActive(provider.name, provider.type)
+  );
+}
+
+/**
+ * Creation and fetch boundaries use the canonical name without trusting a
+ * caller-supplied type. Otherwise a retired integration could be reintroduced
+ * as `custom` while still presenting itself as the retired provider.
+ */
+export function isDecommissionedProviderName(name: string): boolean {
+  return builtInProviderLifecycle(name) !== "active";
+}
+
+/** Built-ins offered when an operator creates a new connection. */
+export const ADDABLE_BUILT_IN_PROVIDERS = BUILT_IN_PROVIDERS.filter((provider) =>
+  isBuiltInProviderActive(provider.name)
+);
 
 /**
  * Fallback heading for the UsageSnapshot.totalRequests dashboard stat when a

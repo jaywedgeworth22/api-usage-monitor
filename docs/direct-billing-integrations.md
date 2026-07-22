@@ -21,6 +21,10 @@ Credential-shaped provider configuration is stored in encrypted `Provider.secret
 
 Authoritative feeds reconcile only after their complete response has been validated. Stripe and Anthropic reject missing/repeated cursors and malformed successful responses; Cloudflare requires consistent `result_info` totals across the complete subscription list; GitHub budgets require a nonnegative safe-integer `total_count` that remains stable across pages and exactly matches the final collection; GitHub, Vercel, and Cloudflare PayGo reject malformed HTTP 200 shapes. Firecrawl historical periods are capped, validated as one non-overlapping collection, requested with `byApiKey=false`, and discarded as a whole on optional failure; no API-key identifier is stored, and an omitted sync cannot prune prior valid history. A partial or ambiguous response books no partial cost and cannot delete previously reconciled state. OpenAI retains only aggregate/page-count diagnostics for Costs API pages, never the full cost payload.
 
+## Retired and dormant integrations
+
+Tradier, Intrinio, Alpaca, Robinhood, and Vercel are retired from new connections, Infisical credential synchronization, and automatic polling. Firecrawl is dormant until it is used by a monitored application. The adapter implementations and all existing provider rows, snapshots, external-billing records, events, plans, and subscriptions remain intact for historical reporting; startup idempotently marks matching built-in rows inactive rather than deleting evidence.
+
 ## Direct cost and billing connections implemented
 
 | Provider | Direct data | Required credential/config | Official source |

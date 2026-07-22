@@ -5,6 +5,7 @@ import { Eye, EyeOff } from "lucide-react";
 import ModalDialog from "@/components/ModalDialog";
 import ProviderIntegrationInfo from "@/components/ProviderIntegrationInfo";
 import {
+  ADDABLE_BUILT_IN_PROVIDERS,
   BUILT_IN_PROVIDERS,
   hasConfiguredProviderField,
   PROVIDER_CATEGORIES,
@@ -1096,7 +1097,7 @@ export default function AddProviderModal({
                   disabled={Boolean(editProvider)}
                   onChange={(e) => {
                     setSelectedBuiltin(e.target.value);
-                    const def = BUILT_IN_PROVIDERS.find((p) => p.name === e.target.value);
+                    const def = ADDABLE_BUILT_IN_PROVIDERS.find((p) => p.name === e.target.value);
                     setBuiltinDisplayName(def?.displayName || "");
                     setRefreshIntervalMin(def?.defaultRefreshIntervalMin ?? 60);
                     setOriginalConfig({});
@@ -1113,7 +1114,7 @@ export default function AddProviderModal({
                   <option value="">Select a provider...</option>
                   {PROVIDER_CATEGORIES.map((cat) => (
                     <optgroup key={cat} label={cat}>
-                      {BUILT_IN_PROVIDERS.filter((p) => p.category === cat).map(
+                      {ADDABLE_BUILT_IN_PROVIDERS.filter((p) => p.category === cat).map(
                         (p) => (
                           <option key={p.name} value={p.name}>
                             {p.displayName}
