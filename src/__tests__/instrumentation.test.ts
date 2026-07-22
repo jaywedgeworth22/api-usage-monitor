@@ -5,6 +5,7 @@ const mocks = vi.hoisted(() => ({
   applySqliteNativeMemoryPragmas: vi.fn().mockResolvedValue(undefined),
   computeBudgetStatus: vi.fn().mockResolvedValue({}),
   computeProjectBudgetStatus: vi.fn().mockResolvedValue({}),
+  deactivateDecommissionedBuiltInProviders: vi.fn().mockResolvedValue(0),
 }));
 
 vi.mock("@/lib/usage-recorder", () => ({
@@ -13,6 +14,11 @@ vi.mock("@/lib/usage-recorder", () => ({
 
 vi.mock("@/lib/prisma", () => ({
   applySqliteNativeMemoryPragmas: mocks.applySqliteNativeMemoryPragmas,
+}));
+
+vi.mock("@/lib/provider-retirement", () => ({
+  deactivateDecommissionedBuiltInProviders:
+    mocks.deactivateDecommissionedBuiltInProviders,
 }));
 
 vi.mock("@/lib/budget-status", () => ({
@@ -30,6 +36,8 @@ describe("usage scheduler instrumentation", () => {
     mocks.computeBudgetStatus.mockResolvedValue({});
     mocks.computeProjectBudgetStatus.mockClear();
     mocks.computeProjectBudgetStatus.mockResolvedValue({});
+    mocks.deactivateDecommissionedBuiltInProviders.mockClear();
+    mocks.deactivateDecommissionedBuiltInProviders.mockResolvedValue(0);
   });
 
   afterEach(() => {
@@ -52,6 +60,7 @@ describe("usage scheduler instrumentation", () => {
     await register();
 
     expect(mocks.startUsagePollingScheduler).toHaveBeenCalledOnce();
+    expect(mocks.deactivateDecommissionedBuiltInProviders).toHaveBeenCalledOnce();
   });
 
   it("bounds native SQLite memory before deciding whether polling is enabled", async () => {
@@ -64,6 +73,7 @@ describe("usage scheduler instrumentation", () => {
     // Applied even on the emergency-disabled path: HTTP requests still use
     // Prisma whether or not the polling scheduler itself is running.
     expect(mocks.applySqliteNativeMemoryPragmas).toHaveBeenCalledOnce();
+    expect(mocks.deactivateDecommissionedBuiltInProviders).toHaveBeenCalledOnce();
   });
 
   it("does not import or start polling when the emergency gate is false", async () => {
@@ -74,6 +84,7 @@ describe("usage scheduler instrumentation", () => {
     await register();
 
     expect(mocks.startUsagePollingScheduler).not.toHaveBeenCalled();
+    expect(mocks.deactivateDecommissionedBuiltInProviders).toHaveBeenCalledOnce();
     expect(warning).toHaveBeenCalledWith(
       "[usage-scheduler] disabled by USAGE_SCHEDULER_ENABLED=false"
     );

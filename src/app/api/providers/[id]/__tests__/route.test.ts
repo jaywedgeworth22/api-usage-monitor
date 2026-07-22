@@ -20,6 +20,7 @@ let encrypt: typeof import("@/lib/crypto").encrypt;
 let geminiApiKeyFingerprint: typeof import("@/lib/gemini-key-status").geminiApiKeyFingerprint;
 let geminiBillingConfigFingerprint: typeof import("@/lib/gemini-key-status").geminiBillingConfigFingerprint;
 let geminiMonitoringConfigFingerprint: typeof import("@/lib/gemini-key-status").geminiMonitoringConfigFingerprint;
+let deactivateDecommissionedBuiltInProviders: typeof import("@/lib/provider-retirement").deactivateDecommissionedBuiltInProviders;
 
 beforeAll(async () => {
   testDir = fs.mkdtempSync(path.join(os.tmpdir(), "provider-route-test-"));
@@ -38,6 +39,7 @@ beforeAll(async () => {
     geminiBillingConfigFingerprint,
     geminiMonitoringConfigFingerprint,
   } = await import("@/lib/gemini-key-status"));
+  ({ deactivateDecommissionedBuiltInProviders } = await import("@/lib/provider-retirement"));
 }, 60_000);
 
 afterAll(async () => {
@@ -48,6 +50,57 @@ afterAll(async () => {
 
 beforeEach(async () => {
   await prisma.provider.deleteMany();
+});
+
+describe("retired built-in provider boundaries", () => {
+  it("rejects new dormant/retired built-ins and does not create a row", async () => {
+    for (const name of ["tradier", "intrinio", "alpaca", "robinhood", "vercel", "firecrawl"]) {
+      const response = await POST_COLLECTION(
+        new NextRequest("https://usage.jays.services/api/providers", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ name, displayName: name, type: "builtin" }),
+        })
+      );
+      expect(response.status, name).toBe(409);
+    }
+    expect(await prisma.provider.count()).toBe(0);
+  });
+
+  it("deactivates legacy rows without deleting their snapshots", async () => {
+    const provider = await prisma.provider.create({
+      data: {
+        name: "intrinio",
+        displayName: "Intrinio (legacy)",
+        type: "builtin",
+        snapshots: { create: { fetchedAt: new Date(), totalCost: 12.34 } },
+      },
+    });
+
+    expect(await deactivateDecommissionedBuiltInProviders()).toBe(1);
+    expect(await deactivateDecommissionedBuiltInProviders()).toBe(0);
+    expect(await prisma.provider.findUniqueOrThrow({ where: { id: provider.id } }))
+      .toMatchObject({ isActive: false });
+    expect(await prisma.usageSnapshot.count({ where: { providerId: provider.id } })).toBe(1);
+  });
+
+  it("never permits a retired built-in to be reactivated", async () => {
+    const provider = await prisma.provider.create({
+      data: {
+        name: "vercel",
+        displayName: "Vercel (legacy)",
+        type: "builtin",
+        isActive: false,
+      },
+    });
+
+    const response = await PUT(updateRequest(provider.id, { isActive: true }), {
+      params: Promise.resolve({ id: provider.id }),
+    });
+    expect(response.status).toBe(409);
+    expect((await prisma.provider.findUniqueOrThrow({ where: { id: provider.id } })).isActive)
+      .toBe(false);
+  });
 });
 
 function updateRequest(id: string, body: unknown): NextRequest {

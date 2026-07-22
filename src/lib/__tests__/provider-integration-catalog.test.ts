@@ -6,17 +6,25 @@ import {
 } from "@/lib/provider-integration-catalog";
 
 describe("provider integration catalog", () => {
-  it("covers every Add Provider built-in plus system/custom/manual adapters exactly once", () => {
+  it("covers every addable built-in plus system/custom/manual adapters exactly once", () => {
     const names = PROVIDER_INTEGRATION_PROFILES.map((profile) => profile.name);
     expect(new Set(names).size).toBe(names.length);
     expect(new Set(names)).toEqual(
       new Set([
-        ...BUILT_IN_PROVIDERS.map((provider) => provider.name),
+        ...BUILT_IN_PROVIDERS.filter((provider) => provider.lifecycle == null).map((provider) => provider.name),
         "agent-sync-relay",
         "custom",
         "generic",
       ])
     );
+  });
+
+  it("keeps retired profiles resolvable for historical records without listing them in the connection catalog", () => {
+    const listed = new Set(PROVIDER_INTEGRATION_PROFILES.map((profile) => profile.name));
+    for (const name of ["tradier", "intrinio", "alpaca", "robinhood", "vercel", "firecrawl"]) {
+      expect(listed.has(name), name).toBe(false);
+      expect(getProviderIntegrationProfile(name, "builtin").name).toBe(name);
+    }
   });
 
   it("keeps every profile complete, dated, and free of secret values", () => {
@@ -103,10 +111,7 @@ describe("provider integration catalog", () => {
       "secretKey",
       "host",
     ]);
-    expect(byName.get("alpaca")?.needsConfig?.fields.map((field) => field.key)).toEqual([
-      "apiSecret",
-      "environment",
-    ]);
+    expect(byName.get("alpaca")?.needsConfig).toBeUndefined();
     expect(byName.get("twilio")?.needsConfig?.fields.map((field) => field.key)).toContain("apiKeySid");
     expect(byName.get("llamaindex")?.needsConfig?.fields.map((field) => field.key)).toEqual([
       "projectId",

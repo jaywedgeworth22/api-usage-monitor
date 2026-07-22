@@ -9,6 +9,7 @@ import type { AdapterInvocationContext } from "./helpers";
 import type { Provider } from "@prisma/client";
 import type { BuiltInProviderName } from "@/lib/provider-definitions";
 import { canonicalProviderKey } from "@/lib/provider-identity";
+import { isDecommissionedBuiltInProvider } from "@/lib/provider-definitions";
 import type { UsageResult } from "./openai";
 
 type AdapterFn = (
@@ -37,9 +38,7 @@ async function loadAdapters() {
     import("./fmp"),
     import("./finnhub"),
     import("./alphavantage"),
-    import("./tradier"),
     import("./marketstack"),
-    import("./intrinio"),
     import("./tiingo"),
     import("./twelvedata"),
     import("./fintech_studios"),
@@ -54,14 +53,10 @@ async function loadAdapters() {
     import("./resend"),
     import("./pushover"),
     import("./apify"),
-    import("./firecrawl"),
     import("./stripe"),
-    import("./robinhood"),
-    import("./alpaca"),
     import("./agent-sync-relay"),
     import("./hetzner"),
     import("./github"),
-    import("./vercel"),
     import("./render"),
     import("./oracle"),
     import("./coolify"),
@@ -70,27 +65,25 @@ async function loadAdapters() {
   const [
     openai, anthropic, googleAi, pinecone, cloudflare, custom,
     deepseek, xai, mistral, openrouter, llamaindex,
-    fmp, finnhub, alphavantage, tradier, marketstack, intrinio, tiingo, twelvedata, fintech_studios, massive, fred,
+    fmp, finnhub, alphavantage, marketstack, tiingo, twelvedata, fintech_studios, massive, fred,
     quiver,
     unusualwhales,
     voyage,
     sentry, langfuse,
     twilio, resend, pushover,
     apify,
-    firecrawl,
     stripe,
-    robinhood, alpaca,
     agentSyncRelay,
     hetzner,
     github,
-    vercel,
     render,
     oracle,
     coolify,
   ] = modules;
 
-  // Keep the Add Provider catalog and poll registry compile-time exhaustive.
-  const builtInAdapters: Record<BuiltInProviderName, AdapterFn> = {
+  // Active built-ins are loaded into the poll registry. Retired and dormant
+  // adapter implementations remain in source for historical context only.
+  const builtInAdapters: Partial<Record<BuiltInProviderName, AdapterFn>> = {
     openai: openai.fetchUsage,
     anthropic: anthropic.fetchUsage,
     "google-ai": googleAi.fetchUsage,
@@ -99,16 +92,13 @@ async function loadAdapters() {
     mistral: mistral.fetchUsage,
     openrouter: openrouter.fetchUsage,
     github: github.fetchUsage,
-    vercel: vercel.fetchUsage,
     render: render.fetchUsage,
     pinecone: pinecone.fetchUsage,
     voyage: voyage.fetchUsage,
     fmp: fmp.fetchUsage,
     finnhub: finnhub.fetchUsage,
     alphavantage: alphavantage.fetchUsage,
-    tradier: tradier.fetchUsage,
     marketstack: marketstack.fetchUsage,
-    intrinio: intrinio.fetchUsage,
     tiingo: tiingo.fetchUsage,
     twelvedata: twelvedata.fetchUsage,
     "fintech-studios": fintech_studios.fetchUsage,
@@ -124,11 +114,8 @@ async function loadAdapters() {
     cloudflare: cloudflare.fetchUsage,
     hetzner: hetzner.fetchUsage,
     apify: apify.fetchUsage,
-    firecrawl: firecrawl.fetchUsage,
     llamaindex: llamaindex.fetchUsage,
     stripe: stripe.fetchUsage,
-    robinhood: robinhood.fetchUsage,
-    alpaca: alpaca.fetchUsage,
     oracle: oracle.fetchUsage,
     coolify: coolify.fetchUsage,
   };
@@ -151,6 +138,12 @@ export async function fetchProviderUsage(
   provider: Provider
 ): Promise<UsageResult> {
   await loadAdapters();
+
+  if (isDecommissionedBuiltInProvider(provider)) {
+    unsupportedError(
+      `${provider.name}: this built-in provider is dormant or retired and is not polled`
+    );
+  }
 
   // Provider type is the credential-routing boundary. A custom provider may
   // deliberately use the same display slug as a built-in, but its credential

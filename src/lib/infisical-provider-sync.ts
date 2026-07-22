@@ -9,7 +9,10 @@ import {
 import { geminiApiKeyFingerprint } from "@/lib/gemini-key-status";
 import { withInternalUsageWriteAdmission } from "@/lib/ingest-admission";
 import { prisma } from "@/lib/prisma";
-import { BUILT_IN_PROVIDERS } from "@/lib/provider-definitions";
+import {
+  BUILT_IN_PROVIDERS,
+  isBuiltInProviderActive,
+} from "@/lib/provider-definitions";
 import {
   readStPrimaryCredentialBinding,
   ST_PRIMARY_MANAGED_LABEL,
@@ -331,12 +334,6 @@ const CREDENTIAL_MAPPINGS: readonly CredentialMapping[] = [
   },
   {
     scope: "ct",
-    providerName: "intrinio",
-    attempts: appAttempts("ct", ["INTRINIO_API_KEY"]),
-    build: (values) => ({ apiKey: values.get("INTRINIO_API_KEY") }),
-  },
-  {
-    scope: "ct",
     providerName: "unusual-whales",
     attempts: appAttempts("ct", ["UNUSUAL_WHALES_API_KEY"]),
     build: (values) => ({ apiKey: values.get("UNUSUAL_WHALES_API_KEY") }),
@@ -377,12 +374,6 @@ const CREDENTIAL_MAPPINGS: readonly CredentialMapping[] = [
     providerName: "twelvedata",
     attempts: appAttempts("ct", ["TWELVEDATA_API_KEY"], true),
     build: (values) => ({ apiKey: values.get("TWELVEDATA_API_KEY") }),
-  },
-  {
-    scope: "shared",
-    providerName: "firecrawl",
-    attempts: [{ source: "shared", required: ["FIRECRAWL_API_KEY"] }],
-    build: (values) => ({ apiKey: values.get("FIRECRAWL_API_KEY") }),
   },
   {
     scope: "shared",
@@ -496,8 +487,6 @@ const SECRET_NAME_TO_PROVIDER: ReadonlyMap<string, string> = new Map<string, str
   ["GITHUB_TOKEN", "github"],
   ["GITHUB_API_TOKEN", "github"],
   ["GITHUB_PAT", "github"],
-  ["VERCEL_API_TOKEN", "vercel"],
-  ["VERCEL_TOKEN", "vercel"],
   // Infrastructure
   ["RENDER_API_KEY", "render"],
   ["RENDER_API_TOKEN", "render"],
@@ -523,10 +512,7 @@ const SECRET_NAME_TO_PROVIDER: ReadonlyMap<string, string> = new Map<string, str
   ["FINNHUB_API_KEY", "finnhub"],
   ["ALPHAVANTAGE_API_KEY", "alphavantage"],
   ["ALPHA_VANTAGE_API_KEY", "alphavantage"],
-  ["TRADIER_API_TOKEN", "tradier"],
-  ["TRADIER_ACCESS_TOKEN", "tradier"],
   ["MARKETSTACK_API_KEY", "marketstack"],
-  ["INTRINIO_API_KEY", "intrinio"],
   ["TIINGO_API_KEY", "tiingo"],
   ["TWELVEDATA_API_KEY", "twelvedata"],
   ["TWELVE_DATA_API_KEY", "twelvedata"],
@@ -550,7 +536,6 @@ const SECRET_NAME_TO_PROVIDER: ReadonlyMap<string, string> = new Map<string, str
   // Data
   ["APIFY_API_TOKEN", "apify"],
   ["APIFY_TOKEN", "apify"],
-  ["FIRECRAWL_API_KEY", "firecrawl"],
   ["LLAMAPARSE_API_KEY", "llamaindex"],
   ["LLAMA_CLOUD_API_KEY", "llamaindex"],
   ["LLAMAINDEX_API_KEY", "llamaindex"],
@@ -558,8 +543,6 @@ const SECRET_NAME_TO_PROVIDER: ReadonlyMap<string, string> = new Map<string, str
   ["STRIPE_SECRET_KEY", "stripe"],
   ["STRIPE_API_KEY", "stripe"],
   // Brokerage
-  ["ALPACA_API_KEY", "alpaca"],
-  ["ALPACA_API_SECRET", "alpaca"],
 ]);
 
 const PROJECT_NAMES: Readonly<Record<"st" | "ct", string>> = {
@@ -1825,6 +1808,9 @@ async function applyCandidates(candidates: readonly CredentialCandidate[]): Prom
         (item) => item.name === candidate.providerName
       );
       if (!definition) throw new InfisicalSyncError("unknown_provider_mapping");
+      if (!isBuiltInProviderActive(definition.name)) {
+        throw new InfisicalSyncError("decommissioned_provider_mapping");
+      }
       const binding: StoredBinding = {
         scope: candidate.scope,
         source: candidate.source,

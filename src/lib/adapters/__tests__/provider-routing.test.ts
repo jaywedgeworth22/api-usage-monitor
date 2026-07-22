@@ -196,6 +196,17 @@ describe("provider adapter credential routing", () => {
     expect(adapterMocks.openai).not.toHaveBeenCalled();
   });
 
+  it.each(["tradier", "intrinio", "alpaca", "robinhood", "vercel", "firecrawl"])(
+    "refuses to poll dormant or retired built-in %s",
+    async (name) => {
+      await expect(fetchProviderUsage(provider(name, "builtin"))).rejects.toMatchObject({
+        code: "UNSUPPORTED",
+      });
+      expect(adapterMocks.custom).not.toHaveBeenCalled();
+      expect(adapterMocks.openai).not.toHaveBeenCalled();
+    }
+  );
+
   it("does not fall back to custom for an unknown built-in slug", async () => {
     await expect(
       fetchProviderUsage(provider("future-provider", "builtin", {

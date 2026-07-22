@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
   BUILT_IN_PROVIDERS,
+  ADDABLE_BUILT_IN_PROVIDERS,
+  builtInProviderLifecycle,
   DEFAULT_USAGE_UNIT_LABEL,
   hasConfiguredProviderField,
   usageUnitLabelForProvider,
@@ -93,5 +95,18 @@ describe("Anthropic provider definition", () => {
     expect(anthropic?.usesApiKey).toBe(false);
     expect(adminField?.label).toMatch(/organization accounts only/i);
     expect(adminField?.advanced).toBe(true);
+  });
+});
+
+describe("built-in provider retirement", () => {
+  it("keeps historical definitions while hiding dormant and retired providers from new connections", () => {
+    for (const name of ["tradier", "intrinio", "alpaca", "robinhood", "vercel"]) {
+      expect(BUILT_IN_PROVIDERS.some((provider) => provider.name === name)).toBe(true);
+      expect(ADDABLE_BUILT_IN_PROVIDERS.some((provider) => provider.name === name)).toBe(false);
+      expect(builtInProviderLifecycle(name)).toBe("retired");
+    }
+    expect(builtInProviderLifecycle("firecrawl")).toBe("dormant");
+    expect(ADDABLE_BUILT_IN_PROVIDERS.some((provider) => provider.name === "firecrawl")).toBe(false);
+    expect(builtInProviderLifecycle("openai")).toBe("active");
   });
 });
