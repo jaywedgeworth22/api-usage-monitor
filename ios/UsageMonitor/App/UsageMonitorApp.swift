@@ -6,6 +6,7 @@ import Alerts
 import ProjectBudgets
 import Settings
 import AppLock
+import Networking
 import OfflineCache
 import PushScaffold
 #if canImport(UIKit)
@@ -60,19 +61,13 @@ struct UsageMonitorApp: App {
                 pushRouter.consume()
             }
             .task {
-                // Notification permission is NOT requested cold on first launch —
-                // that context-free prompt (before the user has connected anything
-                // or seen a single alert) is the classic anti-pattern that trains
-                // "Don't Allow" and permanently kills the app's alert value.
-                //
-                // A brand-new user is prompted contextually instead: when they
-                // enable "Budget alerts" in Settings (see NotificationsSection).
-                // Here we only (re)request for a user who is already connected —
-                // i.e. a returning user with real budget data to be notified about
-                // — and register for remote (APNs) delivery when granted.
-                guard environment.hasToken else { return }
-                let granted = await PushScaffold.requestAuthorization()
-                if granted { PushScaffold.registerForRemoteNotifications() }
+                // Permission is requested only from the contextual Settings
+                // control. On later launches, silently restore APNs registration
+                // only when the user opted in and authorization already exists.
+                guard environment.hasToken, AlertNotifier.isEnabled else { return }
+                let status = await PushScaffold.authorizationStatus()
+                guard status == .authorized || status == .provisional else { return }
+                PushScaffold.registerForRemoteNotifications()
             }
         }
         .onChange(of: scenePhase) { _, phase in

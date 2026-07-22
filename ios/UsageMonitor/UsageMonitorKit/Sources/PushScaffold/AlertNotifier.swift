@@ -29,10 +29,10 @@ public enum AlertNotifier {
 
     // MARK: Preferences
 
-    /// Whether budget-alert notifications are enabled. Defaults to `true` so a
-    /// user who grants permission starts receiving alerts without a second opt-in.
+    /// Whether budget-alert notifications are enabled. Defaults to `false` so
+    /// the first notification prompt always follows an explicit, contextual opt-in.
     public static var isEnabled: Bool {
-        get { defaults.object(forKey: enabledKey) as? Bool ?? true }
+        get { defaults.object(forKey: enabledKey) as? Bool ?? false }
         set { defaults.set(newValue, forKey: enabledKey) }
     }
 
