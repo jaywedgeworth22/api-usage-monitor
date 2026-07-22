@@ -651,6 +651,7 @@ Protocol: /Users/jay/apps/EFFORT-LOG-PROTOCOL.md (canonical). Live board: this f
   _2026-07-15 (MONET): moved to Completed — stale duplicate row; work already merged (PR #58, squash `dfdb39e`, per this row's own trailing annotation) and docs/EFFORT-LOG.md mirror already corrected by PR #299 on 2026-07-15; the live board simply hadn't caught up. No further action needed._
 
 ## In Progress
+- **[GROK3] Wave F ops polish (E7/E9/E17 + login) — IN PROGRESS 2026-07-22.** Branch `grok3/wave-f-ops-polish`. E7: soft-stale budget SWR after successful ingest/OTLP persist + `x-budget-generated-at`/`Age` headers; E9: zero cumulative OTLP deltas advance checkpoint without zero events; E17: agent-sync-relay seed inactive + 1440m floor; login 16px/44pt touch targets. Focused vitest 49 green. KEEPOUT: Oracle DNS/writer/scheduler, shared telemetry v2, iOS.
 
 - **[CODEX] Oracle Caddy stale-hostname and proxied-ACME hardening — IN PROGRESS 2026-07-22.** Remove the deleted reserved-IP `sslip.io` fallback, force the supported HTTP-01 path for proxied `usage.jays.services`, update deployment docs/tests, and verify without changing DNS, writer authority, scheduler, or SQLite data.
 - **[CODEX] PR updater safety repair — IN PROGRESS 2026-07-21.** Follow-up to merged PR #717: replace the ineffective default-token third-party updater with a bounded GitHub CLI workflow that is inert until an owner supplies a separate write token. Preserve the iOS PR #716 worktree; do not touch Oracle deploy, DNS, writer, scheduler, production data, or secrets.
@@ -783,9 +784,9 @@ _Source: `docs/audits/2026-07-20-grok3-full-app-expert-review.md` (14 specialist
 - **[GROK3-E4] Cross-repo telemetry contract CI lock (P1, M) — PLANNED.** Shared package vectors/enums vs `usage-telemetry.ts`; pin version. Cross: congress-trading-shared.
 - **[GROK3-E5] Producer hard rules: always occurredAt ISO + explicit per-call idempotencyKey (P1, M, cross-repo) — PLANNED.** Fix random-UUID when occurredAt missing; normalize ISO in basis only with coordinated bump.
 - **[GROK3-E6] Project create backfill from metadata.project + rollup re-attribution path (P1, M) — PLANNED.** Unknown names stuck null forever after prune today.
-- **[GROK3-E7] Soft-invalidate budget SWR on ingest admission release (P2, S) — PLANNED.** Or expose `generatedAt` age header for throttle clients.
+- **[GROK3-E7] Soft-invalidate budget SWR on ingest admission release (P2, S) — IN PROGRESS (GROK3 Wave F).** Soft-stale (not hard bust) after ingest/OTLP persist>0; `x-budget-generated-at` + `Age` on budget-status.
 - **[GROK3-E8] OpenAI poll short-circuit legacy endpoints when Costs succeeds; realistic page caps (P2, M) — PLANNED.** Files: `adapters/openai.ts`, Anthropic/Cloudflare pagination caps.
-- **[GROK3-E9] OTLP: skip zero cumulative deltas; isolate/rate-limit system.* metrics; broaden disable flag (P1, M) — PLANNED.** Files: `cumulative-state.ts`, `system-mapper.ts`, `ingest-admission.ts` enable helper.
+- **[GROK3-E9] OTLP: skip zero cumulative deltas; isolate/rate-limit system.* metrics; broaden disable flag (P1, M) — PARTIAL (GROK3 Wave F).** Zero cumulative deltas advance checkpoint, skip zero events. system.* isolate / disable-flag broaden still open.
 - **[GROK3-E10] Built-in rawData allowlist / shorter raw retention (P1, M) — PLANNED.** Security: preserve strategy leaves upstream PII on disk. File: `data-privacy.ts`.
 - **[GROK3-E11] Wire series EOM forecast + push-based anomalies (P2, M) — PLANNED.** `forecasting.ts` series helpers unused; anomaly-loader snapshot-only.
 - **[GROK3-E12] Period reconciliation apples-to-oranges fix (P2, S) — PLANNED.** Compare usagePushed to snapshot variable (exclude fixed). File: `provider-usage-reconciliation.ts`.
@@ -793,7 +794,7 @@ _Source: `docs/audits/2026-07-20-grok3-full-app-expert-review.md` (14 specialist
 - **[GROK3-E14] Tombstone growth strategy + scheduled offline VACUUM + ANALYZE (P2, M) — PLANNED.** Keep money-safe; reclaim freelist off readiness path.
 - **[GROK3-E15] Batch ingest inserts (createMany); fix usage-events pagination orderBy (P2, M) — PLANNED.** File: `external-usage-events.ts`.
 - **[GROK3-E16] Fix LlamaIndex row in docs/direct-billing-integrations.md (P3, S) — PLANNED.** Adapter already hits beta usage-metrics.
-- **[GROK3-E17] Retire or permanently no-poll agent-sync Provider seed (P2, S) — PLANNED.** Prefer ops card/Sentry over usage poller coupling.
+- **[GROK3-E17] Retire or permanently no-poll agent-sync Provider seed (P2, S) — IN PROGRESS (GROK3 Wave F).** Seed/update inactive + refreshIntervalMin≥1440; still catalog-visible.
 - **[GROK3-E18] Route-level session re-check on mutators; classify apiKey in secret-config keys (P2, S) — PLANNED.** Defense-in-depth. Files: mutator routes, `provider-secret-config.ts`.
 - **[GROK3-E19] Optional verified-preferred cash mode for OpenRouter when coverage high (P2, L) — PLANNED.** Audit layer today does not correct budgets.
 - **[GROK3-E20] Clamp self-burning probe refresh floors (Twelve Data / Unusual Whales) (P2, S) — PLANNED.** Validation min interval.

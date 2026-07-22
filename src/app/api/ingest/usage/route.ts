@@ -34,6 +34,7 @@ import {
   readBoundedRequestBody,
 } from "@/lib/bounded-request-body";
 import { SUBSCRIPTION_SOURCE_APP } from "@/lib/subscription-charge-identity";
+import { markBudgetStatusSoftStale } from "@/lib/budget-status";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -242,6 +243,12 @@ export async function POST(request: NextRequest) {
 
     // Cross-app status metrics integration: Generate UsageSnapshot rows for absolute metrics.
     await syncStatusToUsageSnapshot(persistResult.newEvents);
+
+    // Wave F / E7: soft-stale budget SWR after new rows (keep last-good; force
+    // background refresh). Skip pure idempotent replays with zero inserts.
+    if (persistResult.persisted > 0) {
+      markBudgetStatusSoftStale();
+    }
 
     return NextResponse.json(
       {

@@ -22,6 +22,7 @@ import {
   OTLP_METRICS_DISABLED_RETRY_AFTER_SECONDS,
   tryAcquireIngestAdmission,
 } from "@/lib/ingest-admission";
+import { markBudgetStatusSoftStale } from "@/lib/budget-status";
 
 // OTLP-HTTP metrics ingest: POST /api/otlp/v1/metrics
 //
@@ -234,6 +235,11 @@ export async function POST(request: NextRequest) {
       ignoredOutOfOrder = persistResult.ignoredOutOfOrder;
       idempotentRetries = persistResult.idempotentRetries;
       accepted = persistResult.persisted + idempotentRetries;
+
+      // Wave F / E7: soft-stale budget SWR after newly persisted OTLP rows.
+      if (persistResult.persisted > 0) {
+        markBudgetStatusSoftStale();
+      }
 
       // Best-effort: give the owner a Provider row to attach a budget to (see
       // ensure-anthropic-provider.ts for why this is lazy-on-first-ingest
