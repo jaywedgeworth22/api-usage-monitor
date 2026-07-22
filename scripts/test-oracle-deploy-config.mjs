@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import {
   mkdtempSync,
   readFileSync,
+  readdirSync,
   rmSync,
   symlinkSync,
   writeFileSync,
@@ -51,7 +52,8 @@ requireText(workflow, /head_branch == 'main'/, "workflow must reject non-main ru
 requireText(workflow, /workflow_run\.conclusion == 'success'/, "workflow must require successful CI");
 requireText(workflow, /\.revision == \$revision/, "workflow must verify the exact production revision");
 requireText(workflow, /cancel-in-progress:\s*true/, "stale receipt observers should be cancelled");
-requireText(workflow, /seq 1 720/, "observer must allow the independent CodeQL and host build window");
+requireText(workflow, /timeout-minutes:\s*250/, "observer job must outlast the host transaction ceiling");
+requireText(workflow, /seq 1 1440/, "observer must cover the 240-minute host transaction ceiling");
 requireText(workflow, /ORACLE_ORIGIN_IPV4:\s*"141\.148\.182\.224"/, "observer must pin the reserved Oracle origin");
 requireText(workflow, /--resolve "usage\.jays\.services:443:\$\{ORACLE_ORIGIN_IPV4\}"/, "observer must bypass Cloudflare bot challenges without weakening TLS");
 forbidText(workflow, /secrets\./, "the observer workflow must not hold a production secret");
@@ -130,8 +132,15 @@ for (const [pattern, message] of [
   [/list_garage_ltx_level/, "shared LTX level lister for online/offline paths"],
   [/-integrity-check quick/, "post-cutover Garage restore structural check"],
   [/readonly GARAGE_RESTORE_TIMEOUT_SECONDS=900/, "bounded Garage restore"],
+  [/readonly GARAGE_RESTORE_CLIENT_TIMEOUT_SECONDS=960/, "bounded Garage Docker client"],
   [/readonly GARAGE_INTEGRITY_TIMEOUT_SECONDS=1800/, "bounded full Garage integrity check"],
+  [/readonly GARAGE_FOREIGN_KEY_TIMEOUT_SECONDS=600/, "bounded Garage foreign-key check"],
+  [/docker exec "\$\{APP_CONTAINER\}"\s+\\\s+\/usr\/bin\/timeout --signal=TERM --kill-after=30s "\$\{GARAGE_RESTORE_TIMEOUT_SECONDS\}"/, "in-container Garage restore timeout"],
   [/timeout --signal=TERM --kill-after=30s "\$\{GARAGE_INTEGRITY_TIMEOUT_SECONDS\}"/, "full Garage integrity timeout enforcement"],
+  [/timeout --signal=TERM --kill-after=30s "\$\{GARAGE_FOREIGN_KEY_TIMEOUT_SECONDS\}"/, "Garage foreign-key timeout enforcement"],
+  [/require_no_acceptance_restore_process/, "restore-process absence before cleanup"],
+  [/docker top "\$\{APP_CONTAINER\}" -eo pid,args ww/, "untruncated restore-process inspection"],
+  [/refusing to unlink Garage acceptance scratch/, "orphan-safe scratch retention"],
   [/name != '_deploy_heartbeat'/, "quoted exclusion for the unmanaged deployment heartbeat object"],
   [/verify_render_retirement/, "durable Render retirement proof"],
   [/prune_unreferenced_application_images/, "targeted application-image retention"],
@@ -169,8 +178,27 @@ requireText(poller, /docker update --restart=no/, "the poller must retrofit moun
 requireText(poller, /flock -w 10 8/, "recovery must share the deployment transaction lock");
 requireText(poller, /flock -u 8/, "the poller must release its recovery lock before the child transaction");
 requireText(deployService, /SuccessExitStatus=75/, "pending checks must not fail systemd");
-requireText(deployService, /TimeoutStartSec=90min/, "systemd must bound an unexpectedly wedged transaction");
+requireText(deployService, /TimeoutStartSec=240min/, "systemd must bound an unexpectedly wedged transaction");
 requireText(deployService, /TimeoutStopSec=45min/, "systemd must allow bounded signal rollback to finish");
+const declaredSerialTransactionSeconds =
+  300 + // bounded BuildKit cleanup
+  240 + // live SQLite integrity and foreign keys
+  330 + // Garage LTX listing, dry-run, and authenticated validation
+  1080 + // cold mirror clone, fetch, and worktree creation
+  2940 + // image build, startup preflight, and Litestream presence
+  600 + // pre-migration and stopped-writer SQLite backups
+  900 + // target scratch migration
+  600 + // exact readiness and fresh scheduler tick
+  300 + // post-cutover Garage advancement
+  960 + // in-container restore plus Docker-client margin
+  1800 + // authoritative full SQLite integrity
+  600 + // restored foreign keys
+  300; // public samples and bounded metadata checks
+const rollbackContingencySeconds = 30 * 60;
+assert.ok(
+  240 * 60 >= declaredSerialTransactionSeconds + rollbackContingencySeconds,
+  "systemd start ceiling must exceed declared serial transaction budgets plus contingency",
+);
 requireText(timer, /OnUnitInactiveSec=1min/, "timer must detect merged main promptly");
 requireText(service, /\/etc\/usage-monitor\/compose\.yaml/, "boot must use root-owned stable compose");
 requireText(service, /--no-build/, "boot must never build a mutable checkout");
@@ -188,6 +216,11 @@ const cacheEndMarker = "\n}\n\ncompose_for_revision()";
 const cacheEnd = deploy.indexOf(cacheEndMarker, cacheStart);
 assert.ok(cacheStart >= 0 && cacheEnd > cacheStart, "cache function must be extractable for behavioral tests");
 const cacheFunction = deploy.slice(cacheStart, cacheEnd + 2);
+const restoreStart = deploy.indexOf("acceptance_restore_pids() {");
+const restoreEndMarker = "\n}\n\nverify_render_retirement()";
+const restoreEnd = deploy.indexOf(restoreEndMarker, restoreStart);
+assert.ok(restoreStart >= 0 && restoreEnd > restoreStart, "restore functions must be extractable for behavioral tests");
+const restoreFunctions = deploy.slice(restoreStart, restoreEnd + 2);
 
 const retentionTemp = mkdtempSync(path.join(os.tmpdir(), "usage-monitor-image-retention-"));
 const receiptPath = path.join(retentionTemp, "current.json");
@@ -305,6 +338,100 @@ prune_bounded_build_cache
   return { result, cacheLog };
 }
 
+const restoreTemp = mkdtempSync(path.join(os.tmpdir(), "usage-monitor-restore-acceptance-"));
+
+function runRestoreCase({
+  restoreStatus = 0,
+  integrityStatus = 0,
+  integrityResult = "ok",
+  foreignKeyStatus = 0,
+  foreignKeyResult = "",
+  orphanAfterRestore = false,
+} = {}) {
+  const caseDir = mkdtempSync(path.join(restoreTemp, "case-"));
+  const commandLog = path.join(caseDir, "commands.log");
+  const restoreMarker = path.join(caseDir, "restore-started");
+  const harness = `
+set -Eeuo pipefail
+APP_CONTAINER=oracle-app-1
+DATA_DIR="$CASE_DIR_VALUE"
+DB_PATH="$CASE_DIR_VALUE/prod.db"
+TARGET_SHA="${"a".repeat(40)}"
+GARAGE_RESTORE_TIMEOUT_SECONDS=900
+GARAGE_RESTORE_CLIENT_TIMEOUT_SECONDS=960
+GARAGE_INTEGRITY_TIMEOUT_SECONDS=1800
+GARAGE_FOREIGN_KEY_TIMEOUT_SECONDS=600
+RESTORE_SCRATCH=""
+die() { printf 'ERROR: %s\\n' "$*" >&2; return 1; }
+log() { printf '%s\\n' "$*" >&2; }
+timeout() {
+  while (( $# > 0 )) && [[ "$1" == --* ]]; do shift; done
+  (( $# > 1 )) || return 2
+  shift
+  "$@"
+}
+docker() {
+  printf 'docker %s\\n' "$*" >> "$COMMAND_LOG_VALUE"
+  case "$1" in
+    top)
+      local long_process_row
+      printf 'PID COMMAND\\n'
+      if [[ -f "$RESTORE_MARKER_VALUE" && "$ORPHAN_AFTER_RESTORE_VALUE" == true ]]; then
+        long_process_row="4242 /usr/bin/timeout --signal=TERM --kill-after=30s 900 /app/bin/litestream restore -config /app/litestream.yml -integrity-check quick -o $RESTORE_SCRATCH /data/prod.db"
+        if [[ " $* " == *" ww "* ]]; then
+          printf '%s\\n' "$long_process_row"
+        else
+          printf '%s\\n' "\${long_process_row:0:80}"
+        fi
+      fi
+      ;;
+    exec)
+      local argument output_path="" previous=""
+      for argument in "$@"; do
+        if [[ "$previous" == -o ]]; then output_path="$argument"; fi
+        previous="$argument"
+      done
+      [[ -n "$output_path" ]] || return 2
+      printf 'x' > "$output_path"
+      : > "$RESTORE_MARKER_VALUE"
+      return "$RESTORE_STATUS_VALUE"
+      ;;
+    *) return 2 ;;
+  esac
+}
+sqlite3() {
+  printf 'sqlite3 %s\\n' "$*" >> "$COMMAND_LOG_VALUE"
+  case "$*" in
+    *"PRAGMA integrity_check"*) printf '%s\\n' "$INTEGRITY_RESULT_VALUE"; return "$INTEGRITY_STATUS_VALUE" ;;
+    *"PRAGMA foreign_key_check"*) printf '%s' "$FOREIGN_KEY_RESULT_VALUE"; return "$FOREIGN_KEY_STATUS_VALUE" ;;
+    *"SELECT coalesce(group_concat"*) printf 'CREATE TABLE accepted(id INTEGER);\\n' ;;
+    *) return 2 ;;
+  esac
+}
+${restoreFunctions}
+trap cleanup_restore_scratch EXIT
+verify_backup_restore
+`;
+  const result = spawnSync("bash", ["-c", harness], {
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      CASE_DIR_VALUE: caseDir,
+      COMMAND_LOG_VALUE: commandLog,
+      RESTORE_MARKER_VALUE: restoreMarker,
+      RESTORE_STATUS_VALUE: String(restoreStatus),
+      INTEGRITY_STATUS_VALUE: String(integrityStatus),
+      INTEGRITY_RESULT_VALUE: integrityResult,
+      FOREIGN_KEY_STATUS_VALUE: String(foreignKeyStatus),
+      FOREIGN_KEY_RESULT_VALUE: foreignKeyResult,
+      ORPHAN_AFTER_RESTORE_VALUE: String(orphanAfterRestore),
+    },
+  });
+  const commands = readFileSync(commandLog, "utf8");
+  const restoreFiles = readdirSync(caseDir).filter((name) => name.startsWith(".deploy-garage-acceptance-"));
+  return { result, commands, restoreFiles };
+}
+
 try {
   const revisions = Object.fromEntries(
     ["previous", "target", "active", "receiptPrevious", "referenced", "removable"].map((name, index) => [
@@ -379,8 +506,43 @@ try {
   const failedCache = runBuildCacheCase({ fail: true });
   assert.equal(failedCache.result.status, 0, failedCache.result.stderr);
   assert.match(failedCache.result.stderr, /disk preflight will decide/);
+
+  const successfulRestore = runRestoreCase();
+  assert.equal(successfulRestore.result.status, 0, successfulRestore.result.stderr);
+  assert.match(successfulRestore.commands, /docker exec oracle-app-1 \/usr\/bin\/timeout --signal=TERM --kill-after=30s 900 \/app\/bin\/litestream restore/);
+  assert.match(successfulRestore.commands, /docker top oracle-app-1 -eo pid,args ww/);
+  assert.match(successfulRestore.commands, /-integrity-check quick/);
+  assert.doesNotMatch(successfulRestore.commands, /-integrity-check full/);
+  assert.equal((successfulRestore.commands.match(/PRAGMA integrity_check/g) ?? []).length, 1);
+  assert.equal((successfulRestore.commands.match(/PRAGMA foreign_key_check/g) ?? []).length, 1);
+  assert.deepEqual(successfulRestore.restoreFiles, [], "successful restore scratch must be removed");
+
+  const timedOutRestore = runRestoreCase({ restoreStatus: 124 });
+  assert.notEqual(timedOutRestore.result.status, 0, "restore timeout must fail closed");
+  assert.match(timedOutRestore.result.stderr, /restore did not complete \(exit 124\)/);
+  assert.doesNotMatch(timedOutRestore.commands, /PRAGMA integrity_check/);
+  assert.deepEqual(timedOutRestore.restoreFiles, [], "non-orphaned timeout scratch must be removed");
+
+  const orphanedRestore = runRestoreCase({ restoreStatus: 124, orphanAfterRestore: true });
+  assert.notEqual(orphanedRestore.result.status, 0, "orphaned restore must fail closed");
+  assert.match(orphanedRestore.result.stderr, /restore process still runs/);
+  assert.match(orphanedRestore.result.stderr, /refusing to unlink Garage acceptance scratch/);
+  assert.equal(orphanedRestore.restoreFiles.length, 1, "orphaned restore scratch must remain linked");
+
+  const corruptRestore = runRestoreCase({ integrityResult: "corrupt" });
+  assert.notEqual(corruptRestore.result.status, 0, "non-ok full integrity must fail closed");
+  assert.match(corruptRestore.result.stderr, /failed SQLite integrity/);
+
+  const timedOutIntegrity = runRestoreCase({ integrityStatus: 124, integrityResult: "" });
+  assert.notEqual(timedOutIntegrity.result.status, 0, "full integrity timeout must fail closed");
+  assert.match(timedOutIntegrity.result.stderr, /integrity check did not complete/);
+
+  const timedOutForeignKeys = runRestoreCase({ foreignKeyStatus: 124 });
+  assert.notEqual(timedOutForeignKeys.result.status, 0, "foreign-key timeout must fail closed");
+  assert.match(timedOutForeignKeys.result.stderr, /foreign-key check did not complete/);
 } finally {
   rmSync(retentionTemp, { recursive: true, force: true });
+  rmSync(restoreTemp, { recursive: true, force: true });
 }
 
 assert.deepEqual(
