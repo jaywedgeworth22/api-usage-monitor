@@ -474,7 +474,16 @@ function mergeExternalRollup(
   const existingUnclassified = existingHasCoverageCounts
     ? existing.unclassifiedCostEventCount ?? 0
     : existing.eventCount;
-  
+  // Same for incoming: rehash can merge two pre-coverage rollups, so a null
+  // incoming unclassified counter must not drop eventCount from the total.
+  const incomingHasCoverageCounts =
+    incoming.pricedEventCount != null ||
+    incoming.unpricedEventCount != null ||
+    incoming.unclassifiedCostEventCount != null;
+  const incomingUnclassified = incomingHasCoverageCounts
+    ? incoming.unclassifiedCostEventCount ?? 0
+    : incoming.eventCount;
+
   return {
     ...incoming,
     eventCount: existing.eventCount + incoming.eventCount,
@@ -484,8 +493,7 @@ function mergeExternalRollup(
       (existing.unpricedEventCount ?? 0) + (incoming.unpricedEventCount ?? 0),
     // A pre-migration rollup has null counters. Preserve every event in that
     // row as unclassified while still recording exact coverage for new rows.
-    unclassifiedCostEventCount:
-      existingUnclassified + (incoming.unclassifiedCostEventCount ?? 0),
+    unclassifiedCostEventCount: existingUnclassified + incomingUnclassified,
     totalCostUsd: isStatus ? (incomingIsLatest ? incoming.totalCostUsd : existing.totalCostUsd) : existing.totalCostUsd + incoming.totalCostUsd,
     totalRequests: isStatus ? (incomingIsLatest ? incoming.totalRequests : existing.totalRequests) : existing.totalRequests + incoming.totalRequests,
     totalQuantity: isStatus ? (incomingIsLatest ? incoming.totalQuantity : existing.totalQuantity) : existing.totalQuantity + incoming.totalQuantity,

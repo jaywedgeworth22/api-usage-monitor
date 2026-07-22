@@ -140,4 +140,53 @@ describe("external daily rollup groupKey rehash (Wave E / E6)", () => {
     expect(rows[0]!.eventCount).toBe(3);
     expect(rows[0]!.totalCostUsd).toBe(14);
   });
+
+  it("preserves pre-coverage eventCount as unclassified when merging legacy rollups", async () => {
+    const dims = baseDims(null);
+    const correctKey = computeExternalRollupGroupKey(dims);
+
+    await prisma.externalUsageEventDailyRollup.create({
+      data: {
+        day,
+        groupKey: correctKey,
+        ...dims,
+        eventCount: 4,
+        pricedEventCount: null,
+        unpricedEventCount: null,
+        unclassifiedCostEventCount: null,
+        totalCostUsd: 8,
+        totalRequests: 4,
+        totalQuantity: 0,
+        totalCredits: 0,
+        latestOccurredAt: day,
+      },
+    });
+    await prisma.externalUsageEventDailyRollup.create({
+      data: {
+        day,
+        groupKey: "stale-legacy-null-coverage",
+        ...dims,
+        eventCount: 3,
+        pricedEventCount: null,
+        unpricedEventCount: null,
+        unclassifiedCostEventCount: null,
+        totalCostUsd: 6,
+        totalRequests: 3,
+        totalQuantity: 0,
+        totalCredits: 0,
+        latestOccurredAt: day,
+      },
+    });
+
+    await rehashStaleExternalUsageEventDailyRollupGroupKeys({
+      batchSize: 50,
+      maxBatches: 2,
+    });
+
+    const rows = await prisma.externalUsageEventDailyRollup.findMany();
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.eventCount).toBe(7);
+    expect(rows[0]!.unclassifiedCostEventCount).toBe(7);
+    expect(rows[0]!.totalCostUsd).toBe(14);
+  });
 });
