@@ -187,7 +187,7 @@ async function indexRequest(env, path, init) {
 
 export async function handleEmail(message, env) {
   if (
-    typeof env.RECEIPT_INBOX_ADDRESS !== "string"
+    !isDedicatedReceiptAddress(env.RECEIPT_INBOX_ADDRESS)
     || typeof message.to !== "string"
     || message.to.toLowerCase() !== env.RECEIPT_INBOX_ADDRESS.toLowerCase()
   ) {
