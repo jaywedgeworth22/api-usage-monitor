@@ -532,6 +532,80 @@ describe("provider key attribution API", () => {
     expect(body.coverage.byIdentity[second.id]).toEqual({ costUsd: 1, eventCount: 1 });
   });
 
+  it("attributes point costs at each event timestamp across a binding reassignment", async () => {
+    const now = new Date();
+    const monthStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
+    const reassignmentAt = new Date(
+      Math.max(monthStart.getTime() + 2 * 86_400_000, now.getTime() - 2 * 86_400_000)
+    );
+    const before = new Date(reassignmentAt.getTime() - 60_000);
+    const after = new Date(Math.min(reassignmentAt.getTime() + 60_000, now.getTime() - 1_000));
+    const provider = await prisma.provider.create({
+      data: { name: "openai", displayName: "OpenAI", type: "builtin" },
+    });
+    const first = await prisma.providerKeyIdentity.create({
+      data: { providerId: provider.id, alias: "Before cutover", createdAt: monthStart },
+    });
+    const second = await prisma.providerKeyIdentity.create({
+      data: { providerId: provider.id, alias: "After cutover", createdAt: monthStart },
+    });
+    await prisma.providerKeyBinding.createMany({
+      data: [
+        {
+          identityId: first.id,
+          producerId: "congress-trade",
+          producerKeyRef: "openai-primary",
+          effectiveFrom: monthStart,
+          effectiveTo: reassignmentAt,
+        },
+        {
+          identityId: second.id,
+          producerId: "congress-trade",
+          producerKeyRef: "openai-primary",
+          effectiveFrom: reassignmentAt,
+        },
+      ],
+    });
+    await prisma.externalUsageEvent.createMany({
+      data: [
+        {
+          idempotencyKey: "point-before-reassignment",
+          sourceApp: "congress-trade",
+          provider: "openai",
+          keyRef: "openai-primary",
+          costUsd: 2,
+          occurredAt: before,
+          metadata: {
+            _usageTelemetrySchemaVersion: 2,
+            _coverageScope: "api_key",
+            _coverageMode: "point",
+            _coverageRelationship: "disjoint",
+          },
+        },
+        {
+          idempotencyKey: "point-after-reassignment",
+          sourceApp: "congress-trade",
+          provider: "openai",
+          keyRef: "openai-primary",
+          costUsd: 3,
+          occurredAt: after,
+          metadata: {
+            _usageTelemetrySchemaVersion: 2,
+            _coverageScope: "api_key",
+            _coverageMode: "point",
+            _coverageRelationship: "disjoint",
+          },
+        },
+      ],
+    });
+
+    const body = await (await GET(request("GET"))).json();
+    expect(body.coverage.totalCostUsd).toBe(5);
+    expect(body.coverage.identityMatchedCostUsd).toBe(5);
+    expect(body.coverage.byIdentity[first.id]).toEqual({ costUsd: 2, eventCount: 1 });
+    expect(body.coverage.byIdentity[second.id]).toEqual({ costUsd: 3, eventCount: 1 });
+  });
+
   it("does not extend an exact producer binding past identity retirement", async () => {
     const now = new Date();
     const monthStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));

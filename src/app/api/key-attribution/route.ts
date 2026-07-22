@@ -24,6 +24,7 @@ interface CoverageRow {
   coverageScope: string | null;
   coverageMode: string | null;
   coverageRelationship: string | null;
+  occurredAt: Date | string;
   windowStart: Date | string | null;
   windowEnd: Date | string | null;
   costUsd: number | null;
@@ -244,6 +245,7 @@ async function loadCoverage(
         json_extract("metadata", '$._coverageScope') AS "coverageScope",
         json_extract("metadata", '$._coverageMode') AS "coverageMode",
         json_extract("metadata", '$._coverageRelationship') AS "coverageRelationship",
+        "occurredAt" AS "occurredAt",
         "windowStart" AS "windowStart",
         "windowEnd" AS "windowEnd",
         SUM("costUsd") AS "costUsd",
@@ -256,7 +258,7 @@ async function loadCoverage(
       GROUP BY
         "sourceApp", "provider", "keyRef", "providerConnectionRef",
         "billingAccountRef", "projectId", "coverageScope", "coverageMode", "coverageRelationship",
-        "windowStart", "windowEnd"
+        "occurredAt", "windowStart", "windowEnd"
     `);
 
     for (const row of rows) {
@@ -273,13 +275,21 @@ async function loadCoverage(
         providerConnectionRef: row.providerConnectionRef,
         billingAccountRef: row.billingAccountRef,
       };
+      const occurredAt = asCoverageDate(row.occurredAt);
       const windowStart = asCoverageDate(row.windowStart);
       const windowEnd = asCoverageDate(row.windowEnd);
       let isProvenAdditive = false;
-      let resolveAt = start;
-      if (row.coverageRelationship === "disjoint" && row.coverageMode === "point") {
+      let resolveAt = occurredAt ?? windowStart ?? start;
+      if (
+        row.coverageRelationship === "disjoint" &&
+        row.coverageMode === "point" &&
+        occurredAt
+      ) {
         isProvenAdditive = true;
-        resolveAt = start;
+        // Point observations must resolve at their own timestamp. Resolving a
+        // month-wide group at month start misattributes points after a binding
+        // reassignment to the identity that owned the key on day one.
+        resolveAt = occurredAt;
       } else if (row.coverageRelationship === "disjoint" && row.coverageMode === "window") {
         // Window money is additive only when bounds are present and the half-open
         // window does not cross an identity/binding reassignment or retirement.
