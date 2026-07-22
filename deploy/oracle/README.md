@@ -102,7 +102,10 @@ requires exact-revision strict readiness, a fresh scheduler tick, three public
 readiness samples, Garage TXID advancement beyond a stable watermark captured
 only after the previous writer has fully stopped,
 and a full authenticated Garage restore whose SQLite integrity, foreign keys,
-and schema match production.
+and schema match production. The restore gets a bounded 15-minute transfer and
+quick-check window, followed by exactly one bounded 30-minute full SQLite
+integrity scan. This keeps acceptance fail-closed for a growing database
+without duplicating the same full scan inside Litestream and SQLite.
 
 The previous full-SHA image and up to five verified offline SQLite snapshots
 are retained. Automatic rollback changes code/image only and never replaces

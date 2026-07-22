@@ -41,6 +41,8 @@ readonly MAX_BACKUPS=5
 readonly MAX_BUILD_CACHE="8GB"
 readonly MIN_BUILD_CACHE_FREE="12GB"
 readonly RESERVED_BUILD_CACHE="4GB"
+readonly GARAGE_RESTORE_TIMEOUT_SECONDS=900
+readonly GARAGE_INTEGRITY_TIMEOUT_SECONDS=1800
 
 TARGET_SHA="${1:-}"
 PREVIOUS_SHA=""
@@ -483,19 +485,31 @@ cleanup_restore_scratch() {
 }
 
 verify_backup_restore() {
-  local live_schema restored_schema
+  local integrity_result live_schema restored_schema
   RESTORE_SCRATCH="${DATA_DIR}/.deploy-garage-acceptance-${TARGET_SHA}.$$.db"
   cleanup_restore_scratch
   RESTORE_SCRATCH="${DATA_DIR}/.deploy-garage-acceptance-${TARGET_SHA}.$$.db"
 
-  timeout 600 docker exec "${APP_CONTAINER}" \
+  # Restoring the current production database takes a few minutes. Let
+  # Litestream perform its quick structural check, then run exactly one full
+  # SQLite integrity scan below. Running both Litestream's full check and an
+  # explicit PRAGMA integrity_check duplicated the expensive scan and caused a
+  # healthy 592 MiB restore to hit the old ten-minute process timeout.
+  timeout --signal=TERM --kill-after=30s "${GARAGE_RESTORE_TIMEOUT_SECONDS}" \
+    docker exec "${APP_CONTAINER}" \
     /app/bin/litestream restore \
       -config /app/litestream.yml \
-      -integrity-check full \
+      -integrity-check quick \
       -o "${RESTORE_SCRATCH}" \
       /data/prod.db >/dev/null
   [[ -s "${RESTORE_SCRATCH}" ]] || die "Garage acceptance restore did not create a database"
-  [[ "$(sqlite3 -readonly "${RESTORE_SCRATCH}" 'PRAGMA integrity_check;')" == "ok" ]] || \
+  if ! integrity_result="$(
+    timeout --signal=TERM --kill-after=30s "${GARAGE_INTEGRITY_TIMEOUT_SECONDS}" \
+      sqlite3 -readonly "${RESTORE_SCRATCH}" 'PRAGMA integrity_check;'
+  )"; then
+    die "Garage acceptance restore SQLite integrity check did not complete"
+  fi
+  [[ "${integrity_result}" == "ok" ]] || \
     die "Garage acceptance restore failed SQLite integrity"
   [[ -z "$(sqlite3 -readonly "${RESTORE_SCRATCH}" 'PRAGMA foreign_key_check;')" ]] || \
     die "Garage acceptance restore failed SQLite foreign-key validation"
