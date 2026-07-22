@@ -734,12 +734,13 @@ export async function rehashStaleExternalUsageEventDailyRollupGroupKeys(options?
   let cursorId: string | undefined;
 
   for (let batch = 0; batch < maxBatches; batch++) {
-    const rows = await prisma.externalUsageEventDailyRollup.findMany({
-      take: batchSize,
-      orderBy: { id: "asc" },
-      ...(cursorId ? { cursor: { id: cursorId }, skip: 1 } : {}),
-    });
-    if (rows.length === 0) break;
+    const rows =
+      (await prisma.externalUsageEventDailyRollup.findMany({
+        take: batchSize,
+        orderBy: { id: "asc" },
+        ...(cursorId ? { cursor: { id: cursorId }, skip: 1 } : {}),
+      })) ?? [];
+    if (!Array.isArray(rows) || rows.length === 0) break;
     cursorId = rows[rows.length - 1]!.id;
 
     for (const row of rows) {
