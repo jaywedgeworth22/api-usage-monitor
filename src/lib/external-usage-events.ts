@@ -411,8 +411,16 @@ export async function persistExternalUsageEventsInTransaction(
       }
       continue;
     }
-    await tx.externalUsageEvent.create({ data: toCreateData(event) });
     newEvents.push(event);
+  }
+
+  // Wave G / E15: batch-insert new rows (one SQLite statement) instead of
+  // N serial creates. newEvents already holds the inputs we would have
+  // inserted; createMany does not return rows, so we keep that list as-is.
+  if (newEvents.length > 0) {
+    await tx.externalUsageEvent.createMany({
+      data: newEvents.map((event) => toCreateData(event)),
+    });
   }
 
   return {
