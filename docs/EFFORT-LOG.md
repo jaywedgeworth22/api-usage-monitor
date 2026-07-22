@@ -651,6 +651,7 @@ Protocol: /Users/jay/apps/EFFORT-LOG-PROTOCOL.md (canonical). Live board: this f
   _2026-07-15 (MONET): moved to Completed — stale duplicate row; work already merged (PR #58, squash `dfdb39e`, per this row's own trailing annotation) and docs/EFFORT-LOG.md mirror already corrected by PR #299 on 2026-07-15; the live board simply hadn't caught up. No further action needed._
 
 ## In Progress
+- **[GROK3] Wave H remaining backlog (E1/E2/E10/C1 + mutators) — IN PROGRESS 2026-07-22.** Branch `grok3/wave-h-remaining`. Unified MTD external-cost scan + memo; rawData allowlist + strip; Infisical admin/management keys; mutator session re-check; C1 shared Retry-After error type + ST breaker honor (cross-repo shared/ST).
 - **[GROK3] Wave G ingest/attribution/security (E6/E9/E13/E15/E18) — IN PROGRESS 2026-07-22.** Branch `grok3/wave-g-ingest-attribution`. E9 system.* opt-in + broadened disable spellings; E6 Project-create metadata.project backfill; E15 createMany batch insert; E13 materializer persist+watermark txn; E18 apiKey secret + route session re-check.
 - **[GROK3] Wave F ops polish (E7/E9/E17 + login) — IN PROGRESS 2026-07-22.** Branch `grok3/wave-f-ops-polish`. E7: soft-stale budget SWR after successful ingest/OTLP persist + `x-budget-generated-at`/`Age` headers; E9: zero cumulative OTLP deltas advance checkpoint without zero events; E17: agent-sync-relay seed inactive + 1440m floor; login 16px/44pt touch targets. Focused vitest 49 green. KEEPOUT: Oracle DNS/writer/scheduler, shared telemetry v2, iOS.
 

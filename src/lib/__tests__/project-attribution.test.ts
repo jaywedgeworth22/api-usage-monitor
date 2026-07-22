@@ -58,6 +58,12 @@ describe("project attribution (integration)", () => {
   });
 
   beforeEach(async () => {
+    const { clearMtdScanMemo } = await import("../mtd-scan-memo");
+    clearMtdScanMemo();
+    const { __resetBudgetStatusCacheForTests, __resetProjectBudgetStatusCacheForTests } =
+      await import("../budget-status");
+    __resetBudgetStatusCacheForTests();
+    __resetProjectBudgetStatusCacheForTests();
     await prisma.externalUsageEvent.deleteMany();
     await prisma.providerProjectAllocation.deleteMany();
     await prisma.providerPlan.deleteMany();

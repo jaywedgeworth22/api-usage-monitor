@@ -33,6 +33,7 @@ import {
 } from "@/lib/managed-provider-credential";
 import type { CostCoverageCaveat } from "@/lib/adapters/helpers";
 import {
+import { hasValidDashboardSession } from "@/lib/auth";
   authoritativeProviderBillingCredential,
   hashProviderBillingAccountId,
   projectProviderBillingAccountMatches,
@@ -477,6 +478,10 @@ export async function GET(request: NextRequest) {
 }
 
 export async function POST(request: NextRequest) {
+  if (!hasValidDashboardSession(request)) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
   let input;
   try {
     input = parseProviderCreateInput(await readJsonBody(request));

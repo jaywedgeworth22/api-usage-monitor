@@ -36,6 +36,7 @@ import {
 } from "@/lib/managed-provider-credential";
 import { snapshotCostCoverageCaveat } from "@/lib/snapshot-sync-status";
 import {
+import { hasValidDashboardSession } from "@/lib/auth";
   authoritativeProviderBillingCredential,
   hashProviderBillingAccountId,
   projectProviderBillingAccountMatches,
@@ -355,6 +356,10 @@ export async function PUT(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
+  if (!hasValidDashboardSession(request)) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
   const { id } = await params;
 
   const existing = await prisma.provider.findUnique({
@@ -578,9 +583,13 @@ export async function PUT(
 }
 
 export async function DELETE(
-  _request: NextRequest,
+  request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
+  if (!hasValidDashboardSession(request)) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
   const { id } = await params;
 
   const existing = await prisma.provider.findUnique({ where: { id } });
