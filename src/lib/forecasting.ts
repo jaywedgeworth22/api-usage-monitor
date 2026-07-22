@@ -149,11 +149,16 @@ export function calculateEomForecastFromSeries(
   dailyUsage: readonly number[] | null | undefined,
   fixedAccruedUsd: number,
   now: Date,
-  options: SeriesForecastOptions = {}
+  options: SeriesForecastOptions & {
+    /** When series is empty, linear-extrapolate this usage total (Wave J / E11). */
+    usageSoFarFallback?: number;
+  } = {}
 ): number {
   if (!dailyUsage || dailyUsage.length === 0) {
-    // No series → reproduce the legacy linear forecast exactly.
-    const usageSoFar = 0;
+    // No series → reproduce the legacy linear forecast exactly. Callers that
+    // already know MTD usage must pass usageSoFarFallback; defaulting to 0
+    // would silently under-forecast variable spend.
+    const usageSoFar = options.usageSoFarFallback ?? 0;
     return calculateEomForecast(fixedAccruedUsd + usageSoFar, fixedAccruedUsd, now);
   }
   return fixedAccruedUsd + forecastMonthlyUsageFromSeries(dailyUsage, now, options);

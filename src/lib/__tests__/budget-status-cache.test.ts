@@ -116,6 +116,36 @@ async function createProviderWithCost(name: string, totalCost: number, fetchedAt
 }
 
 describe("computeBudgetStatus stale-while-revalidate cache", () => {
+  it("never projects below authoritative observed usage when push-series spend is smaller", async () => {
+    const NOW = new Date("2026-10-10T12:00:00.000Z");
+    await prisma.externalUsageEvent.deleteMany();
+    const provider = await createProviderWithCost(
+      "projection-floor-provider",
+      100,
+      new Date("2026-10-10T10:00:00.000Z")
+    );
+    await prisma.provider.update({
+      where: { id: provider.id },
+      data: { plan: { create: { billingMode: "actual", monthlyBudgetUsd: 500 } } },
+    });
+    await prisma.externalUsageEvent.create({
+      data: {
+        sourceApp: "test",
+        provider: provider.name,
+        metricType: "usage",
+        costUsd: 1,
+        occurredAt: new Date("2026-10-09T12:00:00.000Z"),
+      },
+    });
+
+    const result = await computeBudgetStatus(NOW);
+    const row = result.providers.find((item) => item.id === provider.id)!;
+
+    expect(row.observedVariableUsageUsd).toBe(100);
+    expect(row.projectedEomUsd).toBeGreaterThanOrEqual(row.spentUsd);
+    expect(row.projectedEomUsd).toBeGreaterThanOrEqual(100);
+  });
+
   it("returns the exact cached instance within TTL, without reflecting a DB change made since", async () => {
     const NOW = new Date("2026-03-10T12:00:00.000Z");
     const provider = await createProviderWithCost(

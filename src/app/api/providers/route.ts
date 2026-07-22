@@ -38,6 +38,7 @@ import {
   projectProviderBillingAccountMatches,
 } from "@/lib/provider-billing-account";
 import { hasValidDashboardSession, shouldEnforceDashboardSession } from "@/lib/auth";
+import { getProviderComplianceSummariesBatch } from "@/lib/provider-compliance";
 
 function decryptKey(encryptedKey: string | null): string | null {
   if (!encryptedKey) return null;
@@ -287,6 +288,15 @@ export async function GET(request: NextRequest) {
     }))
   );
 
+  // Wave J: ONE batched compliance pass for the dashboard list (not N×2 queries).
+  const complianceByProviderId = await getProviderComplianceSummariesBatch(
+    providers.map((provider) => ({
+      id: provider.id,
+      name: provider.name,
+      type: provider.type,
+    }))
+  );
+
   // Flatten latest snapshot into the provider object
   const result = providers.map((p) => {
     const {
@@ -467,6 +477,19 @@ export async function GET(request: NextRequest) {
         canonicalBudget?.projectedEomUsd ??
         (canonicalBudget != null ? alertState.projectedEomUsd : null),
       billingMode: alertState.billingMode,
+      // Lightweight compliance badge for list/dashboard (full detail stays on
+      // GET /api/providers/:id). Null when the batch omitted a row.
+      compliance: (() => {
+        const summary = complianceByProviderId.get(p.id);
+        if (!summary) return null;
+        return {
+          state: summary.state,
+          verifiedCoverage: summary.verifiedCoverage,
+          periodStatus: summary.periodStatus,
+          periodDeltaUsd: summary.periodDeltaUsd,
+          unverifiableReason: summary.unverifiableReason,
+        };
+      })(),
       duplicateNameWarning:
         duplicateProviderIds.length > 1
           ? { providerIds: [...duplicateProviderIds].sort() }

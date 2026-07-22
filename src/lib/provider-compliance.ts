@@ -111,108 +111,198 @@ export function deriveComplianceState(input: {
   return "verified";
 }
 
-export async function getProviderComplianceSummary(
+function emptyStatusCounts() {
+  return {
+    matchedEventCount: 0,
+    discrepancyEventCount: 0,
+    pendingEventCount: 0,
+    unverifiableEventCount: 0,
+  };
+}
+
+function applyStatusGroup(
+  counts: ReturnType<typeof emptyStatusCounts>,
+  status: string | null,
+  count: number
+): void {
+  switch (status) {
+    case "match":
+      counts.matchedEventCount += count;
+      break;
+    case "discrepancy":
+      counts.discrepancyEventCount += count;
+      break;
+    case "unverifiable":
+      counts.unverifiableEventCount += count;
+      break;
+    default:
+      counts.pendingEventCount += count;
+      break;
+  }
+}
+
+function summarizeFromCounts(
   provider: { id: string; name: string; type: string },
-  now: Date = new Date()
-): Promise<ProviderComplianceSummary> {
-  const { periodStart, periodEnd } = monthBounds(now);
+  counts: ReturnType<typeof emptyStatusCounts>,
+  reconciliation: {
+    status: string | null;
+    deltaUsd: number | null;
+    reportedCostUsd: number | null;
+    verifiedCostUsd: number | null;
+    checkedAt: Date | null;
+  } | null
+): ProviderComplianceSummary {
   const visibility = getProviderIntegrationProfile(
     provider.name,
     provider.type
   ).billing.visibility;
   const verifiable = isVerifiableVisibility(visibility);
-
-  const [statusGroups, reconciliation] = await Promise.all([
-    // Per-event verification state for this provider's generation-id-carrying
-    // events in the current period.
-    prisma.externalUsageEvent.groupBy({
-      by: ["verificationStatus"],
-      where: {
-        provider: provider.name,
-        providerRequestId: { not: null },
-        occurredAt: { gte: periodStart, lt: periodEnd },
-      },
-      _count: { _all: true },
-    }),
-    prisma.providerUsageReconciliation.findUnique({
-      where: {
-        providerId_periodStart_periodEnd_keyRef: {
-          providerId: provider.id,
-          periodStart,
-          periodEnd,
-          keyRef: "",
-        },
-      },
-    }),
-  ]);
-
-  let matchedEventCount = 0;
-  let discrepancyEventCount = 0;
-  let pendingEventCount = 0;
-  let unverifiableEventCount = 0;
-  for (const group of statusGroups) {
-    const count = group._count._all;
-    switch (group.verificationStatus) {
-      case "match":
-        matchedEventCount += count;
-        break;
-      case "discrepancy":
-        discrepancyEventCount += count;
-        break;
-      case "unverifiable":
-        unverifiableEventCount += count;
-        break;
-      // null / "pending" / "error" are all still awaiting a settled result.
-      default:
-        pendingEventCount += count;
-        break;
-    }
-  }
-
-  const verifiedEventCount = matchedEventCount + discrepancyEventCount;
+  const verifiedEventCount =
+    counts.matchedEventCount + counts.discrepancyEventCount;
   const verifiableEventCount =
-    verifiedEventCount + pendingEventCount + unverifiableEventCount;
-  // Coverage is reported over EVERY event carrying a generation id, including
-  // the retry-exhausted ones. An earlier revision excluded them on the theory
-  // that they were a benign "n/a" bucket — they are not: the only writer of
-  // event-level "unverifiable" is the worker's exhausted-retry branch, so each
-  // one is a check that was attempted and permanently failed. Excluding them
-  // let 1 success alongside 99 failures render as "100% verified".
+    verifiedEventCount +
+    counts.pendingEventCount +
+    counts.unverifiableEventCount;
   const coverageDenominator =
-    verifiedEventCount + pendingEventCount + unverifiableEventCount;
+    verifiedEventCount +
+    counts.pendingEventCount +
+    counts.unverifiableEventCount;
 
   return {
     state: deriveComplianceState({
       verifiable,
-      verifiableEventCount: verifiedEventCount + pendingEventCount,
+      verifiableEventCount: verifiedEventCount + counts.pendingEventCount,
       verifiedEventCount,
-      discrepancyEventCount,
-      unverifiableEventCount,
+      discrepancyEventCount: counts.discrepancyEventCount,
+      unverifiableEventCount: counts.unverifiableEventCount,
       periodStatus: reconciliation?.status ?? null,
     }),
     verifiedCoverage:
       coverageDenominator > 0 ? verifiedEventCount / coverageDenominator : null,
     verifiableEventCount,
     verifiedEventCount,
-    matchedEventCount,
-    discrepancyEventCount,
-    pendingEventCount,
-    unverifiableEventCount,
+    matchedEventCount: counts.matchedEventCount,
+    discrepancyEventCount: counts.discrepancyEventCount,
+    pendingEventCount: counts.pendingEventCount,
+    unverifiableEventCount: counts.unverifiableEventCount,
     periodDeltaUsd: reconciliation?.deltaUsd ?? null,
     periodReportedCostUsd: reconciliation?.reportedCostUsd ?? null,
     periodVerifiedCostUsd: reconciliation?.verifiedCostUsd ?? null,
     periodStatus: reconciliation?.status ?? null,
-    // An "unverifiable" badge must always carry its explanation, whichever way
-    // it was reached: provider billing visibility, an ambiguous period
-    // attribution (two active rows sharing a canonical provider key), or every
-    // generation id in the period exhausting its retries.
     unverifiableReason: !verifiable
       ? UNVERIFIABLE_REASONS[visibility] ?? null
       : reconciliation?.status === "unverifiable"
         ? "This period could not be attributed to a single provider record — more than one active provider shares this identity, so its pushed usage cannot be split between them."
-        : verifiedEventCount === 0 && unverifiableEventCount > 0
+        : verifiedEventCount === 0 && counts.unverifiableEventCount > 0
           ? "Every recorded call this period exhausted its verification retries — the provider could not confirm any of them."
           : null,
     checkedAt: reconciliation?.checkedAt ?? null,
   };
+}
+
+export async function getProviderComplianceSummary(
+  provider: { id: string; name: string; type: string },
+  now: Date = new Date()
+): Promise<ProviderComplianceSummary> {
+  const map = await getProviderComplianceSummariesBatch([provider], now);
+  return (
+    map.get(provider.id) ??
+    summarizeFromCounts(provider, emptyStatusCounts(), null)
+  );
+}
+
+/**
+ * Wave J: batched compliance for the providers list / dashboard.
+ *
+ * ONE groupBy across all providers (keyed by provider name + verificationStatus)
+ * + ONE findMany of current-period reconciliation rows, then fan out in memory.
+ * Avoids O(N) queries that would thrash SQLite on the dashboard load path.
+ */
+export async function getProviderComplianceSummariesBatch(
+  providers: readonly { id: string; name: string; type: string }[],
+  now: Date = new Date()
+): Promise<Map<string, ProviderComplianceSummary>> {
+  const out = new Map<string, ProviderComplianceSummary>();
+  if (providers.length === 0) return out;
+
+  const { periodStart, periodEnd } = monthBounds(now);
+  const providerIds = providers.map((p) => p.id);
+  // ExternalUsageEvent.provider is a free-text name; map name → provider rows
+  // (multiple rows may share a canonical name).
+  const nameToProviders = new Map<string, typeof providers[number][]>();
+  for (const provider of providers) {
+    const key = provider.name.trim().toLowerCase();
+    const list = nameToProviders.get(key) ?? [];
+    list.push(provider);
+    nameToProviders.set(key, list);
+  }
+  const names = [...nameToProviders.keys()];
+  // SQLite string comparisons are case-sensitive. Include both the
+  // canonicalized keys and the stored provider names so events recorded with
+  // custom capitalization remain visible to the in-memory case-insensitive
+  // fan-out below.
+  const providerNamesForQuery = [
+    ...new Set([...names, ...providers.map((provider) => provider.name.trim())]),
+  ];
+
+  const [statusGroups, reconciliations] = await Promise.all([
+    prisma.externalUsageEvent.groupBy({
+      by: ["provider", "verificationStatus"],
+      where: {
+        provider: { in: providerNamesForQuery },
+        providerRequestId: { not: null },
+        occurredAt: { gte: periodStart, lt: periodEnd },
+      },
+      _count: { _all: true },
+    }),
+    prisma.providerUsageReconciliation.findMany({
+      where: {
+        providerId: { in: providerIds },
+        periodStart,
+        periodEnd,
+        keyRef: "",
+      },
+      select: {
+        providerId: true,
+        status: true,
+        deltaUsd: true,
+        reportedCostUsd: true,
+        verifiedCostUsd: true,
+        checkedAt: true,
+      },
+    }),
+  ]);
+
+  const countsByProviderId = new Map<string, ReturnType<typeof emptyStatusCounts>>();
+  for (const provider of providers) {
+    countsByProviderId.set(provider.id, emptyStatusCounts());
+  }
+
+  for (const group of statusGroups) {
+    const matched = nameToProviders.get(group.provider.trim().toLowerCase()) ?? [];
+    // When multiple provider rows share a name, attribute the event counts to
+    // every row (same as prior per-provider name-keyed queries). Reconciliation
+    // rows remain id-scoped and disambiguate money-level state.
+    for (const provider of matched) {
+      const counts = countsByProviderId.get(provider.id) ?? emptyStatusCounts();
+      applyStatusGroup(counts, group.verificationStatus, group._count._all);
+      countsByProviderId.set(provider.id, counts);
+    }
+  }
+
+  const reconByProviderId = new Map(
+    reconciliations.map((row) => [row.providerId, row] as const)
+  );
+
+  for (const provider of providers) {
+    out.set(
+      provider.id,
+      summarizeFromCounts(
+        provider,
+        countsByProviderId.get(provider.id) ?? emptyStatusCounts(),
+        reconByProviderId.get(provider.id) ?? null
+      )
+    );
+  }
+  return out;
 }

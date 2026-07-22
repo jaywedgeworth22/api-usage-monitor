@@ -183,6 +183,16 @@ describe("getProviderComplianceSummary", () => {
     expect(summary.state).toBe("discrepancy");
   });
 
+  it("preserves exact-cased provider event matches in the batched query", async () => {
+    const provider = await seedProvider("OpenRouter");
+    await seedEvent("OpenRouter", "match");
+
+    const summary = await getProviderComplianceSummary(provider);
+
+    expect(summary.matchedEventCount).toBe(1);
+    expect(summary.verifiedEventCount).toBe(1);
+  });
+
   it("counts permanently-failed events in coverage instead of discounting them", async () => {
     // REGRESSION (P1): these are retry-exhausted verification FAILURES, not a
     // benign n/a bucket. Discounting them let a provider whose calls almost all
