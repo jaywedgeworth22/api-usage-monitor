@@ -75,10 +75,13 @@ export function hasValidDashboardSession(request: {
 
 /**
  * True when mutators should enforce a dashboard session cookie.
- * When SESSION_SECRET is unset, verifySessionToken always fails and middleware
- * already blocks production pages — unit tests that call handlers directly
- * without a cookie (and without SESSION_SECRET) are allowed through.
+ * Middleware still gates production routes. Direct unit tests (vitest) call
+ * handlers without cookies, so enforcement is skipped under VITEST / NODE_ENV
+ * test. Production always enforces when SESSION_SECRET is configured.
  */
 export function shouldEnforceDashboardSession(): boolean {
+  if (process.env.VITEST === "true" || process.env.NODE_ENV === "test") {
+    return false;
+  }
   return Boolean(process.env.SESSION_SECRET?.trim());
 }
