@@ -672,9 +672,11 @@ ensure_public_caddy_hostname() {
   elif [[ "${configured}" == *sslip.io* || "${configured}" == *132.226.90.164* ]]; then
     # Preserve any additional public SANs after the first host, but drop the
     # deleted IP-derived sslip label. Always ensure usage.jays.services leads.
+    # Host lists may be comma- and/or space-separated (historical host.env
+    # formats used both). Normalize either delimiter before filtering.
     rewritten="$(
       printf '%s\n' "${configured}" \
-        | tr ',' '\n' \
+        | tr ', ' '\n\n' \
         | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' \
         | awk -v public="${PUBLIC_HOST}" '
             BEGIN { print public }
