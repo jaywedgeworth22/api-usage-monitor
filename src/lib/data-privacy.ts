@@ -88,6 +88,12 @@ const SHARED_SAFE_FIELDS = new Set([
   "warnings",
   "note",
   "notes",
+  // Partial/poll metadata commonly written by adapters (timeout/retry paths).
+  "keyValidation",
+  "billing",
+  "providerPoll",
+  "providerField",
+  "partialFailure",
 ]);
 
 /** Provider-name (lowercase) → extra retained top-level keys beyond SHARED_SAFE. */

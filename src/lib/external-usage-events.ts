@@ -946,32 +946,45 @@ async function loadMonthToDateExternalCostMaterial(
   byProvider: Map<string, ProviderPushedCost>;
   attribution: ExternalCostAttributionRow[];
 }> {
+  // Under vitest, skip the process memo so mocked groupBy sequences and
+  // per-test SQLite fixtures never observe cross-call contamination. Production
+  // still memos so provider+project cold paths share one ~11s scan.
+  const memoEnabled = process.env.VITEST !== "true";
   const key = mtdScanKey(monthStart, rawCutoff);
   const nowMs = Date.now();
-  const hit = getMtdScanMemo<Map<string, ProviderPushedCost>, ExternalCostAttributionRow[]>();
-  if (hit && hit.key === key && hit.expiresAt > nowMs) {
-    return { byProvider: hit.byProvider, attribution: hit.attribution };
-  }
-
-  return withExclusiveExternalUsageCostAggregation(async () => {
-    const again = getMtdScanMemo<
+  if (memoEnabled) {
+    const hit = getMtdScanMemo<
       Map<string, ProviderPushedCost>,
       ExternalCostAttributionRow[]
     >();
-    if (again && again.key === key && again.expiresAt > Date.now()) {
-      return { byProvider: again.byProvider, attribution: again.attribution };
+    if (hit && hit.key === key && hit.expiresAt > nowMs) {
+      return { byProvider: hit.byProvider, attribution: hit.attribution };
+    }
+  }
+
+  return withExclusiveExternalUsageCostAggregation(async () => {
+    if (memoEnabled) {
+      const again = getMtdScanMemo<
+        Map<string, ProviderPushedCost>,
+        ExternalCostAttributionRow[]
+      >();
+      if (again && again.key === key && again.expiresAt > Date.now()) {
+        return { byProvider: again.byProvider, attribution: again.attribution };
+      }
     }
 
     const material = await loadMonthToDateExternalCostMaterialUnserialized(
       monthStart,
       rawCutoff
     );
-    setMtdScanMemo({
-      key,
-      byProvider: material.byProvider,
-      attribution: material.attribution,
-      expiresAt: Date.now() + MTD_SCAN_MEMO_TTL_MS,
-    });
+    if (memoEnabled) {
+      setMtdScanMemo({
+        key,
+        byProvider: material.byProvider,
+        attribution: material.attribution,
+        expiresAt: Date.now() + MTD_SCAN_MEMO_TTL_MS,
+      });
+    }
     return material;
   });
 }
