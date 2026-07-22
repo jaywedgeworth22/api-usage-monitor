@@ -16,6 +16,7 @@ const read = (relativePath) =>
   readFileSync(path.join(repoRoot, relativePath), "utf8");
 
 const workflow = read(".github/workflows/oracle-production-deploy.yml");
+const uptimeWorkflow = read(".github/workflows/uptime-monitor.yml");
 const compose = read("deploy/oracle/compose.production.yaml");
 const composeDev = read("deploy/oracle/compose.yaml");
 const caddy = read("deploy/oracle/Caddyfile");
@@ -51,8 +52,12 @@ requireText(workflow, /workflow_run\.conclusion == 'success'/, "workflow must re
 requireText(workflow, /\.revision == \$revision/, "workflow must verify the exact production revision");
 requireText(workflow, /cancel-in-progress:\s*true/, "stale receipt observers should be cancelled");
 requireText(workflow, /seq 1 720/, "observer must allow the independent CodeQL and host build window");
+requireText(workflow, /ORACLE_ORIGIN_IPV4:\s*"141\.148\.182\.224"/, "observer must pin the reserved Oracle origin");
+requireText(workflow, /--resolve "usage\.jays\.services:443:\$\{ORACLE_ORIGIN_IPV4\}"/, "observer must bypass Cloudflare bot challenges without weakening TLS");
 forbidText(workflow, /secrets\./, "the observer workflow must not hold a production secret");
 forbidText(workflow, /ssh-keyscan|StrictHostKeyChecking=no/, "unsafe SSH bootstrap is forbidden");
+requireText(uptimeWorkflow, /ORACLE_ORIGIN_IPV4:\s*"141\.148\.182\.224"/, "GitHub uptime must pin the reserved Oracle origin");
+requireText(uptimeWorkflow, /--resolve "usage\.jays\.services:443:\$\{ORACLE_ORIGIN_IPV4\}"/, "GitHub uptime must avoid Cloudflare false failures while retaining TLS validation");
 requireText(ci, /npm run test:oracle-deploy/, "hosted CI must exercise deployment contracts");
 
 // Production uses the Cloudflare-proxied public hostname. The old sslip.io

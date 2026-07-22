@@ -47,8 +47,13 @@ Oracle polls GitHub once per minute and deploys only when all of these are true:
 
 This pull model intentionally stores no production SSH key or cloud credential
 in GitHub. `.github/workflows/oracle-production-deploy.yml` is an independent
-public receipt: after exact-main CI succeeds, it waits for production to report
-that exact revision and fails visibly if the deployment does not arrive.
+receipt: after exact-main CI succeeds, it uses `curl --resolve` with the pinned
+reserved Oracle IP while retaining `usage.jays.services` for SNI/certificate
+validation, waits for production to report that exact revision, and fails
+visibly if the deployment does not arrive. This direct-origin path avoids
+Cloudflare's HTTP 403 challenge for GitHub-hosted runner IPs. The root deploy
+transaction still samples the Cloudflare-proxied public URL, and UptimeRobot
+independently monitors both public health and strict readiness.
 
 The root-owned installation is separate from every fetched release:
 
