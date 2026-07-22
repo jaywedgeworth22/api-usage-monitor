@@ -638,6 +638,68 @@ write_host_revision() {
   fi
 }
 
+# Production Caddy receives USAGE_MONITOR_HOSTNAME from host.env. Old bootstrap
+# copies still encode the deleted sslip.io IP hostname; refuse/migrate those
+# before cutover so ACME cannot renew the wrong certificate.
+ensure_public_caddy_hostname() {
+  local configured rewritten temporary
+  configured="$(read_env_value "${HOST_ENV}" USAGE_MONITOR_HOSTNAME)"
+  if [[ -z "${configured}" ]]; then
+    log "USAGE_MONITOR_HOSTNAME unset; writing ${PUBLIC_HOST}."
+    temporary="$(mktemp /etc/usage-monitor/.host.env.XXXXXX)" || return 1
+    {
+      printf 'USAGE_MONITOR_HOSTNAME=%s\n' "${PUBLIC_HOST}"
+      awk -F= '$1 != "USAGE_MONITOR_HOSTNAME" { print }' "${HOST_ENV}"
+    } >"${temporary}" || {
+      unlink "${temporary}" 2>/dev/null || true
+      return 1
+    }
+    chown root:root "${temporary}" && chmod 0600 "${temporary}" && mv "${temporary}" "${HOST_ENV}"
+    return 0
+  fi
+  if [[ "${configured}" == *sslip.io* || "${configured}" == *132.226.90.164* ]]; then
+    # Preserve any additional public SANs after the first host, but drop the
+    # deleted IP-derived sslip label. Always ensure usage.jays.services leads.
+    rewritten="$(
+      printf '%s\n' "${configured}" \
+        | tr ',' '\n' \
+        | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' \
+        | awk -v public="${PUBLIC_HOST}" '
+            BEGIN { print public }
+            $0 != "" && $0 != public && $0 !~ /sslip\.io/ && $0 !~ /132\.226\.90\.164/ { print }
+          ' \
+        | paste -sd, -
+    )"
+    log "migrating stale USAGE_MONITOR_HOSTNAME away from deleted IP sslip labels."
+    temporary="$(mktemp /etc/usage-monitor/.host.env.XXXXXX)" || return 1
+    if ! awk -F= -v host="${rewritten}" '
+      BEGIN { replaced = 0 }
+      $1 == "USAGE_MONITOR_HOSTNAME" {
+        print "USAGE_MONITOR_HOSTNAME=" host
+        replaced = 1
+        next
+      }
+      { print }
+      END {
+        if (!replaced) print "USAGE_MONITOR_HOSTNAME=" host
+      }
+    ' "${HOST_ENV}" >"${temporary}"; then
+      unlink "${temporary}" 2>/dev/null || true
+      return 1
+    fi
+    if ! chown root:root "${temporary}" || \
+      ! chmod 0600 "${temporary}" || \
+      ! mv "${temporary}" "${HOST_ENV}"; then
+      unlink "${temporary}" 2>/dev/null || true
+      return 1
+    fi
+    return 0
+  fi
+  if [[ "${configured}" != *"${PUBLIC_HOST}"* ]]; then
+    die "USAGE_MONITOR_HOSTNAME must include ${PUBLIC_HOST} (got a non-public value)"
+  fi
+}
+
 write_receipt() {
   local status="$1"
   local active_revision="$2"
@@ -792,6 +854,7 @@ require_secure_root_file "/usr/local/sbin/usage-monitor-deploy" 755
 
 PREVIOUS_SHA="$(read_env_value "${HOST_ENV}" USAGE_MONITOR_REVISION)"
 [[ "${PREVIOUS_SHA}" =~ ^[0-9a-f]{40}$ ]] || die "host.env has no valid current revision"
+ensure_public_caddy_hostname || die "USAGE_MONITOR_HOSTNAME preflight failed"
 
 require_current_main "${TARGET_SHA}"
 set +e

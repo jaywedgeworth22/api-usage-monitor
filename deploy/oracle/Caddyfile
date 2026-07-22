@@ -3,9 +3,14 @@
   reverse_proxy app:3000
 
   # Cloudflare terminates public TLS for the proxied hostname, so the origin
-  # must use the ACME HTTP-01 challenge instead of TLS-ALPN-01.
+  # must use the ACME HTTP-01 challenge instead of TLS-ALPN-01. Keep both of
+  # Caddy's default Automatic HTTPS issuers so renewal can fall back from
+  # Let's Encrypt to ZeroSSL when one CA is rate-limited or unavailable.
   tls {
     issuer acme {
+      disable_tlsalpn_challenge
+    }
+    issuer zerossl {
       disable_tlsalpn_challenge
     }
   }
