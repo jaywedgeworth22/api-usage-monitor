@@ -77,13 +77,13 @@
 		764AB0422F0A2B31B88D25D2 /* UsageMonitorWidget.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = UsageMonitorWidget.entitlements; sourceTree = "<group>"; };
 		792B1B2FC84FE1924C7CD1A6 /* WidgetPresentation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WidgetPresentation.swift; sourceTree = "<group>"; };
 		8A4F16263E10D7A4C46F8FC1 /* UsageMonitorWidgetBundle.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UsageMonitorWidgetBundle.swift; sourceTree = "<group>"; };
-		9EB62C1B4DB2DCA2D9888180 /* UsageMonitorKit */ = {isa = PBXFileReference; lastKnownFileType = folder; path = UsageMonitorKit; sourceTree = SOURCE_ROOT; };
+		9EB62C1B4DB2DCA2D9888180 /* UsageMonitorKit */ = {isa = PBXFileReference; lastKnownFileType = folder; name = UsageMonitorKit; path = UsageMonitorKit; sourceTree = SOURCE_ROOT; };
 		C81B7D14B31665FDA6183BF8 /* OfflineCacheSnapshotSink.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OfflineCacheSnapshotSink.swift; sourceTree = "<group>"; };
 		C8C3B26815D2E6893A2F0BD4 /* AppSmokeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppSmokeTests.swift; sourceTree = "<group>"; };
 		CCA5B2DBBB9F3790B7052B0B /* UsageMonitorTests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = UsageMonitorTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		DA93AC5DCCD01FBB2A560D25 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		F1AEB8CDA324975C39D57883 /* UsageMonitorWidgetExtension.appex */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = "wrapper.app-extension"; path = UsageMonitorWidgetExtension.appex; sourceTree = BUILT_PRODUCTS_DIR; };
-		FCD5897C4158EE40F3B5B676 /* UsageMonitor.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = UsageMonitor.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		FCD5897C4158EE40F3B5B676 /* UsageMonitor.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = UsageMonitor.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -160,13 +160,6 @@
 			path = UsageMonitorWidget;
 			sourceTree = "<group>";
 		};
-		4673699E50C0A15F1ECE8F44 /* Fixtures */ = {
-			isa = PBXGroup;
-			children = (
-			);
-			path = Fixtures;
-			sourceTree = "<group>";
-		};
 		741ADEEA778CCA1A1AC74B76 /* Packages */ = {
 			isa = PBXGroup;
 			children = (
@@ -198,7 +191,6 @@
 		C2AEEA90F6B73F78B1909146 /* UsageMonitorTests */ = {
 			isa = PBXGroup;
 			children = (
-				4673699E50C0A15F1ECE8F44 /* Fixtures */,
 				C8C3B26815D2E6893A2F0BD4 /* AppSmokeTests.swift */,
 			);
 			path = UsageMonitorTests;
@@ -329,6 +321,7 @@
 						ProvisioningStyle = Automatic;
 					};
 					5889469B5CB3C6B159E86759 = {
+						DevelopmentTeam = CC8UTF7ATG;
 						ProvisioningStyle = Automatic;
 					};
 					697B0B4631A2FF72678DE8B3 = {
