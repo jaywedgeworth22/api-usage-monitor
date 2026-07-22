@@ -39,6 +39,11 @@ jobs:
     env:
       TARGET_SHA: ${{ github.event.workflow_run.head_sha || inputs.revision || github.sha }}
       GH_TOKEN: ${{ github.token }}
+      # Cloudflare's automated-traffic protection returns 403 to GitHub-hosted
+      # runners. The host transaction separately verifies the public proxied
+      # URL; this independent observer pins the reserved Oracle origin while
+      # retaining the production hostname for SNI and certificate validation.
+      ORACLE_ORIGIN_IPV4: "141.148.182.224"
     steps:
       - name: Validate exact main revision
         shell: bash
@@ -85,7 +90,9 @@ jobs:
               fi
             fi
 
-            if body=$(curl -fsS --max-time 15 "$ready_url" 2>/dev/null) &&
+            if body=$(curl -fsS --max-time 15 \
+              --resolve "usage.jays.services:443:${ORACLE_ORIGIN_IPV4}" \
+              "$ready_url" 2>/dev/null) &&
               jq -e --arg revision "$TARGET_SHA" '
                 .status == "ready" and
                 .revision == $revision and
@@ -107,7 +114,8 @@ jobs:
                 echo '- Database: healthy'
                 echo '- Garage backup: required and active'
                 echo '- Scheduler: required with a successful tick'
-                echo '- Public TLS/readiness: healthy'
+                echo '- Oracle origin TLS/readiness: healthy'
+                echo '- Public proxied readiness: verified separately by the host transaction and UptimeRobot'
               } >> "$GITHUB_STEP_SUMMARY"
               exit 0
             fi
