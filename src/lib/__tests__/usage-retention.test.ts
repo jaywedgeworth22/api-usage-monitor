@@ -14,7 +14,12 @@ const prismaMock = vi.hoisted(() => {
       update: vi.fn(),
       delete: vi.fn(),
     },
-    externalUsageEventTombstone: { findMany: vi.fn(), upsert: vi.fn(), deleteMany: vi.fn() },
+    externalUsageEventTombstone: {
+      findMany: vi.fn(),
+      upsert: vi.fn(),
+      deleteMany: vi.fn(),
+      count: vi.fn(),
+    },
     $executeRawUnsafe: vi.fn(),
   };
   client.$transaction = vi.fn(async (fn: (tx: any) => Promise<any>) => {
@@ -48,6 +53,7 @@ function resetEnv() {
   delete process.env.EXTERNAL_USAGE_EVENT_TOMBSTONE_RETENTION_DAYS;
   delete process.env.DATA_RETENTION_BATCH_SIZE;
   delete process.env.DATA_RETENTION_ENABLE_VACUUM;
+  delete process.env.DATA_RETENTION_DISABLE_ANALYZE;
   delete process.env.DATA_RETENTION_DISABLE_VACUUM;
 }
 
@@ -58,6 +64,7 @@ describe("usage-retention wrapper", () => {
     prismaMock.__transactionDepth = 0;
     // Wave I / E6 rehash runs first in retention; empty by default.
     prismaMock.externalUsageEventDailyRollup.findMany.mockResolvedValue([]);
+    prismaMock.externalUsageEventTombstone.count.mockResolvedValue(0);
   });
 
   afterEach(() => {
@@ -240,8 +247,12 @@ describe("usage-retention wrapper", () => {
       tombstonesWritten: 2,
     });
     expect(result.tombstonesPruned).toBe(0);
+    expect(result.tombstoneCount).toBe(0);
     expect(result.compacted).toBe(false);
     expect(result.compactionError).toBeUndefined();
+    // Wave K / E14: ANALYZE runs after prune by default (no exclusive VACUUM).
+    expect(result.analyzed).toBe(true);
+    expect(prismaMock.$executeRawUnsafe).toHaveBeenCalledWith("ANALYZE");
 
     expect(prismaMock.usageSnapshot.findMany).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -275,18 +286,20 @@ describe("usage-retention wrapper", () => {
     expect(prismaMock.externalUsageEvent.deleteMany).toHaveBeenCalledWith({
       where: { id: { in: ["evt-1", "evt-2"] } },
     });
-    expect(prismaMock.$executeRawUnsafe).not.toHaveBeenCalled();
 
     process.env.DATA_RETENTION_ENABLE_VACUUM = "true";
+    prismaMock.$executeRawUnsafe.mockClear();
     const optedInResult = await runUsageRetention(
       new Date("2026-07-04T12:00:00.000Z")
     );
 
     expect(optedInResult.compacted).toBe(true);
+    expect(optedInResult.analyzed).toBe(true);
+    expect(prismaMock.$executeRawUnsafe).toHaveBeenNthCalledWith(1, "ANALYZE");
     expect(prismaMock.$executeRawUnsafe).toHaveBeenNthCalledWith(
-      1,
+      2,
       "PRAGMA wal_checkpoint(TRUNCATE)"
     );
-    expect(prismaMock.$executeRawUnsafe).toHaveBeenNthCalledWith(2, "VACUUM");
+    expect(prismaMock.$executeRawUnsafe).toHaveBeenNthCalledWith(3, "VACUUM");
   });
 });

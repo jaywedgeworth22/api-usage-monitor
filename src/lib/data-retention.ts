@@ -110,9 +110,14 @@ export interface DataRetentionResult {
   tombstoneRetentionDays: number;
   usageSnapshots: DataRetentionTableResult;
   externalUsageEvents: DataRetentionTableResult & { tombstonesWritten: number };
+  /** Tombstones are retained permanently; this is the live table size (Wave K / E14). */
+  tombstoneCount: number;
   tombstonesPruned: number;
   compacted: boolean;
   compactionError?: string;
+  /** True when ANALYZE ran after prune to refresh planner stats (no exclusive rewrite). */
+  analyzed: boolean;
+  analyzeError?: string;
 }
 
 export interface ScheduledRetentionSkipped {
@@ -262,6 +267,17 @@ export function isAutomaticVacuumEnabled(
     enabledFlag(env.DATA_RETENTION_ENABLE_VACUUM) &&
     !enabledFlag(env.DATA_RETENTION_DISABLE_VACUUM)
   );
+}
+
+/**
+ * Wave K / E14: ANALYZE updates SQLite planner stats without the exclusive
+ * full-file rewrite of VACUUM. Default-on after prune; operators can disable
+ * with DATA_RETENTION_DISABLE_ANALYZE=true.
+ */
+export function isAutomaticAnalyzeEnabled(
+  env: Readonly<Record<string, string | undefined>> = process.env
+): boolean {
+  return !enabledFlag(env.DATA_RETENTION_DISABLE_ANALYZE);
 }
 
 function groupHash(parts: Array<string | null>): string {
@@ -931,7 +947,10 @@ export async function runDataRetentionMaintenance(now = new Date()): Promise<Dat
   // consumed. Expiring one permits an arbitrarily late producer retry to be
   // inserted as a raw row and counted a second time. Keep them permanently;
   // the legacy retention setting remains in the result for API compatibility.
+  // Wave K / E14: surface growth via count so operators can size disks without
+  // silently expiring idempotency proof.
   const tombstonesPruned = 0;
+  const tombstoneCount = await prisma.externalUsageEventTombstone.count();
 
   // OtlpMetricState is intentionally not age-pruned either. OTLP cumulative
   // sums have no end-of-series signal; an exporter can resume an old series,
@@ -940,6 +959,19 @@ export async function runDataRetentionMaintenance(now = new Date()): Promise<Dat
   const prunedRows = usageSnapshots.pruned + externalUsageEvents.pruned;
   let compacted = false;
   let compactionError: string | undefined;
+  let analyzed = false;
+  let analyzeError: string | undefined;
+  if (prunedRows > 0 && isAutomaticAnalyzeEnabled()) {
+    try {
+      await withInternalUsageWriteAdmission(async () => {
+        await prisma.$executeRawUnsafe("ANALYZE");
+      });
+      analyzed = true;
+    } catch (error) {
+      analyzeError =
+        error instanceof Error ? error.message : "SQLite ANALYZE failed";
+    }
+  }
   if (prunedRows > 0 && isAutomaticVacuumEnabled()) {
     try {
       await withInternalUsageWriteAdmission(async () => {
@@ -960,9 +992,12 @@ export async function runDataRetentionMaintenance(now = new Date()): Promise<Dat
     tombstoneRetentionDays,
     usageSnapshots,
     externalUsageEvents,
+    tombstoneCount,
     tombstonesPruned,
     compacted,
     compactionError,
+    analyzed,
+    analyzeError,
   };
 }
 

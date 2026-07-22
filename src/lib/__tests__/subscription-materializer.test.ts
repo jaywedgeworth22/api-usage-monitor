@@ -1429,4 +1429,46 @@ describe("materializeDueSubscriptions + project attribution (integration)", () =
     expect(updated.currentPeriodStart).toBe("2026-07-01T00:00:00.000Z");
     expect(updated.lastChargedPeriodStart).toBe("2026-07-01T00:00:00.000Z");
   });
+
+  it("pauses external-managed rows with ambiguous mid-period windows (Wave K / E13)", async () => {
+    const provider = await prisma.provider.create({
+      data: {
+        name: "cloudflare-ambiguous",
+        displayName: "Cloudflare Ambiguous",
+        type: "builtin",
+        refreshIntervalMin: 60,
+      },
+    });
+    const subscription = await createSubscription(provider.id, {
+      status: "active",
+      autoRenew: false,
+      externalBillingManaged: true,
+      externalBillingSource: "cloudflare-subscriptions",
+      externalBillingId: "workers-paid",
+      startDate: new Date("2026-07-01T00:00:00Z"),
+      currentPeriodStart: new Date("2026-07-01T00:00:00Z"),
+      // 10-day window is not a monthly cadence → ambiguous.
+      nextRenewalAt: new Date("2026-07-11T00:00:00Z"),
+      lastChargedPeriodStart: null,
+    });
+
+    const result = await materializeDueSubscriptions(NOW);
+    expect(result.ambiguousPaused).toBe(1);
+    expect(result.charged).toBe(0);
+    expect(result.eventsWritten).toBe(0);
+
+    const row = await prisma.subscription.findUniqueOrThrow({
+      where: { id: subscription.id },
+    });
+    expect(row.status).toBe("paused");
+    expect(row.autoRenew).toBe(false);
+    expect(
+      await prisma.externalUsageEvent.count({
+        where: {
+          sourceApp: "subscription",
+          service: subscription.name,
+        },
+      })
+    ).toBe(0);
+  });
 });

@@ -24,6 +24,19 @@ export async function register() {
   );
   await deactivateDecommissionedBuiltInProviders();
 
+  // Wave K / C10: production should set a distinct USAGE_READ_TOKEN so a
+  // compromised read consumer cannot also forge ingest. resolveUsageReadToken
+  // already denies the ingest fallback in production; surface a boot-time
+  // warning when the dedicated token is missing.
+  if (
+    process.env.NODE_ENV === "production" &&
+    !process.env.USAGE_READ_TOKEN?.trim()
+  ) {
+    console.warn(
+      "[auth] USAGE_READ_TOKEN is unset in production — GET /api/budget-status and dual-auth subscriptions GET will 503 until it is set (ingest fallback is denied in production)"
+    );
+  }
+
   // NOTE: an earlier revision warmed the budget-status SWR caches here at
   // boot. It was removed after it crash-looped production: warming
   // computeProjectBudgetStatus runs its internal Promise.all
