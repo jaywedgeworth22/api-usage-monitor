@@ -74,6 +74,19 @@ describe("parseSubscriptionCreateInput — knobEnv", () => {
     );
   });
 
+  it("rejects prototype-pollution and non-env-safe knob names (CodeQL #1)", () => {
+    // Object-literal `__proto__` does not create an enumerable own key; use JSON.
+    expect(() =>
+      parseSubscriptionCreateInput({
+        ...baseBody,
+        knobEnv: JSON.parse('{"__proto__":"x"}') as Record<string, string>,
+      })
+    ).toThrowError(/safe env-var name/);
+    expect(() =>
+      parseSubscriptionCreateInput({ ...baseBody, knobEnv: { "evil-key": "x" } })
+    ).toThrowError(/safe env-var name/);
+  });
+
   it("rejects a non-object primitive", () => {
     expect(() => parseSubscriptionCreateInput({ ...baseBody, knobEnv: "nope" })).toThrowError(
       /knobEnv must be a JSON object/
