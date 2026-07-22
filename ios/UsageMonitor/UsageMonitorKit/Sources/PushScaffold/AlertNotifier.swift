@@ -156,7 +156,13 @@ public enum AlertNotifier {
         let previous = defaults.string(forKey: activeScopeKey)
         guard previous != scopeID else { return }
         defaults.set(scopeID, forKey: activeScopeKey)
-        await accountDidChange(from: previous)
+        if let previous {
+            await accountDidChange(from: previous)
+        } else if scopeID != nil {
+            // First activation after upgrading from the unscoped v1 scheme:
+            // remove requests whose identifiers cannot be assigned safely.
+            await PushScaffold.removeAllAlertNotifications()
+        }
     }
 
     private static func scopedHistoryKey(_ accountScopeID: String) -> String {

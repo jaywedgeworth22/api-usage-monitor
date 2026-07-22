@@ -28,7 +28,8 @@ document.addEventListener('DOMContentLoaded', () => {
       const parsed = new URL(trimmed);
       const loopback = parsed.hostname === 'localhost'
         || parsed.hostname === '127.0.0.1'
-        || parsed.hostname === '::1';
+        || parsed.hostname === '::1'
+        || parsed.hostname === '[::1]';
       if (parsed.protocol !== 'https:' && !(parsed.protocol === 'http:' && loopback)) return '';
       return (parsed.origin + parsed.pathname).replace(/\/+$/, '');
     } catch {

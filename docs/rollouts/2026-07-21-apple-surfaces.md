@@ -29,6 +29,9 @@ resolved-alert history are scoped by a SHA-256 digest of canonical monitor host
 plus the Keychain-backed API credential. The raw credential is never persisted
 to defaults or notification identifiers. Switching or disconnecting accounts
 removes pending and delivered notifications from the prior account.
+The app-owned token-store wrapper emits only a metadata-free lifecycle signal,
+so foreground token replacement/removal activates cleanup immediately without
+placing the credential in notifications or editing the Settings feature.
 
 Only successfully scheduled notifications enter dedupe history. Cleared alerts
 are forgotten so a later recurrence can notify, while scheduling failures remain
@@ -49,7 +52,7 @@ Verification on Apple Silicon with Xcode 27 beta:
 - UsageMonitorKit iOS test-target build: pass.
 - Safari iOS simulator build: pass.
 - Safari macOS build: pass.
-- Extension containment tests: 8/8 pass.
+- Extension containment tests: 9/9 pass.
 - ESLint and TypeScript typecheck: pass.
 
 No iOS Simulator runtime was installed on the verification host, so XCTest

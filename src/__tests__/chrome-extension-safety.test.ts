@@ -94,6 +94,11 @@ describe("chrome-extension credential-scraping containment", () => {
     }
   });
 
+  it("keeps documented IPv6 loopback development available", () => {
+    const popup = readFileSync(path.join(extDir, "popup", "popup.js"), "utf8");
+    expect(popup).toContain("parsed.hostname === '[::1]'");
+  });
+
   it("Safari build resources carry no scraping payload", () => {
     // Safari's Xcode project references chrome-extension/{manifest,popup}
     // as build resources, so it inherits that executable payload. It must also carry

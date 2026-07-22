@@ -197,6 +197,21 @@ public enum PushScaffold {
             .filter { $0.hasPrefix(prefix) }
         center.removeDeliveredNotifications(withIdentifiers: delivered)
     }
+
+    /// Upgrade cleanup for notification identifiers created before account
+    /// scoping existed. Used only when no prior active scope is recorded.
+    public static func removeAllAlertNotifications() async {
+        let center = UNUserNotificationCenter.current()
+        let pending = await center.pendingNotificationRequests()
+            .map(\.identifier)
+            .filter { $0.hasPrefix(PushIdentifiers.localAlertPrefix) }
+        center.removePendingNotificationRequests(withIdentifiers: pending)
+
+        let delivered = await center.deliveredNotifications()
+            .map { $0.request.identifier }
+            .filter { $0.hasPrefix(PushIdentifiers.localAlertPrefix) }
+        center.removeDeliveredNotifications(withIdentifiers: delivered)
+    }
 }
 
 private extension AlertSeverity {

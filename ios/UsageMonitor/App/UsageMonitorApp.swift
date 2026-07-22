@@ -38,7 +38,10 @@ struct UsageMonitorApp: App {
         // The shared BudgetStore transparently persists every successful
         // response to disk (offline-first) and to the widget app group.
         _environment = State(
-            initialValue: AppEnvironment(snapshotSink: OfflineCacheSnapshotSink())
+            initialValue: AppEnvironment(
+                tokenStore: AccountChangeNotifyingTokenStore(),
+                snapshotSink: OfflineCacheSnapshotSink()
+            )
         )
     }
 
@@ -78,18 +81,32 @@ struct UsageMonitorApp: App {
                 let granted = await PushScaffold.requestAuthorization()
                 if granted { PushScaffold.registerForRemoteNotifications() }
             }
+            .task {
+                for await _ in NotificationCenter.default.notifications(
+                    named: .usageMonitorAccountDidChange
+                ) {
+                    await activateCurrentAccountScope()
+                }
+            }
+            .onChange(of: environment.settings.baseHost) { _, _ in
+                Task { await activateCurrentAccountScope() }
+            }
         }
         .onChange(of: scenePhase) { _, phase in
             Task {
-                await AlertNotifier.activateAccountScope(
-                    AlertNotifier.currentAccountScopeID(hostOverride: environment.settings.baseHost)
-                )
+                await activateCurrentAccountScope()
             }
             // Queue the next background budget refresh when leaving foreground.
             if phase == .background {
                 BackgroundRefreshManager.shared.schedule()
             }
         }
+    }
+
+    private func activateCurrentAccountScope() async {
+        await AlertNotifier.activateAccountScope(
+            AlertNotifier.currentAccountScopeID(hostOverride: environment.settings.baseHost)
+        )
     }
 
     /// Map a widget/app deep-link URL (`usagemonitor://dashboard`) to a tab.
