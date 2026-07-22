@@ -18,7 +18,9 @@ USAGE_MONITOR_REVISION=<exact-main-sha>
 `usage.jays.services` is the public Cloudflare-proxied hostname. Caddy keeps
 ports 80 and 443 reachable for its public ACME certificate and disables the
 TLS-ALPN challenge because Cloudflare terminates public TLS; renewal therefore
-uses HTTP-01. Do not restore the deleted IP-derived fallback.
+uses HTTP-01. Do not restore the deleted IP-derived fallback. If a direct-origin
+alias is also configured, separate the Caddy site addresses with spaces, not
+commas: `USAGE_MONITOR_HOSTNAME="usage-oracle-origin.jays.services usage.jays.services"`.
 
 ## Automatic production deployment
 
