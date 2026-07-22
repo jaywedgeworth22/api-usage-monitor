@@ -10,6 +10,9 @@ const read = (relativePath) =>
 
 const workflow = read(".github/workflows/oracle-production-deploy.yml");
 const compose = read("deploy/oracle/compose.production.yaml");
+const composeDev = read("deploy/oracle/compose.yaml");
+const caddy = read("deploy/oracle/Caddyfile");
+const oracleReadme = read("deploy/oracle/README.md");
 const deploy = read("deploy/oracle/deploy-production.sh");
 const poller = read("deploy/oracle/auto-deploy.sh");
 const service = read("deploy/oracle/usage-monitor.service");
@@ -40,6 +43,18 @@ requireText(workflow, /seq 1 720/, "observer must allow the independent CodeQL a
 forbidText(workflow, /secrets\./, "the observer workflow must not hold a production secret");
 forbidText(workflow, /ssh-keyscan|StrictHostKeyChecking=no/, "unsafe SSH bootstrap is forbidden");
 requireText(ci, /npm run test:oracle-deploy/, "hosted CI must exercise deployment contracts");
+
+// Production uses the Cloudflare-proxied public hostname. The old sslip.io
+// fallback encoded a deleted ephemeral Oracle address and could cause a fresh
+// bootstrap to request the wrong certificate. Cloudflare terminates public TLS,
+// so Caddy must leave HTTP-01 enabled and disable TLS-ALPN-01.
+requireText(caddy, /^\{\$USAGE_MONITOR_HOSTNAME:usage\.jays\.services\}/m, "Caddy must default to the public hostname");
+requireText(caddy, /disable_tlsalpn_challenge/, "Caddy must use HTTP-01 behind the proxied hostname");
+forbidText(caddy, /sslip\.io/, "Caddy must not retain the deleted IP-derived fallback");
+requireText(composeDev, /USAGE_MONITOR_HOSTNAME:\s*\$\{USAGE_MONITOR_HOSTNAME:-usage\.jays\.services\}/, "Compose must default to the public hostname");
+forbidText(composeDev, /sslip\.io/, "Compose must not retain the deleted IP-derived fallback");
+requireText(oracleReadme, /USAGE_MONITOR_HOSTNAME=usage\.jays\.services/, "Oracle docs must name the public hostname");
+forbidText(oracleReadme, /sslip\.io/, "Oracle docs must not retain the deleted IP-derived fallback");
 
 // The root-owned production Compose policy must never build or accept new host
 // mounts from a fetched revision.

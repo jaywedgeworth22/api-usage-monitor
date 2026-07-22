@@ -1,6 +1,14 @@
-{$USAGE_MONITOR_HOSTNAME:usage-oracle.132.226.90.164.sslip.io} {
+{$USAGE_MONITOR_HOSTNAME:usage.jays.services} {
   encode zstd gzip
   reverse_proxy app:3000
+
+  # Cloudflare terminates public TLS for the proxied hostname, so the origin
+  # must use the ACME HTTP-01 challenge instead of TLS-ALPN-01.
+  tls {
+    issuer acme {
+      disable_tlsalpn_challenge
+    }
+  }
 
   header {
     Strict-Transport-Security "max-age=31536000; includeSubDomains"

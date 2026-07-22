@@ -11,9 +11,14 @@ Runtime secrets live only in `/etc/usage-monitor/usage-monitor.env` (mode 0600).
 Non-secret host settings live in `/etc/usage-monitor/host.env`:
 
 ```dotenv
-USAGE_MONITOR_HOSTNAME=usage-oracle.132.226.90.164.sslip.io
+USAGE_MONITOR_HOSTNAME=usage.jays.services
 USAGE_MONITOR_REVISION=<exact-main-sha>
 ```
+
+`usage.jays.services` is the public Cloudflare-proxied hostname. Caddy keeps
+ports 80 and 443 reachable for its public ACME certificate and disables the
+TLS-ALPN challenge because Cloudflare terminates public TLS; renewal therefore
+uses HTTP-01. Do not restore the deleted IP-derived fallback.
 
 ## Automatic production deployment
 
