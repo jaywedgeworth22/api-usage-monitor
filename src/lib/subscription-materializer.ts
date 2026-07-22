@@ -362,9 +362,11 @@ export async function materializeDueSubscriptions(
   for (const observedSubscription of subscriptions) {
     let subscription: DueSubscription = observedSubscription;
 
-    // Wave K / E13: external-managed rows with a non-cadence period window are
+    // Wave K / E13: external-managed rows with a non-exact period window are
     // mid-period / provider-skew evidence — pause and skip inventing charges
     // until reconcile rewrites exact bounds (never invent later terms).
+    // UTC-midnight calendar exception is only for the exact Cloudflare legacy
+    // handoff subscription id (env-gated), never general managed rows.
     if (subscription.externalBillingManaged) {
       const interval: SubscriptionInterval = isSubscriptionInterval(
         subscription.interval
@@ -372,12 +374,17 @@ export async function materializeDueSubscriptions(
         ? subscription.interval
         : "monthly";
       const intervalCount = Math.max(1, Math.trunc(subscription.intervalCount));
+      const legacyHandoffId =
+        process.env.CLOUDFLARE_LEGACY_HANDOFF_SUBSCRIPTION_ID?.trim() ?? "";
+      const allowUtcMidnightCalendarException =
+        legacyHandoffId.length > 0 && legacyHandoffId === subscription.id;
       if (
         isAmbiguousSubscriptionPeriodWindow(
           subscription.currentPeriodStart,
           subscription.nextRenewalAt,
           interval,
-          intervalCount
+          intervalCount,
+          { allowUtcMidnightCalendarException }
         )
       ) {
         await prisma.subscription.update({

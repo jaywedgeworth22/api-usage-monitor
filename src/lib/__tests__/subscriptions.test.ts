@@ -182,16 +182,21 @@ describe("isAmbiguousSubscriptionPeriodWindow (Wave K / E13)", () => {
     );
   });
 
-  it("accepts UTC-midnight calendar renewal on the expected day", () => {
+  it("rejects UTC-midnight calendar renewal unless the CF exception is opted in", () => {
     const start = new Date("2026-07-16T14:22:00.000Z");
-    // Expected end is ~Aug 16 14:22; midnight on Aug 16 is the CF exception.
+    // Expected end is ~Aug 16 14:22; midnight on Aug 16 is non-exact without opt-in.
     const end = new Date("2026-08-16T00:00:00.000Z");
     expect(isAmbiguousSubscriptionPeriodWindow(start, end, "monthly", 1)).toBe(
-      false
+      true
     );
+    expect(
+      isAmbiguousSubscriptionPeriodWindow(start, end, "monthly", 1, {
+        allowUtcMidnightCalendarException: true,
+      })
+    ).toBe(false);
   });
 
-  it("flags a mid-period window that is neither cadence nor midnight exception", () => {
+  it("flags a mid-period window that is not exact cadence", () => {
     const start = new Date("2026-07-01T00:00:00.000Z");
     const end = new Date("2026-07-10T00:00:00.000Z"); // 9 days — not monthly
     expect(isAmbiguousSubscriptionPeriodWindow(start, end, "monthly", 1)).toBe(

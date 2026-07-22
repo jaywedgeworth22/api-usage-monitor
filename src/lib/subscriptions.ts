@@ -98,21 +98,21 @@ export function advancePeriod(
   return addUtcMonths(periodStart, monthsPerUnit(interval) * count);
 }
 
-const MS_PER_DAY = 24 * 60 * 60 * 1000;
-/** Allow ±1 calendar day of slop for timezone/midnight provider reporting. */
-const PERIOD_WINDOW_SLOP_MS = MS_PER_DAY;
-
 /**
- * Wave K / E13: true when [periodStart, periodEnd) is not a supported cadence
- * duration (within 1-day slop) and is not the Cloudflare-style UTC-midnight
- * calendar renewal exception. Managed rows with ambiguous windows must not be
- * charged until reconcile rewrites exact bounds.
+ * Wave K / E13: true when [periodStart, periodEnd) is not an exact supported
+ * cadence duration. Managed rows with ambiguous windows must not be charged
+ * until reconcile rewrites exact bounds.
+ *
+ * The UTC-midnight calendar exception (provider end at 00:00Z on the expected
+ * calendar day while start carries a creation time) is opt-in and reserved for
+ * the exact Cloudflare legacy handoff row — never for general managed terms.
  */
 export function isAmbiguousSubscriptionPeriodWindow(
   periodStart: Date,
   periodEnd: Date,
   interval: SubscriptionInterval,
-  intervalCount: number
+  intervalCount: number,
+  options?: { allowUtcMidnightCalendarException?: boolean }
 ): boolean {
   const startMs = periodStart.getTime();
   const endMs = periodEnd.getTime();
@@ -120,29 +120,29 @@ export function isAmbiguousSubscriptionPeriodWindow(
     return true;
   }
   const expectedEnd = advancePeriod(periodStart, interval, intervalCount);
-  const delta = Math.abs(endMs - expectedEnd.getTime());
-  if (delta <= PERIOD_WINDOW_SLOP_MS) return false;
+  if (endMs === expectedEnd.getTime()) return false;
 
-  // Midnight calendar exception: end at 00:00 UTC on the expected calendar day.
+  if (!options?.allowUtcMidnightCalendarException) return true;
+
+  // Opt-in midnight calendar exception only (Cloudflare Workers Paid legacy).
   const endIsUtcMidnight =
     periodEnd.getUTCHours() === 0 &&
     periodEnd.getUTCMinutes() === 0 &&
     periodEnd.getUTCSeconds() === 0 &&
     periodEnd.getUTCMilliseconds() === 0;
-  if (endIsUtcMidnight) {
-    const expectedDay = Date.UTC(
-      expectedEnd.getUTCFullYear(),
-      expectedEnd.getUTCMonth(),
-      expectedEnd.getUTCDate()
-    );
-    const endDay = Date.UTC(
-      periodEnd.getUTCFullYear(),
-      periodEnd.getUTCMonth(),
-      periodEnd.getUTCDate()
-    );
-    if (expectedDay === endDay) return false;
-  }
-  return true;
+  if (!endIsUtcMidnight) return true;
+
+  const expectedDay = Date.UTC(
+    expectedEnd.getUTCFullYear(),
+    expectedEnd.getUTCMonth(),
+    expectedEnd.getUTCDate()
+  );
+  const endDay = Date.UTC(
+    periodEnd.getUTCFullYear(),
+    periodEnd.getUTCMonth(),
+    periodEnd.getUTCDate()
+  );
+  return expectedDay !== endDay;
 }
 
 // Override the day-of-month of `date` to `anchorDay` (clamped to the month's
