@@ -20,7 +20,9 @@ describe("provider integration catalog", () => {
   });
 
   it("keeps retired profiles resolvable for historical records without listing them in the connection catalog", () => {
-    const listed = new Set(PROVIDER_INTEGRATION_PROFILES.map((profile) => profile.name));
+    const listed = new Set<string>(
+      PROVIDER_INTEGRATION_PROFILES.map((profile) => profile.name)
+    );
     for (const name of ["tradier", "intrinio", "alpaca", "robinhood", "vercel", "firecrawl"]) {
       expect(listed.has(name), name).toBe(false);
       expect(getProviderIntegrationProfile(name, "builtin").name).toBe(name);
