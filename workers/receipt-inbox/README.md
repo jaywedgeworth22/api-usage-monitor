@@ -59,7 +59,9 @@ npm exec -- wrangler secret put RECEIPT_FALLBACK_ADDRESS --config workers/receip
 npm exec -- wrangler secret put CLOUDFLARE_ACCOUNT_ID --config workers/receipt-lifecycle-auditor/wrangler.jsonc
 npm exec -- wrangler secret put RECEIPT_LIFECYCLE_AUDIT_TOKEN --config workers/receipt-lifecycle-auditor/wrangler.jsonc
 npm run receipt-inbox:deploy
-npm exec -- wrangler email routing rules create receipts.jays.services --name usage-monitor-receipts \
+# Wrangler resolves this positional value as a Cloudflare zone, so use the apex zone here.
+# The full match address remains on the separately onboarded routing subdomain.
+npm exec -- wrangler email routing rules create jays.services --name usage-monitor-receipts \
   --match-type literal --match-field to --match-value <high-entropy-address>@receipts.jays.services \
   --action-type worker --action-value usage-monitor-receipt-inbox
 ```
