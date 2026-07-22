@@ -160,13 +160,6 @@
 			path = UsageMonitorWidget;
 			sourceTree = "<group>";
 		};
-		4673699E50C0A15F1ECE8F44 /* Fixtures */ = {
-			isa = PBXGroup;
-			children = (
-			);
-			path = Fixtures;
-			sourceTree = "<group>";
-		};
 		741ADEEA778CCA1A1AC74B76 /* Packages */ = {
 			isa = PBXGroup;
 			children = (
@@ -198,7 +191,6 @@
 		C2AEEA90F6B73F78B1909146 /* UsageMonitorTests */ = {
 			isa = PBXGroup;
 			children = (
-				4673699E50C0A15F1ECE8F44 /* Fixtures */,
 				C8C3B26815D2E6893A2F0BD4 /* AppSmokeTests.swift */,
 			);
 			path = UsageMonitorTests;
@@ -321,7 +313,7 @@
 				LastUpgradeCheck = 1430;
 				TargetAttributes = {
 					4561EA92BD08891F12A3DF6C = {
-						DevelopmentTeam = "";
+						DevelopmentTeam = CC8UTF7ATG;
 						ProvisioningStyle = Automatic;
 					};
 					4B4B11010774BFBB5561CA61 = {
@@ -329,7 +321,7 @@
 						ProvisioningStyle = Automatic;
 					};
 					5889469B5CB3C6B159E86759 = {
-						DevelopmentTeam = "";
+						DevelopmentTeam = CC8UTF7ATG;
 						ProvisioningStyle = Automatic;
 					};
 					697B0B4631A2FF72678DE8B3 = {
@@ -431,6 +423,7 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = UsageMonitorWidget/UsageMonitorWidget.entitlements;
+				DEVELOPMENT_TEAM = CC8UTF7ATG;
 				INFOPLIST_FILE = UsageMonitorWidget/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -601,6 +594,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = App/Resources/UsageMonitor.entitlements;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
+				DEVELOPMENT_TEAM = CC8UTF7ATG;
 				ENABLE_PREVIEWS = YES;
 				INFOPLIST_FILE = App/Resources/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -638,6 +632,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = App/Resources/UsageMonitor.entitlements;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
+				DEVELOPMENT_TEAM = CC8UTF7ATG;
 				ENABLE_PREVIEWS = YES;
 				INFOPLIST_FILE = App/Resources/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -673,6 +668,7 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = UsageMonitorWidget/UsageMonitorWidget.entitlements;
+				DEVELOPMENT_TEAM = CC8UTF7ATG;
 				INFOPLIST_FILE = UsageMonitorWidget/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
