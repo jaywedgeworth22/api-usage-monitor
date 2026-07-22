@@ -103,6 +103,7 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: services.jays.usage.monitor.widget
+        DEVELOPMENT_TEAM: CC8UTF7ATG
         INFOPLIST_FILE: UsageMonitorWidget/Info.plist
         CODE_SIGN_ENTITLEMENTS: UsageMonitorWidget/UsageMonitorWidget.entitlements
         ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor

@@ -313,7 +313,7 @@
 				LastUpgradeCheck = 1430;
 				TargetAttributes = {
 					4561EA92BD08891F12A3DF6C = {
-						DevelopmentTeam = "";
+						DevelopmentTeam = CC8UTF7ATG;
 						ProvisioningStyle = Automatic;
 					};
 					4B4B11010774BFBB5561CA61 = {
@@ -423,6 +423,7 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = UsageMonitorWidget/UsageMonitorWidget.entitlements;
+				DEVELOPMENT_TEAM = CC8UTF7ATG;
 				INFOPLIST_FILE = UsageMonitorWidget/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -667,6 +668,7 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = UsageMonitorWidget/UsageMonitorWidget.entitlements;
+				DEVELOPMENT_TEAM = CC8UTF7ATG;
 				INFOPLIST_FILE = UsageMonitorWidget/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
