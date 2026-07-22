@@ -42,7 +42,9 @@ readonly MAX_BUILD_CACHE="8GB"
 readonly MIN_BUILD_CACHE_FREE="12GB"
 readonly RESERVED_BUILD_CACHE="4GB"
 readonly GARAGE_RESTORE_TIMEOUT_SECONDS=900
+readonly GARAGE_RESTORE_CLIENT_TIMEOUT_SECONDS=960
 readonly GARAGE_INTEGRITY_TIMEOUT_SECONDS=1800
+readonly GARAGE_FOREIGN_KEY_TIMEOUT_SECONDS=600
 
 TARGET_SHA="${1:-}"
 PREVIOUS_SHA=""
@@ -475,8 +477,35 @@ capture_quiescent_backup_watermark() {
   die "Garage did not reach a stable post-stop watermark within one minute"
 }
 
+acceptance_restore_pids() {
+  local process_rows
+  # Explicit `ww` is required: procps otherwise permits redirected `args`
+  # output to truncate before the long scratch pathname we match below.
+  if ! process_rows="$(timeout 30 docker top "${APP_CONTAINER}" -eo pid,args ww)"; then
+    return 2
+  fi
+  awk -v scratch="${RESTORE_SCRATCH}" '
+    NR > 1 &&
+      index($0, "/app/bin/litestream restore") > 0 &&
+      index($0, scratch) > 0 { print $1 }
+  ' <<<"${process_rows}"
+}
+
+require_no_acceptance_restore_process() {
+  local pids
+  if ! pids="$(acceptance_restore_pids)"; then
+    die "could not verify that the Garage acceptance restore process exited"
+  fi
+  [[ -z "${pids}" ]] || \
+    die "Garage acceptance restore process still runs as host PID(s): ${pids//$'\n'/,}"
+}
+
 cleanup_restore_scratch() {
   if [[ -n "${RESTORE_SCRATCH}" ]]; then
+    if ! require_no_acceptance_restore_process; then
+      log "refusing to unlink Garage acceptance scratch while restore-process state is unsafe."
+      return 1
+    fi
     unlink "${RESTORE_SCRATCH}" 2>/dev/null || true
     unlink "${RESTORE_SCRATCH}-wal" 2>/dev/null || true
     unlink "${RESTORE_SCRATCH}-shm" 2>/dev/null || true
@@ -485,7 +514,7 @@ cleanup_restore_scratch() {
 }
 
 verify_backup_restore() {
-  local integrity_result live_schema restored_schema
+  local foreign_key_result integrity_result live_schema restore_status=0 restored_schema
   RESTORE_SCRATCH="${DATA_DIR}/.deploy-garage-acceptance-${TARGET_SHA}.$$.db"
   cleanup_restore_scratch
   RESTORE_SCRATCH="${DATA_DIR}/.deploy-garage-acceptance-${TARGET_SHA}.$$.db"
@@ -495,13 +524,21 @@ verify_backup_restore() {
   # SQLite integrity scan below. Running both Litestream's full check and an
   # explicit PRAGMA integrity_check duplicated the expensive scan and caused a
   # healthy 592 MiB restore to hit the old ten-minute process timeout.
-  timeout --signal=TERM --kill-after=30s "${GARAGE_RESTORE_TIMEOUT_SECONDS}" \
+  # The inner timeout owns the in-container process lifetime. The slightly
+  # longer outer timeout only bounds a wedged Docker client; it must not fire
+  # before the inner timeout has sent TERM and then KILL. Process inspection
+  # below proves that rollback/cleanup cannot unlink a file still being written.
+  timeout --signal=TERM --kill-after=30s "${GARAGE_RESTORE_CLIENT_TIMEOUT_SECONDS}" \
     docker exec "${APP_CONTAINER}" \
+    /usr/bin/timeout --signal=TERM --kill-after=30s "${GARAGE_RESTORE_TIMEOUT_SECONDS}" \
     /app/bin/litestream restore \
       -config /app/litestream.yml \
       -integrity-check quick \
       -o "${RESTORE_SCRATCH}" \
-      /data/prod.db >/dev/null
+      /data/prod.db >/dev/null || restore_status=$?
+  require_no_acceptance_restore_process
+  (( restore_status == 0 )) || \
+    die "Garage acceptance restore did not complete (exit ${restore_status})"
   [[ -s "${RESTORE_SCRATCH}" ]] || die "Garage acceptance restore did not create a database"
   if ! integrity_result="$(
     timeout --signal=TERM --kill-after=30s "${GARAGE_INTEGRITY_TIMEOUT_SECONDS}" \
@@ -511,7 +548,13 @@ verify_backup_restore() {
   fi
   [[ "${integrity_result}" == "ok" ]] || \
     die "Garage acceptance restore failed SQLite integrity"
-  [[ -z "$(sqlite3 -readonly "${RESTORE_SCRATCH}" 'PRAGMA foreign_key_check;')" ]] || \
+  if ! foreign_key_result="$(
+    timeout --signal=TERM --kill-after=30s "${GARAGE_FOREIGN_KEY_TIMEOUT_SECONDS}" \
+      sqlite3 -readonly "${RESTORE_SCRATCH}" 'PRAGMA foreign_key_check;'
+  )"; then
+    die "Garage acceptance restore SQLite foreign-key check did not complete"
+  fi
+  [[ -z "${foreign_key_result}" ]] || \
     die "Garage acceptance restore failed SQLite foreign-key validation"
 
   live_schema="$(sqlite3 -readonly "${DB_PATH}" \
