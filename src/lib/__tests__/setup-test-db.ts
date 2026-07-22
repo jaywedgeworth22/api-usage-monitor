@@ -405,7 +405,7 @@ CREATE UNIQUE INDEX "Project_name_key" ON "Project"("name");
 CREATE UNIQUE INDEX "Project_nameKey_key" ON "Project"("nameKey");
 CREATE UNIQUE INDEX "ProviderKeyIdentity_providerId_providerReportedKeyIdFingerprint_key" ON "ProviderKeyIdentity"("providerId", "providerReportedKeyIdFingerprint");
 CREATE INDEX "ProviderKeyIdentity_providerId_status_idx" ON "ProviderKeyIdentity"("providerId", "status");
-CREATE UNIQUE INDEX "ProviderKeyBinding_identityId_producerId_producerKeyRef_effectiveFrom_key" ON "ProviderKeyBinding"("identityId", "producerId", "producerKeyRef", "effectiveFrom");
+CREATE UNIQUE INDEX "ProviderKeyBinding_identity_context_from_key" ON "ProviderKeyBinding"("identityId", "producerId", "producerKeyRef", "providerConnectionRef", "billingAccountRef", "effectiveFrom");
 CREATE INDEX "ProviderKeyBinding_producerId_producerKeyRef_effectiveFrom_effectiveTo_idx" ON "ProviderKeyBinding"("producerId", "producerKeyRef", "effectiveFrom", "effectiveTo");
 CREATE INDEX "ProviderKeyBinding_identityId_effectiveFrom_idx" ON "ProviderKeyBinding"("identityId", "effectiveFrom");
 CREATE INDEX "ProviderKeyBinding_projectId_effectiveFrom_idx" ON "ProviderKeyBinding"("projectId", "effectiveFrom");

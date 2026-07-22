@@ -620,7 +620,10 @@ model ProviderKeyBinding {
   effectiveTo           DateTime?
   createdAt             DateTime             @default(now())
 
-  @@unique([identityId, producerId, producerKeyRef, effectiveFrom])
+  // Context refs are part of uniqueness so two exact-constrained mappings can
+  // share identity/producer/key/effectiveFrom when connection/account differ.
+  // Application overlap still treats null context as a wildcard.
+  @@unique([identityId, producerId, producerKeyRef, providerConnectionRef, billingAccountRef, effectiveFrom], map: "ProviderKeyBinding_identity_context_from_key")
   @@index([producerId, producerKeyRef, effectiveFrom, effectiveTo])
   @@index([identityId, effectiveFrom])
   @@index([projectId, effectiveFrom])

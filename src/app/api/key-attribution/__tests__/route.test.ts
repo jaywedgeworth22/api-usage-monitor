@@ -167,6 +167,7 @@ describe("provider key attribution API", () => {
           keyRef: "unknown-key",
           costUsd: 2,
           occurredAt: eventTime,
+          // Boundsless window cost is not proven additive — stay unclassified.
           metadata: {
             _usageTelemetrySchemaVersion: 2,
             _coverageScope: "api_key",
@@ -221,22 +222,34 @@ describe("provider key attribution API", () => {
     expect(body.coverage).toMatchObject({
       scope: "pushed_v2_cost_events",
       aggregation: "proven_disjoint_point_or_window_event_sum",
-      totalCostUsd: 9,
+      // event-b (boundsless window) and event-d (non-key scope) are unclassified.
+      totalCostUsd: 7,
       identityMatchedCostUsd: 7,
-      identityUnattributedCostUsd: 2,
+      identityUnattributedCostUsd: 0,
       projectAttributedCostUsd: 3,
-      projectUnattributedCostUsd: 6,
-      totalEventCount: 3,
+      projectUnattributedCostUsd: 4,
+      totalEventCount: 2,
       identityMatchedEventCount: 2,
-      identityUnattributedEventCount: 1,
-      unclassifiedCostEventCount: 1,
+      identityUnattributedEventCount: 0,
+      unclassifiedCostEventCount: 2,
       excludedNonKeyScopeEventCount: 1,
     });
-    expect(body.coverage.reasons.no_effective_binding).toEqual({ costUsd: 2, eventCount: 1 });
     expect(body.coverage.byIdentity[storedIdentity.id]).toEqual({
       costUsd: 7,
       eventCount: 2,
     });
+    // Boundsless window still surfaces in discovery with zero additive cost.
+    expect(body.coverage.unattributedBuckets).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          producerKeyRef: "unknown-key",
+          reason: "no_effective_binding",
+          costUsd: 0,
+          eventCount: 1,
+          unclassifiedCostEventCount: 1,
+        }),
+      ])
+    );
     expect(JSON.stringify(body)).not.toContain(rawProviderKeyId);
     await prisma.project.delete({ where: { id: project.id } });
     const afterProjectDelete = await (await GET(request("GET"))).json();
@@ -280,6 +293,243 @@ describe("provider key attribution API", () => {
     const afterRetirement = await (await GET(request("GET"))).json();
     expect(afterRetirement.coverage.identityMatchedCostUsd).toBe(7);
     expect(afterRetirement.identities[0].status).toBe("retired");
+  });
+
+  it("rehashes an identity fingerprint through HMAC rotation so previous keys can be removed", async () => {
+    const provider = await prisma.provider.create({
+      data: { name: "openai", displayName: "OpenAI", type: "builtin" },
+    });
+    const rawProviderKeyId = "stable-provider-key-id-for-rehash";
+    const oldKey = "old-attribution-key-material-longer-than-32-characters";
+    const newKey = "new-attribution-key-material-longer-than-32-characters";
+    process.env.ATTRIBUTION_IDENTITY_HMAC_KEY = oldKey;
+    expect((await POST(request("POST", {
+      action: "create_identity",
+      providerId: provider.id,
+      alias: "Rotate me",
+      providerReportedKeyId: rawProviderKeyId,
+    }))).status).toBe(201);
+    const identity = await prisma.providerKeyIdentity.findFirstOrThrow();
+    const oldFingerprint = identity.providerReportedKeyIdFingerprint;
+    expect(oldFingerprint).toMatch(/^[a-f0-9]{64}$/);
+
+    process.env.ATTRIBUTION_IDENTITY_HMAC_KEY = newKey;
+    process.env.ATTRIBUTION_IDENTITY_HMAC_PREVIOUS_KEYS = oldKey;
+    const rehash = await POST(request("POST", {
+      action: "rehash_identity",
+      identityId: identity.id,
+      providerReportedKeyId: rawProviderKeyId,
+    }));
+    expect(rehash.status).toBe(200);
+    const rehashed = await prisma.providerKeyIdentity.findUniqueOrThrow({
+      where: { id: identity.id },
+    });
+    expect(rehashed.providerReportedKeyIdFingerprint).not.toBe(oldFingerprint);
+    expect(JSON.stringify(rehashed)).not.toContain(rawProviderKeyId);
+
+    delete process.env.ATTRIBUTION_IDENTITY_HMAC_PREVIOUS_KEYS;
+    process.env.ATTRIBUTION_IDENTITY_HMAC_KEY = newKey;
+    // After previous keys are dropped, resolution still matches via the rehashed digest.
+    const { resolveProviderKeyAttribution, fingerprintProviderReportedKeyId } = await import(
+      "@/lib/provider-key-attribution"
+    );
+    expect(rehashed.providerReportedKeyIdFingerprint).toBe(
+      fingerprintProviderReportedKeyId(provider.id, rawProviderKeyId)
+    );
+    expect(
+      resolveProviderKeyAttribution(
+        {
+          providerName: "openai",
+          producerId: "congress-trade",
+          producerKeyRef: null,
+          providerConnectionRef: null,
+          billingAccountRef: null,
+          providerReportedKeyId: rawProviderKeyId,
+          occurredAt: new Date(),
+        },
+        [
+          {
+            id: rehashed.id,
+            providerId: provider.id,
+            providerName: "openai",
+            status: rehashed.status,
+            createdAt: rehashed.createdAt,
+            retiredAt: rehashed.retiredAt,
+            providerReportedKeyIdFingerprint: rehashed.providerReportedKeyIdFingerprint,
+          },
+        ],
+        []
+      )
+    ).toMatchObject({ status: "matched", identityId: rehashed.id });
+
+    expect((await POST(request("POST", {
+      action: "rehash_identity",
+      identityId: identity.id,
+      providerReportedKeyId: "wrong-raw-id",
+    }))).status).toBe(409);
+  });
+
+  it("deletes never-started future bindings on retire so replacements are not blocked", async () => {
+    const provider = await prisma.provider.create({
+      data: { name: "openai", displayName: "OpenAI", type: "builtin" },
+    });
+    const retiredAt = new Date("2026-07-15T00:00:00.000Z");
+    const futureStart = new Date("2026-08-01T00:00:00.000Z");
+    const retiredIdentity = await prisma.providerKeyIdentity.create({
+      data: {
+        providerId: provider.id,
+        alias: "Future mapping",
+        createdAt: new Date("2026-07-01T00:00:00.000Z"),
+      },
+    });
+    const replacementIdentity = await prisma.providerKeyIdentity.create({
+      data: { providerId: provider.id, alias: "Replacement after retire" },
+    });
+    await prisma.providerKeyBinding.create({
+      data: {
+        identityId: retiredIdentity.id,
+        producerId: "congress-trade",
+        producerKeyRef: "openai-primary",
+        effectiveFrom: futureStart,
+      },
+    });
+
+    expect((await PATCH(request("PATCH", {
+      action: "retire_identity",
+      identityId: retiredIdentity.id,
+      effectiveTo: retiredAt.toISOString(),
+    }))).status).toBe(200);
+
+    expect(await prisma.providerKeyBinding.count({
+      where: { identityId: retiredIdentity.id },
+    })).toBe(0);
+
+    const createResponse = await POST(request("POST", {
+      action: "create_binding",
+      identityId: replacementIdentity.id,
+      producerId: "congress-trade",
+      producerKeyRef: "openai-primary",
+      effectiveFrom: retiredAt.toISOString(),
+    }));
+    expect(createResponse.status).toBe(201);
+  });
+
+  it("allows two exact context-constrained bindings on the same identity and effectiveFrom", async () => {
+    const provider = await prisma.provider.create({
+      data: { name: "openai", displayName: "OpenAI", type: "builtin" },
+    });
+    const identity = await prisma.providerKeyIdentity.create({
+      data: { providerId: provider.id, alias: "Multi-context key" },
+    });
+    const effectiveFrom = "2026-07-01T00:00:00.000Z";
+    const first = await POST(request("POST", {
+      action: "create_binding",
+      identityId: identity.id,
+      producerId: "congress-trade",
+      producerKeyRef: "openai-primary",
+      providerConnectionRef: "org-a",
+      billingAccountRef: "bill-a",
+      effectiveFrom,
+    }));
+    const second = await POST(request("POST", {
+      action: "create_binding",
+      identityId: identity.id,
+      producerId: "congress-trade",
+      producerKeyRef: "openai-primary",
+      providerConnectionRef: "org-b",
+      billingAccountRef: "bill-b",
+      effectiveFrom,
+    }));
+    expect(first.status).toBe(201);
+    expect(second.status).toBe(201);
+    expect(await prisma.providerKeyBinding.count()).toBe(2);
+
+    // Same context still collides.
+    expect((await POST(request("POST", {
+      action: "create_binding",
+      identityId: identity.id,
+      producerId: "congress-trade",
+      producerKeyRef: "openai-primary",
+      providerConnectionRef: "org-a",
+      billingAccountRef: "bill-a",
+      effectiveFrom,
+    }))).status).toBe(409);
+  });
+
+  it("leaves window cost unclassified when the window spans a binding reassignment", async () => {
+    const now = new Date();
+    const monthStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
+    const reassignmentAt = new Date(Math.max(monthStart.getTime() + 3 * 86_400_000, now.getTime() - 3 * 86_400_000));
+    const windowStart = new Date(reassignmentAt.getTime() - 2 * 86_400_000);
+    const windowEnd = new Date(reassignmentAt.getTime() + 2 * 86_400_000);
+    const eventTime = new Date(Math.min(windowEnd.getTime() - 1_000, now.getTime() - 1_000));
+    const provider = await prisma.provider.create({
+      data: { name: "openai", displayName: "OpenAI", type: "builtin" },
+    });
+    const first = await prisma.providerKeyIdentity.create({
+      data: { providerId: provider.id, alias: "Before cutover", createdAt: monthStart },
+    });
+    const second = await prisma.providerKeyIdentity.create({
+      data: { providerId: provider.id, alias: "After cutover", createdAt: monthStart },
+    });
+    await prisma.providerKeyBinding.createMany({
+      data: [
+        {
+          identityId: first.id,
+          producerId: "congress-trade",
+          producerKeyRef: "openai-primary",
+          effectiveFrom: monthStart,
+          effectiveTo: reassignmentAt,
+        },
+        {
+          identityId: second.id,
+          producerId: "congress-trade",
+          producerKeyRef: "openai-primary",
+          effectiveFrom: reassignmentAt,
+        },
+      ],
+    });
+    await prisma.externalUsageEvent.create({
+      data: {
+        idempotencyKey: "spanning-window",
+        sourceApp: "congress-trade",
+        provider: "openai",
+        keyRef: "openai-primary",
+        costUsd: 12,
+        occurredAt: eventTime,
+        windowStart,
+        windowEnd,
+        metadata: {
+          _usageTelemetrySchemaVersion: 2,
+          _coverageScope: "api_key",
+          _coverageMode: "window",
+          _coverageRelationship: "disjoint",
+        },
+      },
+    });
+    // Non-spanning point control in the same period.
+    await prisma.externalUsageEvent.create({
+      data: {
+        idempotencyKey: "point-control",
+        sourceApp: "congress-trade",
+        provider: "openai",
+        keyRef: "openai-primary",
+        costUsd: 1,
+        occurredAt: new Date(reassignmentAt.getTime() + 60_000),
+        metadata: {
+          _usageTelemetrySchemaVersion: 2,
+          _coverageScope: "api_key",
+          _coverageMode: "point",
+          _coverageRelationship: "disjoint",
+        },
+      },
+    });
+
+    const body = await (await GET(request("GET"))).json();
+    expect(body.coverage.totalCostUsd).toBe(1);
+    expect(body.coverage.identityMatchedCostUsd).toBe(1);
+    expect(body.coverage.unclassifiedCostEventCount).toBe(1);
+    expect(body.coverage.byIdentity[second.id]).toEqual({ costUsd: 1, eventCount: 1 });
   });
 
   it("does not extend an exact producer binding past identity retirement", async () => {

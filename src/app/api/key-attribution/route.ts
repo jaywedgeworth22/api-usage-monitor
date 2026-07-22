@@ -24,9 +24,99 @@ interface CoverageRow {
   coverageScope: string | null;
   coverageMode: string | null;
   coverageRelationship: string | null;
+  windowStart: Date | string | null;
+  windowEnd: Date | string | null;
   costUsd: number | null;
   eventCount: bigint | number;
   costEventCount: bigint | number;
+}
+
+function asCoverageDate(value: Date | string | null | undefined): Date | null {
+  if (value == null) return null;
+  const parsed = value instanceof Date ? value : new Date(value);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
+function sameAttributionResolution(
+  left: ReturnType<typeof resolveProviderKeyAttribution>,
+  right: ReturnType<typeof resolveProviderKeyAttribution>
+): boolean {
+  if (left.status !== right.status) return false;
+  if (left.status === "matched" && right.status === "matched") {
+    return (
+      left.identityId === right.identityId &&
+      left.bindingId === right.bindingId &&
+      left.projectId === right.projectId &&
+      left.projectName === right.projectName
+    );
+  }
+  if (left.status === "unattributed" && right.status === "unattributed") {
+    return left.reason === right.reason;
+  }
+  return false;
+}
+
+/**
+ * Window cost that crosses a binding reassignment or retirement cannot be
+ * attributed wholly to one identity. Leave it unclassified rather than split.
+ */
+function windowSpansAttributionChange(
+  windowStart: Date,
+  windowEnd: Date,
+  observation: {
+    providerName: string;
+    producerId: string;
+    producerKeyRef: string | null;
+    providerConnectionRef: string | null;
+    billingAccountRef: string | null;
+  },
+  identities: readonly AttributionIdentity[],
+  bindings: readonly AttributionBinding[]
+): boolean {
+  if (windowEnd.getTime() <= windowStart.getTime()) return true;
+  const resolveAt = (occurredAt: Date) =>
+    resolveProviderKeyAttribution(
+      { ...observation, occurredAt },
+      identities,
+      bindings
+    );
+  const baseline = resolveAt(windowStart);
+  const sampleTimes = new Set<number>();
+  const endExclusive = windowEnd.getTime();
+  const startMs = windowStart.getTime();
+  for (const binding of bindings) {
+    const from = binding.effectiveFrom.getTime();
+    const to = binding.effectiveTo?.getTime();
+    if (from > startMs && from < endExclusive) sampleTimes.add(from);
+    if (to != null && to > startMs && to < endExclusive) sampleTimes.add(to);
+  }
+  for (const identity of identities) {
+    const createdAt = identity.createdAt.getTime();
+    const retiredAt = identity.retiredAt?.getTime();
+    if (createdAt > startMs && createdAt < endExclusive) sampleTimes.add(createdAt);
+    if (retiredAt != null && retiredAt > startMs && retiredAt < endExclusive) {
+      sampleTimes.add(retiredAt);
+    }
+  }
+  // Last instant inside the half-open window.
+  sampleTimes.add(endExclusive - 1);
+  for (const sample of sampleTimes) {
+    if (sample < startMs || sample >= endExclusive) continue;
+    if (!sameAttributionResolution(baseline, resolveAt(new Date(sample)))) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function bindingIntervalIsEmpty(binding: {
+  effectiveFrom: Date;
+  effectiveTo: Date | null;
+}): boolean {
+  return (
+    binding.effectiveTo != null &&
+    binding.effectiveTo.getTime() <= binding.effectiveFrom.getTime()
+  );
 }
 
 function unauthorized(request: NextRequest): NextResponse | null {
@@ -111,7 +201,7 @@ async function loadCoverage(
   const totals = {
     scope: "pushed_v2_cost_events" as const,
     aggregation: "proven_disjoint_point_or_window_event_sum" as const,
-    note: "Cost sums include only v2 api_key-scope point/window records explicitly marked disjoint. Account, connection, project, cumulative, overlapping, and unknown coverage remains unclassified. Provider polling/account totals are excluded.",
+    note: "Cost sums include only v2 api_key-scope point records and non-spanning window records explicitly marked disjoint. Windows missing bounds or crossing a binding reassignment/retirement stay unclassified. Account, connection, project, cumulative, overlapping, and unknown coverage remains unclassified. Provider polling/account totals are excluded.",
     totalCostUsd: 0,
     identityMatchedCostUsd: 0,
     identityUnattributedCostUsd: 0,
@@ -154,6 +244,8 @@ async function loadCoverage(
         json_extract("metadata", '$._coverageScope') AS "coverageScope",
         json_extract("metadata", '$._coverageMode') AS "coverageMode",
         json_extract("metadata", '$._coverageRelationship') AS "coverageRelationship",
+        "windowStart" AS "windowStart",
+        "windowEnd" AS "windowEnd",
         SUM("costUsd") AS "costUsd",
         COUNT(*) AS "eventCount",
         SUM(CASE WHEN "costUsd" IS NULL THEN 0 ELSE 1 END) AS "costEventCount"
@@ -163,7 +255,8 @@ async function loadCoverage(
         AND CAST(json_extract("metadata", '$._usageTelemetrySchemaVersion') AS INTEGER) = 2
       GROUP BY
         "sourceApp", "provider", "keyRef", "providerConnectionRef",
-        "billingAccountRef", "projectId", "coverageScope", "coverageMode", "coverageRelationship"
+        "billingAccountRef", "projectId", "coverageScope", "coverageMode", "coverageRelationship",
+        "windowStart", "windowEnd"
     `);
 
     for (const row of rows) {
@@ -173,20 +266,79 @@ async function loadCoverage(
         totals.excludedNonKeyScopeEventCount += Number(row.eventCount);
         continue;
       }
-      const isProvenAdditive =
-        (row.coverageMode === "point" || row.coverageMode === "window") &&
-        row.coverageRelationship === "disjoint";
-      const costUsd = isProvenAdditive ? Number(row.costUsd ?? 0) : 0;
+      const observationBase = {
+        providerName: row.providerName,
+        producerId: row.producerId,
+        producerKeyRef: row.producerKeyRef,
+        providerConnectionRef: row.providerConnectionRef,
+        billingAccountRef: row.billingAccountRef,
+      };
+      const windowStart = asCoverageDate(row.windowStart);
+      const windowEnd = asCoverageDate(row.windowEnd);
+      let isProvenAdditive = false;
+      let resolveAt = start;
+      if (row.coverageRelationship === "disjoint" && row.coverageMode === "point") {
+        isProvenAdditive = true;
+        resolveAt = start;
+      } else if (row.coverageRelationship === "disjoint" && row.coverageMode === "window") {
+        // Window money is additive only when bounds are present and the half-open
+        // window does not cross an identity/binding reassignment or retirement.
+        if (
+          windowStart &&
+          windowEnd &&
+          !windowSpansAttributionChange(
+            windowStart,
+            windowEnd,
+            observationBase,
+            identities,
+            bindings
+          )
+        ) {
+          isProvenAdditive = true;
+          resolveAt = windowStart;
+        }
+      }
       const eventCount = Number(row.eventCount);
-      if (!isProvenAdditive) totals.unclassifiedCostEventCount += Number(row.costEventCount);
+      if (!isProvenAdditive) {
+        // Not proven-additive: never assign cost or events to identity totals.
+        // Still surface unmatched key refs for the discovery panel (cost stays 0).
+        totals.unclassifiedCostEventCount += Number(row.costEventCount);
+        const discovery = resolveProviderKeyAttribution(
+          { ...observationBase, occurredAt: resolveAt },
+          identities,
+          bindings
+        );
+        if (discovery.status === "unattributed") {
+          const bucketKey = JSON.stringify([
+            row.providerName,
+            row.producerId,
+            row.producerKeyRef,
+            row.providerConnectionRef,
+            row.billingAccountRef,
+            discovery.reason,
+          ]);
+          const bucket = unattributedBuckets.get(bucketKey) ?? {
+            providerName: row.providerName,
+            producerId: row.producerId,
+            producerKeyRef: row.producerKeyRef,
+            providerConnectionRef: row.providerConnectionRef,
+            billingAccountRef: row.billingAccountRef,
+            reason: discovery.reason,
+            costUsd: 0,
+            eventCount: 0,
+            unclassifiedCostEventCount: 0,
+          };
+          bucket.eventCount += eventCount;
+          bucket.unclassifiedCostEventCount += Number(row.costEventCount);
+          unattributedBuckets.set(bucketKey, bucket);
+        }
+        continue;
+      }
+      const costUsd = Number(row.costUsd ?? 0);
       const resolution = resolveProviderKeyAttribution(
         {
-          providerName: row.providerName,
-          producerId: row.producerId,
-          producerKeyRef: row.producerKeyRef,
-          providerConnectionRef: row.providerConnectionRef,
-          billingAccountRef: row.billingAccountRef,
-          occurredAt: start,
+          ...observationBase,
+          occurredAt: resolveAt,
         },
         identities,
         bindings
@@ -237,7 +389,6 @@ async function loadCoverage(
         };
         bucket.costUsd += costUsd;
         bucket.eventCount += eventCount;
-        if (!isProvenAdditive) bucket.unclassifiedCostEventCount += Number(row.costEventCount);
         unattributedBuckets.set(bucketKey, bucket);
       }
     }
@@ -429,6 +580,8 @@ export async function POST(request: NextRequest) {
         // Overlap is per-provider: producers may reuse local key refs (e.g. "primary")
         // across different providers. Scope the candidate set through the identity's
         // providerId so a second-provider mapping is not rejected as binding_overlap.
+        // Empty intervals (effectiveTo <= effectiveFrom) never match events and must
+        // not block a replacement after retire clamps a never-started future binding.
         const candidates = await tx.providerKeyBinding.findMany({
           where: {
             ...(replaceBindingId ? { id: { not: replaceBindingId } } : {}),
@@ -440,6 +593,8 @@ export async function POST(request: NextRequest) {
         });
         const collision = candidates.some(
           (candidate) =>
+            // Zero-length intervals never match observations and must not block.
+            !bindingIntervalIsEmpty(candidate) &&
             constraintsOverlap(candidate.providerConnectionRef, providerConnectionRef) &&
             constraintsOverlap(candidate.billingAccountRef, billingAccountRef)
         );
@@ -464,6 +619,80 @@ export async function POST(request: NextRequest) {
         effectiveTo: binding.effectiveTo?.toISOString() ?? null,
       }, { status: 201 });
     }
+    if (body.action === "rehash_identity") {
+      // While ATTRIBUTION_IDENTITY_HMAC_PREVIOUS_KEYS still includes the key that
+      // produced the stored digest, re-enter the raw provider ID once to rewrite
+      // the fingerprint under the current key. After every identity is rehashed,
+      // previous keys can be removed without resolving as unknown_provider_key.
+      const identityId = parseRequiredAttributionString(body.identityId, "identityId");
+      const providerReportedKeyId = parseRequiredAttributionString(
+        body.providerReportedKeyId,
+        "providerReportedKeyId",
+        512
+      );
+      const identity = await prisma.$transaction(async (tx) => {
+        await tx.$executeRaw`UPDATE "ProviderKeyIdentity" SET "alias" = "alias" WHERE "id" = ${identityId}`;
+        const existing = await tx.providerKeyIdentity.findUnique({
+          where: { id: identityId },
+          include: {
+            provider: { select: { name: true, displayName: true } },
+            bindings: { include: { project: { select: { id: true, name: true } } } },
+          },
+        });
+        if (!existing) throw new Error("identity_not_found");
+        const candidates = fingerprintProviderReportedKeyIdCandidates(
+          existing.providerId,
+          providerReportedKeyId
+        );
+        const currentFingerprint = fingerprintProviderReportedKeyId(
+          existing.providerId,
+          providerReportedKeyId
+        );
+        if (existing.providerReportedKeyIdFingerprint == null) {
+          const collision = await tx.providerKeyIdentity.findFirst({
+            where: {
+              providerId: existing.providerId,
+              providerReportedKeyIdFingerprint: currentFingerprint,
+              id: { not: identityId },
+            },
+            select: { id: true },
+          });
+          if (collision) throw new Error("provider_key_identity_exists");
+          return tx.providerKeyIdentity.update({
+            where: { id: identityId },
+            data: { providerReportedKeyIdFingerprint: currentFingerprint },
+            include: {
+              provider: { select: { name: true, displayName: true } },
+              bindings: { include: { project: { select: { id: true, name: true } } } },
+            },
+          });
+        }
+        if (!candidates.includes(existing.providerReportedKeyIdFingerprint)) {
+          throw new Error("provider_key_fingerprint_mismatch");
+        }
+        if (existing.providerReportedKeyIdFingerprint === currentFingerprint) {
+          return existing;
+        }
+        const collision = await tx.providerKeyIdentity.findFirst({
+          where: {
+            providerId: existing.providerId,
+            providerReportedKeyIdFingerprint: currentFingerprint,
+            id: { not: identityId },
+          },
+          select: { id: true },
+        });
+        if (collision) throw new Error("provider_key_identity_exists");
+        return tx.providerKeyIdentity.update({
+          where: { id: identityId },
+          data: { providerReportedKeyIdFingerprint: currentFingerprint },
+          include: {
+            provider: { select: { name: true, displayName: true } },
+            bindings: { include: { project: { select: { id: true, name: true } } } },
+          },
+        });
+      });
+      return NextResponse.json(serializeIdentity(identity));
+    }
     return NextResponse.json({ error: "Unsupported action" }, { status: 400 });
   } catch (error) {
     if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002") {
@@ -474,6 +703,18 @@ export async function POST(request: NextRequest) {
     }
     if (error instanceof Error && error.message === "provider_key_identity_exists") {
       return NextResponse.json({ error: "This provider key identity already exists" }, { status: 409 });
+    }
+    if (error instanceof Error && error.message === "provider_key_fingerprint_mismatch") {
+      return NextResponse.json(
+        {
+          error:
+            "providerReportedKeyId does not match this identity under the current or previous HMAC keys",
+        },
+        { status: 409 }
+      );
+    }
+    if (error instanceof Error && error.message === "identity_not_found") {
+      return NextResponse.json({ error: "Identity not found" }, { status: 404 });
     }
     if (error instanceof Error && error.message === "identity_not_active") {
       return NextResponse.json({ error: "identityId does not match an active identity" }, { status: 400 });
@@ -550,6 +791,9 @@ export async function PATCH(request: NextRequest) {
         }
         // Close open bindings and clamp any still-effective future-dated ends to
         // retirement so later create_binding overlap checks do not see stale rows.
+        // Bindings scheduled to start at/after retirement never matched events —
+        // delete them instead of writing a zero-length future row that still
+        // collides with open-ended replacements (effectiveTo > replacement start).
         const openBindings = await tx.providerKeyBinding.findMany({
           where: {
             identityId,
@@ -558,14 +802,13 @@ export async function PATCH(request: NextRequest) {
           select: { id: true, effectiveFrom: true },
         });
         for (const binding of openBindings) {
+          if (binding.effectiveFrom.getTime() >= effectiveTo.getTime()) {
+            await tx.providerKeyBinding.delete({ where: { id: binding.id } });
+            continue;
+          }
           await tx.providerKeyBinding.update({
             where: { id: binding.id },
-            data: {
-              effectiveTo:
-                binding.effectiveFrom.getTime() < effectiveTo.getTime()
-                  ? effectiveTo
-                  : binding.effectiveFrom,
-            },
+            data: { effectiveTo },
           });
         }
         await tx.providerKeyIdentity.update({

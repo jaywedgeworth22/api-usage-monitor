@@ -27,16 +27,21 @@ effective dates and exact connection/account constraints.
 Raw provider/API keys are never returned. The optional `ATTRIBUTION_IDENTITY_HMAC_KEY` should stay
 stable across deploys; the required `ENCRYPTION_KEY` is a domain-separated fallback. During a key
 rotation, retain prior values temporarily in comma-separated
-`ATTRIBUTION_IDENTITY_HMAC_PREVIOUS_KEYS` so existing fingerprints continue resolving.
+`ATTRIBUTION_IDENTITY_HMAC_PREVIOUS_KEYS` so existing fingerprints continue resolving. Before
+removing previous keys, re-enter each raw provider-reported ID via `POST` action
+`rehash_identity` so stored digests are rewritten under the current key.
 
 ## Money semantics
 
 The coverage panel scans only shared telemetry schema-v2 `api_key`-scope records for identity
-coverage and sums `costUsd` only when coverage is explicitly `point|window` plus `disjoint`.
-Project, provider-connection, billing-account, cumulative, overlapping, and unknown records are
-excluded from key counts and remain numerically unclassified. It does not include provider polling
-snapshots or account-wide canonical billing totals. That prevents a per-key breakdown from being
-added to an account total a second time or from replacing existing max/dedup rules.
+coverage and sums `costUsd` only when coverage is explicitly `point` plus `disjoint`, or `window`
+plus `disjoint` with present `windowStart`/`windowEnd` that do not span a binding reassignment or
+identity retirement. Spanning or boundsless windows stay unclassified rather than attributing the
+whole amount to one identity. Project, provider-connection, billing-account, cumulative,
+overlapping, and unknown records are excluded from key counts and remain numerically unclassified.
+It does not include provider polling snapshots or account-wide canonical billing totals. That
+prevents a per-key breakdown from being added to an account total a second time or from replacing
+existing max/dedup rules.
 
 Shared telemetry v2.0 carries `producerKeyRef`, `providerConnectionRef`, and `billingAccountRef`.
 It does not have a separate `providerReportedKeyId` field. The monitor therefore treats
