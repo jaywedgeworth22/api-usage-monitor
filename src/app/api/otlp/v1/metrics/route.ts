@@ -19,9 +19,11 @@ import { readBoundedBody, validateMetricsRequest } from "@/lib/otlp/validation";
 import {
   INGEST_ADMISSION_RETRY_AFTER_SECONDS,
   isOtlpMetricsIngestEnabled,
+  isOtlpSystemMetricsIngestEnabled,
   OTLP_METRICS_DISABLED_RETRY_AFTER_SECONDS,
   tryAcquireIngestAdmission,
 } from "@/lib/ingest-admission";
+import { markBudgetStatusSoftStale } from "@/lib/budget-status";
 
 // OTLP-HTTP metrics ingest: POST /api/otlp/v1/metrics
 //
@@ -162,8 +164,16 @@ export async function POST(request: NextRequest) {
 
   const claudeResult = mapClaudeCodeMetrics(parsed);
   const systemResult = mapSystemMetrics(parsed);
+  // Wave G / E9: system.* host metrics are opt-in (default off) so an OTLP
+  // exporter that also ships host gauges cannot flood ExternalUsageEvent /
+  // mis-attribute cash under the hardcoded "hetzner" provider label.
+  const systemMetricsPersistEnabled = isOtlpSystemMetricsIngestEnabled();
+  const systemEvents = systemMetricsPersistEnabled ? systemResult.events : [];
+  const ignoredSystemMetrics = systemMetricsPersistEnabled
+    ? 0
+    : systemResult.events.length;
 
-  const events = [...claudeResult.events, ...systemResult.events];
+  const events = [...claudeResult.events, ...systemEvents];
 
   // A metric is only truly "unknown" if neither mapper understood it
   const unknownMetrics = claudeResult.unknownMetrics.filter((claudeUnknown) =>
@@ -235,6 +245,11 @@ export async function POST(request: NextRequest) {
       idempotentRetries = persistResult.idempotentRetries;
       accepted = persistResult.persisted + idempotentRetries;
 
+      // Wave F / E7: soft-stale budget SWR after newly persisted OTLP rows.
+      if (persistResult.persisted > 0) {
+        markBudgetStatusSoftStale();
+      }
+
       // Best-effort: give the owner a Provider row to attach a budget to (see
       // ensure-anthropic-provider.ts for why this is lazy-on-first-ingest
       // rather than a one-off seed script, and why it's a no-op if an
@@ -258,6 +273,8 @@ export async function POST(request: NextRequest) {
       ignoredPruned: skippedPrunedDuplicates || undefined,
       ignoredOutOfOrder: ignoredOutOfOrder || undefined,
       idempotentRetries: idempotentRetries || undefined,
+      // Dropped system.* points when OTLP_SYSTEM_METRICS_INGEST_ENABLED is off.
+      ignoredSystemMetrics: ignoredSystemMetrics || undefined,
       unknownMetrics: unknownMetrics.length > 0 ? unknownMetrics : undefined,
     },
     { status: 202 }

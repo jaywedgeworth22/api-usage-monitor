@@ -9,7 +9,7 @@ export default defineConfig({
       },
       miniflare: {
         bindings: {
-          RECEIPT_INBOX_ADDRESS: "receipts-secret-123@jays.services",
+          RECEIPT_INBOX_ADDRESS: "receipts-secret-123@receipts.jays.services",
           RECEIPT_INBOX_RETENTION_ACK: "receipt-evidence-lifecycle-configured-v1",
           RECEIPT_INBOX_IDENTITY_KEY: "iiiiiiiiiiiiiiiiiiiiiiiiiiiiiiii",
           RECEIPT_INBOX_READ_TOKEN: "rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr",

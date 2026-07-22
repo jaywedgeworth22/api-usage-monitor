@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { handleEmail, handleFetch, inspectAttachments, ReceiptInboxIndex, senderAuthentication, validateLifecycleRules } from "./src/index.mjs";
+import { handleEmail, handleFetch, inspectAttachments, isDedicatedReceiptAddress, ReceiptInboxIndex, senderAuthentication, validateLifecycleRules } from "./src/index.mjs";
 
 if (typeof crypto.subtle.timingSafeEqual !== "function") {
   Object.defineProperty(crypto.subtle, "timingSafeEqual", {
@@ -67,7 +67,7 @@ function createEnvironment() {
     lifecycleAudit: { ok: true, checkedAt: 0 },
   };
   const env = {
-    RECEIPT_INBOX_ADDRESS: "receipts-secret-123@jays.services",
+    RECEIPT_INBOX_ADDRESS: "receipts-secret-123@receipts.jays.services",
     RECEIPT_INBOX_RETENTION_ACK: "receipt-evidence-lifecycle-configured-v1",
     RECEIPT_INBOX_IDENTITY_KEY: "i".repeat(32),
     RECEIPT_INBOX_READ_TOKEN: "r".repeat(32),
@@ -111,7 +111,7 @@ function receiptMessage(rawText, overrides = {}) {
   const raw = new TextEncoder().encode(rawText);
   return {
     from: "billing@openai.com",
-    to: "receipts-secret-123@jays.services",
+    to: "receipts-secret-123@receipts.jays.services",
     headers: new Headers({ "authentication-results": "attacker; dkim=pass; dmarc=pass" }),
     raw: stream(raw),
     rawSize: raw.byteLength,
@@ -124,7 +124,7 @@ function receiptMessage(rawText, overrides = {}) {
 function rawReceipt(wrapper = "Private account receipt 1234") {
   return [
     "From: OpenAI Billing <billing@openai.com>",
-    "To: receipts-secret-123@jays.services",
+    "To: receipts-secret-123@receipts.jays.services",
     `Subject: ${wrapper}`,
     "MIME-Version: 1.0",
     "Content-Type: multipart/mixed; boundary=receipt",
@@ -147,7 +147,7 @@ function rawReceipt(wrapper = "Private account receipt 1234") {
 function rawImageReceipt(wrapper) {
   return [
     "From: OpenAI Billing <billing@openai.com>",
-    "To: receipts-secret-123@jays.services",
+    "To: receipts-secret-123@receipts.jays.services",
     `Subject: ${wrapper}`,
     "MIME-Version: 1.0",
     "Content-Type: multipart/related; boundary=receipt",
@@ -168,6 +168,12 @@ function rawImageReceipt(wrapper) {
 }
 
 describe("receipt inbox email worker", () => {
+  it("requires a high-entropy address on a dedicated jays.services subdomain", () => {
+    expect(isDedicatedReceiptAddress("receipts-secret-123@receipts.jays.services")).toBe(true);
+    expect(isDedicatedReceiptAddress("receipts-secret-123@jays.services")).toBe(false);
+    expect(isDedicatedReceiptAddress("short@receipts.jays.services")).toBe(false);
+  });
+
   it("rejects unknown recipients, missing retention acknowledgement, and oversize messages before reading raw", async () => {
     const { env, storage } = createEnvironment();
     let rawRead = false;
@@ -177,9 +183,22 @@ describe("receipt inbox email worker", () => {
     expect(message.rejected).toContain("exceeds");
     expect(rawRead).toBe(false);
 
-    const wrongRecipient = receiptMessage("x", { to: "receipts@jays.services" });
+    const wrongRecipient = receiptMessage("x", { to: "receipts@receipts.jays.services" });
     await handleEmail(wrongRecipient, env);
     expect(wrongRecipient.rejected).toBe("Unknown receipt mailbox");
+
+    let apexRawRead = false;
+    const apex = receiptMessage("x", { to: "receipts-secret-123@jays.services" });
+    Object.defineProperty(apex, "raw", {
+      get() { apexRawRead = true; return stream(new Uint8Array([1])); },
+    });
+    await handleEmail(apex, {
+      ...env,
+      RECEIPT_INBOX_ADDRESS: "receipts-secret-123@jays.services",
+    });
+    expect(apex.rejected).toBe("Unknown receipt mailbox");
+    expect(apex.forwardedTo).toBeUndefined();
+    expect(apexRawRead).toBe(false);
 
     const noRetention = receiptMessage("x");
     await handleEmail(noRetention, { ...env, RECEIPT_INBOX_RETENTION_ACK: "" });

@@ -49,6 +49,17 @@ retention period before real mail is accepted:
 - https://developers.cloudflare.com/email-service/api/route-emails/email-handler/
 - https://developers.cloudflare.com/r2/buckets/object-lifecycles/
 
+## Routing-domain correction (2026-07-21)
+
+Production evidence shows apex `jays.services` MX remains on iCloud and
+Cloudflare Email Routing is disabled. Do not enable or alter apex Email Routing.
+Instead, create a dedicated routed subdomain such as
+`receipts.jays.services`, set its Cloudflare Email Routing MX records there,
+and use an exact high-entropy address such as
+`receipts-secret-123@receipts.jays.services`. The intake Worker rejects apex
+addresses by design. This preserves personal iCloud email delivery while keeping
+receipt evidence isolated.
+
 ## Production prerequisites
 
 Before enabling real receipt intake:
@@ -60,8 +71,8 @@ Before enabling real receipt intake:
    acknowledgement, account ID, and a distinct read-only R2-configuration
    lifecycle-audit token.
 3. Deploy `usage-monitor-receipt-inbox` and attach exactly
-   that high-entropy `@jays.services` recipient in Email Routing; keep catch-all
-   disabled.
+   that high-entropy `@receipts.jays.services` recipient in Email Routing;
+   onboard only the receipt subdomain and keep catch-all disabled.
 4. Configure Render only with `RECEIPT_INBOX_READ_TOKEN`; the summary endpoint
    is fixed to `https://receipt-inbox.jays.services` and rejects redirects.
 5. Send a harmless fixture email and verify one `needs_review` row. Do not

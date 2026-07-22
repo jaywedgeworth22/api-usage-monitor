@@ -16,6 +16,10 @@ export interface ProviderSecretConfigMeta {
 // future adapters so they do not silently become browser-visible plaintext.
 const ALWAYS_SECRET_KEYS = new Set([
   "adminapikey",
+  // Wave G / E18: bare apiKey (normalized "apikey") was missing — only
+  // "adminapikey" / "apikeysid" matched exact forms, so config.apiKey could
+  // leak into publicConfig for custom adapters.
+  "apikey",
   "apikeysid",
   "apitoken",
   "apisecret",

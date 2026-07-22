@@ -4,6 +4,7 @@ import { prisma } from "@/lib/prisma";
 import { readJsonBody } from "@/lib/provider-input";
 import { canonicalProjectKey } from "@/lib/provider-identity";
 import { bustBudgetStatusCache } from "@/lib/budget-status";
+import { hasValidDashboardSession } from "@/lib/auth";
 
 function cleanOptionalString(value: unknown): string | undefined {
   if (typeof value !== "string") return undefined;
@@ -15,6 +16,10 @@ export async function PUT(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
+  if (!hasValidDashboardSession(request)) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
   const { id } = await params;
 
   const existing = await prisma.project.findUnique({ where: { id } });
@@ -90,9 +95,13 @@ export async function PUT(
 }
 
 export async function DELETE(
-  _request: NextRequest,
+  request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
+  if (!hasValidDashboardSession(request)) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
   const { id } = await params;
 
   const existing = await prisma.project.findUnique({ where: { id } });

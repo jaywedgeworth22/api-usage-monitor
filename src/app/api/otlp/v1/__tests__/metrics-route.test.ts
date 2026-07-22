@@ -230,6 +230,146 @@ describe("POST /api/otlp/v1/metrics", () => {
     expect(await prisma.otlpMetricState.count()).toBe(1);
   });
 
+  it("drops system.* metrics by default without writing rows (Wave G / E9)", async () => {
+    const systemPayload = {
+      resourceMetrics: [
+        {
+          resource: {
+            attributes: [
+              { key: "host.name", value: { stringValue: "web-01" } },
+              { key: "service.name", value: { stringValue: "host" } },
+            ],
+          },
+          scopeMetrics: [
+            {
+              metrics: [
+                {
+                  name: "system.cpu.utilization",
+                  gauge: {
+                    dataPoints: [
+                      {
+                        asDouble: 0.5,
+                        attributes: [{ key: "state", value: { stringValue: "user" } }],
+                        timeUnixNano: "1751500060000000000",
+                      },
+                    ],
+                  },
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    };
+
+    const res = await POST(
+      jsonRequest(systemPayload, { authorization: "Bearer test-token-123" })
+    );
+    expect(res.status).toBe(202);
+    const body = await res.json();
+    expect(body.ignoredSystemMetrics).toBe(1);
+    expect(body.accepted ?? 0).toBe(0);
+    expect(
+      await prisma.externalUsageEvent.count({ where: { sourceApp: "system-metrics" } })
+    ).toBe(0);
+  });
+
+  it("persists system.* metrics when OTLP_SYSTEM_METRICS_INGEST_ENABLED=true", async () => {
+    vi.stubEnv("OTLP_SYSTEM_METRICS_INGEST_ENABLED", "true");
+    const systemPayload = {
+      resourceMetrics: [
+        {
+          resource: {
+            attributes: [{ key: "host.name", value: { stringValue: "web-01" } }],
+          },
+          scopeMetrics: [
+            {
+              metrics: [
+                {
+                  name: "system.memory.usage",
+                  sum: {
+                    aggregationTemporality: 1,
+                    isMonotonic: false,
+                    dataPoints: [
+                      {
+                        asDouble: 1024,
+                        attributes: [{ key: "state", value: { stringValue: "used" } }],
+                        timeUnixNano: "1751500060000000000",
+                      },
+                    ],
+                  },
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    };
+    const res = await POST(
+      jsonRequest(systemPayload, { authorization: "Bearer test-token-123" })
+    );
+    expect(res.status).toBe(202);
+    const body = await res.json();
+    expect(body.accepted).toBeGreaterThanOrEqual(1);
+    expect(body.ignoredSystemMetrics).toBeUndefined();
+    expect(
+      await prisma.externalUsageEvent.count({ where: { sourceApp: "system-metrics" } })
+    ).toBe(1);
+  });
+
+  it("advances checkpoint on zero cumulative delta without persisting a zero event (Wave F / E9)", async () => {
+    const first = await POST(
+      jsonRequest(samplePayload, { authorization: "Bearer test-token-123" })
+    );
+    expect(first.status).toBe(202);
+    expect((await first.json()).accepted).toBe(1);
+
+    // Same cumulative value, later timestamp — pure heartbeat / no-change
+    // export. Checkpoint must advance; no new ExternalUsageEvent.
+    const zeroDelta = structuredClone(samplePayload);
+    const zeroPoint =
+      zeroDelta.resourceMetrics[0].scopeMetrics[0].metrics[0].sum.dataPoints[0];
+    zeroPoint.timeUnixNano = "1751500120000000000";
+    // Keep asDouble equal to the first export (0.0231 in samplePayload).
+    const zeroResponse = await POST(
+      jsonRequest(zeroDelta, { authorization: "Bearer test-token-123" })
+    );
+    expect(zeroResponse.status).toBe(202);
+    const zeroBody = await zeroResponse.json();
+    expect(zeroBody.ignoredOutOfOrder).toBe(1);
+    // No new persist; accepted stays at 0 for this call (only retries count
+    // when an existing key is resubmitted — this is a new point key).
+    expect(zeroBody.accepted ?? 0).toBe(0);
+
+    const rows = await prisma.externalUsageEvent.findMany({
+      where: { sourceApp: "claude-code" },
+    });
+    expect(rows).toHaveLength(1);
+    expect(rows[0].costUsd).toBeCloseTo(0.0231);
+
+    const state = await prisma.otlpMetricState.findFirst();
+    expect(state).toBeTruthy();
+    expect(state!.lastTimeUnixNano).toBe("1751500120000000000");
+    expect(state!.lastValue).toBeCloseTo(0.0231);
+
+    // A later positive delta from the advanced checkpoint still works.
+    const later = structuredClone(samplePayload);
+    const laterPoint =
+      later.resourceMetrics[0].scopeMetrics[0].metrics[0].sum.dataPoints[0];
+    laterPoint.timeUnixNano = "1751500180000000000";
+    laterPoint.asDouble = 0.05;
+    const laterResponse = await POST(
+      jsonRequest(later, { authorization: "Bearer test-token-123" })
+    );
+    expect(laterResponse.status).toBe(202);
+    const laterRows = await prisma.externalUsageEvent.findMany({
+      where: { sourceApp: "claude-code" },
+      orderBy: { occurredAt: "asc" },
+    });
+    expect(laterRows).toHaveLength(2);
+    expect(laterRows.map((row) => row.costUsd)).toEqual([0.0231, 0.0269]);
+  });
+
   it("bounds cumulative checkpoint cardinality without deleting replay protection", async () => {
     vi.stubEnv("OTLP_MAX_CUMULATIVE_SERIES", "1");
     const first = await POST(

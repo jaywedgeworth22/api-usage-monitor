@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
-import { SESSION_COOKIE_NAME, verifySessionToken } from "@/lib/auth";
+import { hasValidDashboardSession } from "@/lib/auth";
 import { isUsageReadAuthorized } from "@/lib/ingest-auth";
 import { parseSubscriptionCreateInput } from "@/lib/subscription-input";
 import {
@@ -20,10 +20,6 @@ import {
   type SubscriptionInterval,
 } from "@/lib/subscriptions";
 
-function hasSessionCookie(request: NextRequest): boolean {
-  return verifySessionToken(request.cookies.get(SESSION_COOKIE_NAME)?.value);
-}
-
 // GET /api/subscriptions — list every subscription with provider/project labels
 // and a monthly-equivalent cost (so mixed cadences are comparable).
 //
@@ -35,7 +31,7 @@ function hasSessionCookie(request: NextRequest): boolean {
 // GET /api/budget-status) so a headless sibling app can read the
 // subscription/knobEnv list without a browser session.
 export async function GET(request: NextRequest) {
-  if (!hasSessionCookie(request) && !isUsageReadAuthorized(request)) {
+  if (!hasValidDashboardSession(request) && !isUsageReadAuthorized(request)) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
@@ -115,7 +111,7 @@ export async function GET(request: NextRequest) {
 // (it can't distinguish GET from POST), so this handler enforces the session
 // cookie itself now that middleware no longer gates this path.
 export async function POST(request: NextRequest) {
-  if (!hasSessionCookie(request)) {
+  if (!hasValidDashboardSession(request)) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 

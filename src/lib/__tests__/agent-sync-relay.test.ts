@@ -103,7 +103,9 @@ describe("ensureAgentSyncProviderSeeded", () => {
     expect(provider).toBeDefined();
     expect(provider?.displayName).toBe("Agent Sync Relay");
     expect(provider?.type).toBe("builtin");
-    expect(provider?.refreshIntervalMin).toBe(15);
+    // Wave F / E17: catalog/health-only — inactive, never sub-daily poll.
+    expect(provider?.isActive).toBe(false);
+    expect(provider?.refreshIntervalMin).toBe(1440);
     expect(provider?.alertConfigGeneration).toBe(0);
   });
 
@@ -127,6 +129,7 @@ describe("ensureAgentSyncProviderSeeded", () => {
         name: "agent-sync-relay",
         displayName: "Agent Sync Relay",
         isActive: true,
+        refreshIntervalMin: 15,
       },
     });
 
@@ -134,6 +137,31 @@ describe("ensureAgentSyncProviderSeeded", () => {
 
     expect(
       await prisma.provider.findUniqueOrThrow({ where: { id: provider.id } })
-    ).toMatchObject({ isActive: false, alertConfigGeneration: 1 });
+    ).toMatchObject({
+      isActive: false,
+      refreshIntervalMin: 1440,
+      alertConfigGeneration: 1,
+    });
+  });
+
+  it("raises sub-daily refresh floor on an already-inactive relay", async () => {
+    const provider = await prisma.provider.create({
+      data: {
+        name: "agent-sync-relay",
+        displayName: "Agent Sync Relay",
+        isActive: false,
+        refreshIntervalMin: 60,
+      },
+    });
+
+    await ensureAgentSyncProviderSeeded();
+
+    expect(
+      await prisma.provider.findUniqueOrThrow({ where: { id: provider.id } })
+    ).toMatchObject({
+      isActive: false,
+      refreshIntervalMin: 1440,
+      alertConfigGeneration: 1,
+    });
   });
 });

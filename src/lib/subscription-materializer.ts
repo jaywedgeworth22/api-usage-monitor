@@ -1,7 +1,6 @@
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import {
-  persistExternalUsageEvents,
   persistExternalUsageEventsInTransaction,
   type ExternalUsageEventInput,
 } from "@/lib/external-usage-events";
@@ -375,18 +374,31 @@ export async function materializeDueSubscriptions(
       plan = guarded.plan;
     }
 
-    const persistResult = await persistExternalUsageEvents(plan.inputs);
+    // Wave G / E13: persist charges + advance watermark in one writer-locked
+    // transaction (same guarantee as the guarded settlement path above). A
+    // crash between event insert and watermark update can no longer leave a
+    // charged period re-eligible while events already exist (idempotent, but
+    // brittle for ops).
+    const persistResult = await prisma.$transaction(
+      async (tx) => {
+        const persisted = await persistExternalUsageEventsInTransaction(
+          tx,
+          plan.inputs
+        );
+        await tx.subscription.update({
+          where: { id: subscription.id },
+          data: {
+            currentPeriodStart: plan.currentPeriodStart,
+            nextRenewalAt: plan.nextRenewalAt,
+            lastChargedPeriodStart: plan.lastChargedPeriodStart,
+          },
+        });
+        return persisted;
+      },
+      { timeout: 30_000 }
+    );
     eventsWritten += persistResult.persisted;
     charged += 1;
-
-    await prisma.subscription.update({
-      where: { id: subscription.id },
-      data: {
-        currentPeriodStart: plan.currentPeriodStart,
-        nextRenewalAt: plan.nextRenewalAt,
-        lastChargedPeriodStart: plan.lastChargedPeriodStart,
-      },
-    });
   }
 
   return { examined: subscriptions.length, charged, eventsWritten };

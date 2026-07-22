@@ -28,5 +28,19 @@ export async function GET(request: NextRequest) {
   }
 
   const status = await computeProjectBudgetStatus();
-  return NextResponse.json(status, { headers: { "cache-control": "no-store" } });
+  const generatedAt = status.generatedAt;
+  const generatedMs = Date.parse(generatedAt);
+  const ageSeconds =
+    Number.isFinite(generatedMs) && generatedMs > 0
+      ? Math.max(0, Math.floor((Date.now() - generatedMs) / 1000))
+      : null;
+  return NextResponse.json(status, {
+    headers: {
+      "cache-control": "no-store",
+      // Wave F / E7: throttle consumers can prefer fresh snapshots without
+      // parsing the full body, and can back off when Age is high.
+      "x-budget-generated-at": generatedAt,
+      ...(ageSeconds != null ? { age: String(ageSeconds) } : {}),
+    },
+  });
 }

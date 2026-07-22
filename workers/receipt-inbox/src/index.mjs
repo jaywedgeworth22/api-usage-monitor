@@ -136,6 +136,13 @@ async function attachmentGroupId(attachments, identityKey) {
   return hmacHex(utf8(`receipt-attachment-group-v1\0${digests.join("\0")}`), identityKey);
 }
 
+export function isDedicatedReceiptAddress(value) {
+  // Keep the apex jays.services MX independent (it delivers to iCloud).
+  // Receipt intake owns one routed subdomain such as receipts.jays.services.
+  return typeof value === "string"
+    && /^[a-z0-9][a-z0-9._+-]{15,63}@[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.jays\.services$/i.test(value);
+}
+
 function evidenceKey(id) {
   return `evidence/${id}.eml`;
 }
@@ -180,7 +187,7 @@ async function indexRequest(env, path, init) {
 
 export async function handleEmail(message, env) {
   if (
-    typeof env.RECEIPT_INBOX_ADDRESS !== "string"
+    !isDedicatedReceiptAddress(env.RECEIPT_INBOX_ADDRESS)
     || typeof message.to !== "string"
     || message.to.toLowerCase() !== env.RECEIPT_INBOX_ADDRESS.toLowerCase()
   ) {
@@ -302,8 +309,7 @@ export async function storeAndCommitEvidence(env, id, raw) {
 }
 
 async function hasValidConfiguration(env) {
-  const structurallyValid = typeof env.RECEIPT_INBOX_ADDRESS === "string"
-    && /^[^@\s]{16,64}@jays\.services$/i.test(env.RECEIPT_INBOX_ADDRESS)
+  const structurallyValid = isDedicatedReceiptAddress(env.RECEIPT_INBOX_ADDRESS)
     && typeof env.RECEIPT_INBOX_IDENTITY_KEY === "string"
     && env.RECEIPT_INBOX_IDENTITY_KEY.length >= 32
     && typeof env.RECEIPT_INBOX_READ_TOKEN === "string"

@@ -40,6 +40,7 @@ let __setProjectBudgetStatusCacheOverrideForTests: typeof import("../budget-stat
 let __resetProjectBudgetStatusCacheForTests: typeof import("../budget-status").__resetProjectBudgetStatusCacheForTests;
 let budgetStatusCacheTtlMs: typeof import("../budget-status").budgetStatusCacheTtlMs;
 let bustBudgetStatusCache: typeof import("../budget-status").bustBudgetStatusCache;
+let markBudgetStatusSoftStale: typeof import("../budget-status").markBudgetStatusSoftStale;
 
 let testDir: string;
 
@@ -73,6 +74,7 @@ beforeAll(async () => {
     __resetProjectBudgetStatusCacheForTests,
     budgetStatusCacheTtlMs,
     bustBudgetStatusCache,
+    markBudgetStatusSoftStale,
   } = await import("../budget-status"));
 }, 60_000);
 
@@ -501,6 +503,45 @@ describe("computeProjectBudgetStatus stale-while-revalidate cache", () => {
     await waitUntil(async () => {
       const probe = await computeProjectBudgetStatus(NOW);
       return probe.providers.find((p) => p.id === provider.id)?.spentUsd === 9;
+    });
+  });
+
+  describe("markBudgetStatusSoftStale", () => {
+    it("serves last-good immediately then background-refreshes (Wave F / E7)", async () => {
+      // Soft-stale must NOT drop the entry the way hard bust does — ingest
+      // callers need last-good without waiting on the ~11s recompute.
+      const NOW = new Date("2026-12-10T12:00:00.000Z");
+      const provider = await createProviderWithCost(
+        "soft-stale-test-provider",
+        15,
+        new Date("2026-12-10T10:00:00.000Z")
+      );
+
+      const first = await computeBudgetStatus(NOW);
+      expect(first.providers.find((p) => p.id === provider.id)?.spentUsd).toBe(15);
+
+      await prisma.usageSnapshot.updateMany({
+        where: { providerId: provider.id },
+        data: { totalCost: 42 },
+      });
+
+      // Still inside TTL — without soft-stale, cache would keep 15 forever
+      // until TTL expires. Soft-stale forces a background refresh while still
+      // returning the last-good instance immediately.
+      markBudgetStatusSoftStale();
+
+      const afterSoft = await computeBudgetStatus(NOW);
+      expect(afterSoft).toBe(first);
+      expect(afterSoft.providers.find((p) => p.id === provider.id)?.spentUsd).toBe(15);
+
+      await waitUntil(async () => {
+        const probe = await computeBudgetStatus(NOW);
+        return probe.providers.find((p) => p.id === provider.id)?.spentUsd === 42;
+      });
+
+      const refreshed = await computeBudgetStatus(NOW);
+      expect(refreshed).not.toBe(first);
+      expect(refreshed.providers.find((p) => p.id === provider.id)?.spentUsd).toBe(42);
     });
   });
 

@@ -1366,9 +1366,22 @@ function createStaleWhileRevalidateCache<T>(options: {
     refreshGeneration = -1;
   }
 
+  /**
+   * Soft-stale mark (Wave F / E7): keep serving the last-good value, but force
+   * the next reader to kick a background refresh immediately (as if TTL
+   * expired). Unlike invalidate(), this does not drop the entry or bump the
+   * generation — safe to call after high-volume ingest without thrashing.
+   */
+  function markSoftStale(): void {
+    if (entry) {
+      entry = { ...entry, computedAt: 0 };
+    }
+  }
+
   return {
     get,
     invalidate,
+    markSoftStale,
     setOverrideForTests(value: boolean | null): void {
       override = value;
     },
@@ -1421,11 +1434,11 @@ export function __resetBudgetStatusCacheForTests(): void {
  * computeProjectBudgetStatus's output embeds computeBudgetStatus's, so
  * invalidating only one would leave the other serving a contradicting view.
  *
- * Deliberately NOT wired to usage ingest (/api/ingest/usage, OTLP, scheduled
- * fetches): those write continuously, and busting per event would defeat the
- * cache entirely and restore the ~11s page loads it exists to prevent. Usage
- * numbers stay TTL-eventual (BUDGET_STATUS_CACHE_TTL_MS, default 60s), exactly
- * as before; only user-visible add/remove/edit actions are made immediate.
+ * Hard invalidation is deliberately NOT the default for usage ingest
+ * (/api/ingest/usage, OTLP): those write continuously, and full busts per
+ * event would defeat the cache. Use markBudgetStatusSoftStale() after a
+ * successful ingest so the next reader still gets last-good immediately but
+ * kicks a background refresh (Wave F / E7).
  *
  * Invalidation is generation-based, so a refresh that started before this call
  * cannot publish its (pre-mutation) result afterwards.
@@ -1433,6 +1446,15 @@ export function __resetBudgetStatusCacheForTests(): void {
 export function bustBudgetStatusCache(): void {
   budgetStatusSwrCache.invalidate();
   projectBudgetStatusSwrCache.invalidate();
+}
+
+/**
+ * Soft-stale both budget SWR caches after ingest/OTLP successfully persists
+ * new rows. Does not drop last-good values or bump generations.
+ */
+export function markBudgetStatusSoftStale(): void {
+  budgetStatusSwrCache.markSoftStale();
+  projectBudgetStatusSwrCache.markSoftStale();
 }
 
 export async function computeBudgetStatus(now: Date = new Date()): Promise<BudgetStatusResponse> {

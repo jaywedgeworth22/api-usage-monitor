@@ -20,6 +20,7 @@ describe("provider secret config", () => {
       splitProviderConfig({
         accountId: "acct",
         publicKey: "pk",
+        apiKey: "sk-should-be-secret",
         apiSecret: "alpaca-secret",
         apiToken: "future-secret",
         apiKeySid: "SK123",
@@ -35,6 +36,7 @@ describe("provider secret config", () => {
         nested: { region: "us" },
       },
       secretConfig: {
+        apiKey: "sk-should-be-secret",
         apiSecret: "alpaca-secret",
         apiToken: "future-secret",
         apiKeySid: "SK123",
