@@ -21,6 +21,7 @@ interface CoverageRow {
   providerConnectionRef: string | null;
   billingAccountRef: string | null;
   projectId: string | null;
+  coverageDeclared: number | null;
   coverageScope: string | null;
   coverageMode: string | null;
   coverageRelationship: string | null;
@@ -244,6 +245,7 @@ async function loadCoverage(
         json_extract("metadata", '$._providerConnectionRef') AS "providerConnectionRef",
         json_extract("metadata", '$._billingAccountRef') AS "billingAccountRef",
         "projectId" AS "projectId",
+        CAST(json_extract("metadata", '$._coverageDeclared') AS INTEGER) AS "coverageDeclared",
         json_extract("metadata", '$._coverageScope') AS "coverageScope",
         json_extract("metadata", '$._coverageMode') AS "coverageMode",
         json_extract("metadata", '$._coverageRelationship') AS "coverageRelationship",
@@ -259,11 +261,18 @@ async function loadCoverage(
         AND CAST(json_extract("metadata", '$._usageTelemetrySchemaVersion') AS INTEGER) = 2
       GROUP BY
         "sourceApp", "provider", "keyRef", "providerConnectionRef",
-        "billingAccountRef", "projectId", "coverageScope", "coverageMode", "coverageRelationship",
+        "billingAccountRef", "projectId", "coverageDeclared", "coverageScope", "coverageMode", "coverageRelationship",
         "occurredAt", "windowStart", "windowEnd"
     `);
 
     for (const row of rows) {
+      // Coverage keys are authoritative only when the validated shared-v2
+      // `coverage` object produced this monitor-owned marker. Arbitrary event
+      // metadata with similarly named keys must remain unclassified.
+      if (Number(row.coverageDeclared) !== 1) {
+        totals.unclassifiedCostEventCount += Number(row.costEventCount);
+        continue;
+      }
       const isKeyScope = row.coverageScope === "api_key";
       if (!isKeyScope) {
         totals.unclassifiedCostEventCount += Number(row.costEventCount);

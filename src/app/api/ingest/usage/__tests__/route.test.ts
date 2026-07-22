@@ -216,6 +216,50 @@ describe("POST /api/ingest/usage admission", () => {
     ]);
   });
 
+  it("keeps v1 metadata but strips normalized monitor authority before persistence", async () => {
+    const response = await POST(nextRequest(
+      {
+        sourceApp: "congress-trade",
+        provider: "openai",
+        metricType: "cost",
+        costUsd: 200,
+        keyRef: "configured-openai-primary",
+        occurredAt: "2026-07-22T00:00:00.000Z",
+        metadata: {
+          ordinaryV1Note: "retained",
+          " _usageTelemetrySchemaVersion ": 2,
+          " _coverageDeclared ": true,
+          " _coverageScope ": "api_key",
+          " _coverageMode ": "point",
+          " _coverageRelationship ": "disjoint",
+          " _providerConnectionRef ": "spoofed-connection",
+          " _billingAccountRef ": "spoofed-account",
+        },
+      },
+      USAGE_TOKEN
+    ));
+
+    expect(response.status).toBe(202);
+    expect(externalUsageMocks.persist).toHaveBeenCalledWith([
+      expect.objectContaining({
+        sourceApp: "congress-trade",
+        metadata: { ordinaryV1Note: "retained" },
+      }),
+    ]);
+    const [persisted] = externalUsageMocks.persist.mock.calls[0][0];
+    expect(Object.keys(persisted.metadata)).not.toEqual(
+      expect.arrayContaining([
+        "_usageTelemetrySchemaVersion",
+        "_coverageDeclared",
+        "_coverageScope",
+        "_coverageMode",
+        "_coverageRelationship",
+        "_providerConnectionRef",
+        "_billingAccountRef",
+      ])
+    );
+  });
+
   it("returns the typed v2 error shape for a headerless invalid v2 body", async () => {
     const response = await POST(nextRequest(
       { schemaVersion: 2, producerId: "socratic-trade", events: [{}] },

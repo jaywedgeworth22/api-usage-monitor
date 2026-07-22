@@ -48,10 +48,39 @@ describe("usage telemetry v2 shared contract", () => {
       _producerInstanceId: "prod-a",
       _providerConnectionRef: "openai-org-primary",
       _billingAccountRef: "openai-billing-primary",
+      _coverageDeclared: true,
       _coverageScope: "billing_account",
       _coverageMode: "cumulative",
       _coverageRelationship: "supersedes",
     });
+  });
+
+  it("reserves persisted coverage authority from arbitrary producer metadata", async () => {
+    const [event] = await parseUsageTelemetryV2Batch({
+      schemaVersion: 2,
+      producerId: "congress-trade",
+      events: [{
+        eventId: "metadata-only-coverage",
+        provider: "openai",
+        metadata: {
+          _coverageDeclared: true,
+          _coverageScope: "api_key",
+          _coverageMode: "point",
+          _coverageRelationship: "disjoint",
+          harmless: "retained",
+        },
+      }],
+    });
+
+    expect(event.metadata).toMatchObject({
+      _usageTelemetrySchemaVersion: 2,
+      _producerEventId: "metadata-only-coverage",
+      harmless: "retained",
+    });
+    expect(event.metadata).not.toHaveProperty("_coverageDeclared");
+    expect(event.metadata).not.toHaveProperty("_coverageScope");
+    expect(event.metadata).not.toHaveProperty("_coverageMode");
+    expect(event.metadata).not.toHaveProperty("_coverageRelationship");
   });
 
   it("rejects a missing event identity and ambiguous account scope", async () => {

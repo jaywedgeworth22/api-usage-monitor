@@ -8,6 +8,21 @@ import {
 const MAX_EVENTS = 100;
 const MAX_METADATA_KEYS = 50;
 const MAX_METADATA_STRING_LENGTH = 500;
+// These keys are monitor-owned persistence fields. Producer metadata must not
+// be able to impersonate validated shared-contract fields, especially cost
+// coverage authority consumed by money-path reporting.
+const RESERVED_V2_METADATA_KEYS = new Set([
+  "_usageTelemetrySchemaVersion",
+  "_producerEventId",
+  "_producerInstanceId",
+  "_providerConnectionRef",
+  "_billingAccountRef",
+  "_coverageDeclared",
+  "_coverageScope",
+  "_coverageMode",
+  "_coverageRelationship",
+  "_coverageReportThrough",
+]);
 // 100 events * 50 metadata entries * (80-byte key + 500-byte value), plus
 // event fields and JSON framing, fits below 4 MiB. The route enforces this
 // before decoding so the parser's field limits cannot be bypassed with a huge
@@ -42,6 +57,27 @@ const units = new Set([
 const billingModes = new Set(["actual", "estimated", "manual"]);
 const confidences = new Set(["actual", "estimated", "manual"]);
 const limitWindows = new Set(["minute", "day", "month", "run"]);
+
+function cleanProducerMetadata(
+  metadata: Record<string, unknown>
+): Record<string, string | number | boolean | null> | undefined {
+  const entries = Object.entries(metadata).slice(0, MAX_METADATA_KEYS);
+  const clean: Record<string, string | number | boolean | null> = {};
+
+  for (const [key, value] of entries) {
+    const cleanKey = key.trim().slice(0, 80);
+    if (!cleanKey || RESERVED_V2_METADATA_KEYS.has(cleanKey)) continue;
+    if (value == null || typeof value === "boolean") {
+      clean[cleanKey] = value ?? null;
+    } else if (typeof value === "number" && Number.isFinite(value)) {
+      clean[cleanKey] = value;
+    } else if (typeof value === "string") {
+      clean[cleanKey] = value.slice(0, MAX_METADATA_STRING_LENGTH);
+    }
+  }
+
+  return Object.keys(clean).length ? clean : undefined;
+}
 
 export interface ParsedUsageTelemetryEvent {
   sourceApp: string;
@@ -86,7 +122,7 @@ function v2Metadata(
   event: UsageTelemetryV2Batch["events"][number]
 ): Record<string, string | number | boolean | null> | undefined {
   const metadata: Record<string, string | number | boolean | null> = {
-    ...(event.metadata ?? {}),
+    ...(cleanProducerMetadata(event.metadata ?? {}) ?? {}),
     _usageTelemetrySchemaVersion: 2,
     _producerEventId: event.eventId,
   };
@@ -94,6 +130,7 @@ function v2Metadata(
   if (event.providerConnectionRef) metadata._providerConnectionRef = event.providerConnectionRef;
   if (event.billingAccountRef) metadata._billingAccountRef = event.billingAccountRef;
   if (event.coverage) {
+    metadata._coverageDeclared = true;
     metadata._coverageScope = event.coverage.scope;
     metadata._coverageMode = event.coverage.mode;
     metadata._coverageRelationship = event.coverage.relationship;
@@ -226,23 +263,7 @@ function readMetadata(
 ): Record<string, string | number | boolean | null> | undefined {
   const raw = record.metadata;
   if (raw == null) return undefined;
-  const metadata = asRecord(raw);
-  const entries = Object.entries(metadata).slice(0, MAX_METADATA_KEYS);
-  const clean: Record<string, string | number | boolean | null> = {};
-
-  for (const [key, value] of entries) {
-    const cleanKey = key.trim().slice(0, 80);
-    if (!cleanKey) continue;
-    if (value == null || typeof value === "boolean") {
-      clean[cleanKey] = value ?? null;
-    } else if (typeof value === "number" && Number.isFinite(value)) {
-      clean[cleanKey] = value;
-    } else if (typeof value === "string") {
-      clean[cleanKey] = value.slice(0, MAX_METADATA_STRING_LENGTH);
-    }
-  }
-
-  return Object.keys(clean).length ? clean : undefined;
+  return cleanProducerMetadata(asRecord(raw));
 }
 
 // Length-prefixes each field before joining, so two fields that straddle a

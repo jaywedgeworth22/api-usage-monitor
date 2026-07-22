@@ -142,6 +142,24 @@ describe("provider key attribution API", () => {
       effectiveFrom: storedIdentity.createdAt.toISOString(),
     }))).status).toBe(201);
 
+    const { parseUsageTelemetryBatch } = await import("@/lib/usage-telemetry");
+    const [spoofedV1] = parseUsageTelemetryBatch({
+      sourceApp: "congress-trade",
+      provider: "openai",
+      metricType: "cost",
+      keyRef: "configured-openai-primary",
+      costUsd: 200,
+      occurredAt: eventTime.toISOString(),
+      idempotencyKey: "event-f-spoofed-coverage-metadata",
+      metadata: {
+        _usageTelemetrySchemaVersion: 2,
+        _coverageDeclared: true,
+        _coverageScope: "api_key",
+        _coverageMode: "point",
+        _coverageRelationship: "disjoint",
+      },
+    });
+
     await prisma.externalUsageEvent.createMany({
       data: [
         {
@@ -153,6 +171,7 @@ describe("provider key attribution API", () => {
           occurredAt: eventTime,
           metadata: {
             _usageTelemetrySchemaVersion: 2,
+            _coverageDeclared: true,
             _coverageScope: "api_key",
             _providerConnectionRef: "openai-org-primary",
             _billingAccountRef: "openai-billing-primary",
@@ -170,6 +189,7 @@ describe("provider key attribution API", () => {
           // Boundsless window cost is not proven additive — stay unclassified.
           metadata: {
             _usageTelemetrySchemaVersion: 2,
+            _coverageDeclared: true,
             _coverageScope: "api_key",
             _coverageMode: "window",
             _coverageRelationship: "disjoint",
@@ -184,6 +204,7 @@ describe("provider key attribution API", () => {
           occurredAt: directEventTime,
           metadata: {
             _usageTelemetrySchemaVersion: 2,
+            _coverageDeclared: true,
             _coverageScope: "api_key",
             _coverageMode: "point",
             _coverageRelationship: "disjoint",
@@ -198,6 +219,7 @@ describe("provider key attribution API", () => {
           occurredAt: eventTime,
           metadata: {
             _usageTelemetrySchemaVersion: 2,
+            _coverageDeclared: true,
             _coverageScope: "billing_account",
             _providerConnectionRef: "openai-org-primary",
             _billingAccountRef: "openai-billing-primary",
@@ -213,6 +235,17 @@ describe("provider key attribution API", () => {
           costUsd: 50,
           occurredAt: eventTime,
         },
+        {
+          idempotencyKey: "event-f-spoofed-coverage-metadata",
+          sourceApp: "congress-trade",
+          provider: "openai",
+          keyRef: "configured-openai-primary",
+          costUsd: 200,
+          occurredAt: eventTime,
+          // A v1 producer attempted to forge both the v2 and coverage markers;
+          // normalization strips all monitor-owned authority before persistence.
+          metadata: spoofedV1.metadata,
+        },
       ],
     });
 
@@ -223,6 +256,7 @@ describe("provider key attribution API", () => {
       scope: "pushed_v2_cost_events",
       aggregation: "proven_disjoint_point_or_window_event_sum",
       // event-b (boundsless window) and event-d (non-key scope) are unclassified.
+      // Sanitized v1 event-f cannot enter the pushed-v2 coverage scan at all.
       totalCostUsd: 7,
       identityMatchedCostUsd: 7,
       identityUnattributedCostUsd: 0,
@@ -540,6 +574,7 @@ describe("provider key attribution API", () => {
         occurredAt,
         metadata: {
           _usageTelemetrySchemaVersion: 2,
+          _coverageDeclared: true,
           _coverageScope: "api_key",
           _coverageMode: "point",
           _coverageRelationship: "disjoint",
@@ -643,6 +678,7 @@ describe("provider key attribution API", () => {
         windowEnd,
         metadata: {
           _usageTelemetrySchemaVersion: 2,
+          _coverageDeclared: true,
           _coverageScope: "api_key",
           _coverageMode: "window",
           _coverageRelationship: "disjoint",
@@ -660,6 +696,7 @@ describe("provider key attribution API", () => {
         occurredAt: new Date(reassignmentAt.getTime() + 60_000),
         metadata: {
           _usageTelemetrySchemaVersion: 2,
+          _coverageDeclared: true,
           _coverageScope: "api_key",
           _coverageMode: "point",
           _coverageRelationship: "disjoint",
@@ -719,6 +756,7 @@ describe("provider key attribution API", () => {
           occurredAt: before,
           metadata: {
             _usageTelemetrySchemaVersion: 2,
+            _coverageDeclared: true,
             _coverageScope: "api_key",
             _coverageMode: "point",
             _coverageRelationship: "disjoint",
@@ -733,6 +771,7 @@ describe("provider key attribution API", () => {
           occurredAt: after,
           metadata: {
             _usageTelemetrySchemaVersion: 2,
+            _coverageDeclared: true,
             _coverageScope: "api_key",
             _coverageMode: "point",
             _coverageRelationship: "disjoint",
@@ -793,6 +832,7 @@ describe("provider key attribution API", () => {
         occurredAt,
         metadata: {
           _usageTelemetrySchemaVersion: 2,
+          _coverageDeclared: true,
           _coverageScope: "api_key",
           _coverageMode: "point",
           _coverageRelationship: "disjoint",
