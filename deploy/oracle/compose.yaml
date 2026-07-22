@@ -25,7 +25,7 @@ services:
   caddy:
     image: caddy:2.10.2-alpine
     environment:
-      USAGE_MONITOR_HOSTNAME: ${USAGE_MONITOR_HOSTNAME:-usage-oracle.132.226.90.164.sslip.io}
+      USAGE_MONITOR_HOSTNAME: ${USAGE_MONITOR_HOSTNAME:-usage.jays.services}
     ports:
       - "80:80"
       - "443:443"

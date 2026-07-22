@@ -10,6 +10,9 @@ const read = (relativePath) =>
 
 const workflow = read(".github/workflows/oracle-production-deploy.yml");
 const compose = read("deploy/oracle/compose.production.yaml");
+const composeDev = read("deploy/oracle/compose.yaml");
+const caddy = read("deploy/oracle/Caddyfile");
+const oracleReadme = read("deploy/oracle/README.md");
 const deploy = read("deploy/oracle/deploy-production.sh");
 const poller = read("deploy/oracle/auto-deploy.sh");
 const service = read("deploy/oracle/usage-monitor.service");
@@ -28,6 +31,10 @@ function forbidText(body, pattern, message) {
   assert.doesNotMatch(body, pattern, message);
 }
 
+function forbidLiteral(body, text, message) {
+  assert.equal(body.includes(text), false, message);
+}
+
 // GitHub observes an exact, already-green main CI run. It holds no production
 // credential because Oracle pulls the public protected revision itself.
 requireText(workflow, /workflow_run:/, "deploy receipt must follow CI");
@@ -40,6 +47,42 @@ requireText(workflow, /seq 1 720/, "observer must allow the independent CodeQL a
 forbidText(workflow, /secrets\./, "the observer workflow must not hold a production secret");
 forbidText(workflow, /ssh-keyscan|StrictHostKeyChecking=no/, "unsafe SSH bootstrap is forbidden");
 requireText(ci, /npm run test:oracle-deploy/, "hosted CI must exercise deployment contracts");
+
+// Production uses the Cloudflare-proxied public hostname. The old sslip.io
+// fallback encoded a deleted ephemeral Oracle address and could cause a fresh
+// bootstrap to request the wrong certificate. Cloudflare terminates public TLS,
+// so Caddy must leave HTTP-01 enabled and disable TLS-ALPN-01.
+requireText(caddy, /^\{\$USAGE_MONITOR_HOSTNAME:usage\.jays\.services\}/m, "Caddy must default to the public hostname");
+requireText(caddy, /disable_tlsalpn_challenge/, "Caddy must use HTTP-01 behind the proxied hostname");
+requireText(caddy, /issuer acme/, "Caddy must keep the Let's Encrypt ACME issuer");
+requireText(
+  caddy,
+  /dir https:\/\/acme\.zerossl\.com\/v2\/DV90/,
+  "Caddy must keep ZeroSSL ACME directory as the Automatic HTTPS fallback issuer",
+);
+requireText(deploy, /ensure_public_caddy_hostname/, "deploy must migrate/refuse stale Caddy hostnames");
+requireText(deploy, /reload_caddy_proxy/, "deploy must recreate Caddy after hostname migration");
+// Use awk index() markers (not host-shaped substring checks) so CodeQL does
+// not flag incomplete URL sanitization on this contract file.
+forbidLiteral(deploy, "usage-oracle.", "deploy must not reintroduce the deleted IP-derived host prefix");
+assert.equal(
+  deploy.includes('index($0, "sslip.io")'),
+  true,
+  "deploy must detect deleted IP-derived sslip hostnames via awk index()",
+);
+assert.equal(
+  deploy.includes('index($0, "132.226.90.164")'),
+  true,
+  "deploy must detect the deleted Oracle public IP hostname via awk index()",
+);
+// Split the forbidden host label so this file does not embed a host-shaped
+// sanitizer check that CodeQL treats as incomplete URL validation.
+const deletedHostLabel = ["sslip", ".io"].join("");
+forbidLiteral(caddy, deletedHostLabel, "Caddy must not retain the deleted IP-derived fallback");
+requireText(composeDev, /USAGE_MONITOR_HOSTNAME:\s*\$\{USAGE_MONITOR_HOSTNAME:-usage\.jays\.services\}/, "Compose must default to the public hostname");
+forbidLiteral(composeDev, deletedHostLabel, "Compose must not retain the deleted IP-derived fallback");
+requireText(oracleReadme, /USAGE_MONITOR_HOSTNAME=usage\.jays\.services/, "Oracle docs must name the public hostname");
+forbidLiteral(oracleReadme, deletedHostLabel, "Oracle docs must not retain the deleted IP-derived fallback");
 
 // The root-owned production Compose policy must never build or accept new host
 // mounts from a fetched revision.

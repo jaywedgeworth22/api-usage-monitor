@@ -638,6 +638,84 @@ write_host_revision() {
   fi
 }
 
+# Production Caddy receives USAGE_MONITOR_HOSTNAME from host.env. Old bootstrap
+# copies still encode the deleted sslip.io IP hostname; refuse/migrate those
+# before cutover so ACME cannot renew the wrong certificate. When the value
+# changes, recreate the running Caddy container so it picks up the new env.
+reload_caddy_proxy() {
+  log "recreating Caddy so it loads the migrated USAGE_MONITOR_HOSTNAME."
+  # Use PREVIOUS_SHA image/env path — Caddy does not depend on the app image.
+  if ! timeout "${COMPOSE_TIMEOUT_SECONDS}" docker compose \
+    --project-name oracle \
+    --env-file "${HOST_ENV}" \
+    --file "${COMPOSE_FILE}" \
+    up --detach --no-deps --no-build --force-recreate caddy >/dev/null; then
+    return 1
+  fi
+}
+
+ensure_public_caddy_hostname() {
+  local configured rewritten temporary migrated=false
+  configured="$(read_env_value "${HOST_ENV}" USAGE_MONITOR_HOSTNAME)"
+  if [[ -z "${configured}" ]]; then
+    log "USAGE_MONITOR_HOSTNAME unset; writing ${PUBLIC_HOST}."
+    temporary="$(mktemp /etc/usage-monitor/.host.env.XXXXXX)" || return 1
+    {
+      printf 'USAGE_MONITOR_HOSTNAME=%s\n' "${PUBLIC_HOST}"
+      awk -F= '$1 != "USAGE_MONITOR_HOSTNAME" { print }' "${HOST_ENV}"
+    } >"${temporary}" || {
+      unlink "${temporary}" 2>/dev/null || true
+      return 1
+    }
+    chown root:root "${temporary}" && chmod 0600 "${temporary}" && mv "${temporary}" "${HOST_ENV}"
+    migrated=true
+  elif [[ "${configured}" == *sslip.io* || "${configured}" == *132.226.90.164* ]]; then
+    # Preserve any additional public SANs after the first host, but drop the
+    # deleted IP-derived sslip label. Always ensure usage.jays.services leads.
+    # Host lists may be comma- and/or space-separated (historical host.env
+    # formats used both). Normalize either delimiter before filtering.
+    rewritten="$(
+      printf '%s\n' "${configured}" \
+        | tr ', ' '\n\n' \
+        | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' \
+        | awk -v public="${PUBLIC_HOST}" '
+            BEGIN { print public }
+            $0 != "" && $0 != public && index($0, "sslip.io") == 0 && index($0, "132.226.90.164") == 0 { print }
+          ' \
+        | paste -sd, -
+    )"
+    log "migrating stale USAGE_MONITOR_HOSTNAME away from deleted IP sslip labels."
+    temporary="$(mktemp /etc/usage-monitor/.host.env.XXXXXX)" || return 1
+    if ! awk -F= -v host="${rewritten}" '
+      BEGIN { replaced = 0 }
+      $1 == "USAGE_MONITOR_HOSTNAME" {
+        print "USAGE_MONITOR_HOSTNAME=" host
+        replaced = 1
+        next
+      }
+      { print }
+      END {
+        if (!replaced) print "USAGE_MONITOR_HOSTNAME=" host
+      }
+    ' "${HOST_ENV}" >"${temporary}"; then
+      unlink "${temporary}" 2>/dev/null || true
+      return 1
+    fi
+    if ! chown root:root "${temporary}" || \
+      ! chmod 0600 "${temporary}" || \
+      ! mv "${temporary}" "${HOST_ENV}"; then
+      unlink "${temporary}" 2>/dev/null || true
+      return 1
+    fi
+    migrated=true
+  elif [[ "${configured}" != *"${PUBLIC_HOST}"* ]]; then
+    die "USAGE_MONITOR_HOSTNAME must include ${PUBLIC_HOST} (got a non-public value)"
+  fi
+  if [[ "${migrated}" == "true" ]]; then
+    reload_caddy_proxy || die "failed to recreate Caddy after hostname migration"
+  fi
+}
+
 write_receipt() {
   local status="$1"
   local active_revision="$2"
@@ -792,6 +870,7 @@ require_secure_root_file "/usr/local/sbin/usage-monitor-deploy" 755
 
 PREVIOUS_SHA="$(read_env_value "${HOST_ENV}" USAGE_MONITOR_REVISION)"
 [[ "${PREVIOUS_SHA}" =~ ^[0-9a-f]{40}$ ]] || die "host.env has no valid current revision"
+ensure_public_caddy_hostname || die "USAGE_MONITOR_HOSTNAME preflight failed"
 
 require_current_main "${TARGET_SHA}"
 set +e
