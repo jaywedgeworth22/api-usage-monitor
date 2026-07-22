@@ -42,7 +42,8 @@ but contribute zero to `persisted`; never derive it from `activeEvents.length`.
 ## Endpoints (App B integration)
 
 - `POST /api/ingest/usage` — Bearer `USAGE_INGEST_TOKEN` (or `x-usage-ingest-token`). Writes `ExternalUsageEvent`.
-- `GET /api/budget-status` — Bearer `USAGE_READ_TOKEN` (falls back to `USAGE_INGEST_TOKEN`).
+- `GET /api/budget-status` — dashboard session cookie OR Bearer `USAGE_READ_TOKEN`
+  (falls back to `USAGE_INGEST_TOKEN`).
   Returns per-provider month-to-date spend (poll snapshot + pushed cost, combined via
   `max()` to avoid double-counting) vs `ProviderPlan.monthlyBudgetUsd`. Logic in
   `src/lib/budget-status.ts`, reusing `buildProviderAlertState` from `src/lib/provider-alerts.ts`.

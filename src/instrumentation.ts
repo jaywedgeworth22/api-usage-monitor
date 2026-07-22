@@ -16,6 +16,14 @@ export async function register() {
   const { applySqliteNativeMemoryPragmas } = await import("@/lib/prisma");
   await applySqliteNativeMemoryPragmas();
 
+  // Keep legacy provider evidence, but prevent the retired/dormant built-ins
+  // from making another external request. This is a small idempotent update
+  // and intentionally runs even when the scheduler is emergency-disabled.
+  const { deactivateDecommissionedBuiltInProviders } = await import(
+    "@/lib/provider-retirement"
+  );
+  await deactivateDecommissionedBuiltInProviders();
+
   // NOTE: an earlier revision warmed the budget-status SWR caches here at
   // boot. It was removed after it crash-looped production: warming
   // computeProjectBudgetStatus runs its internal Promise.all

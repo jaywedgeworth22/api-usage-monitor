@@ -28,6 +28,7 @@ import {
 import { withInternalUsageWriteAdmission } from "@/lib/ingest-admission";
 import { redactProviderRawData } from "@/lib/data-privacy";
 import { budgetPollingPaused } from "@/lib/budget-controls";
+import { isDecommissionedProviderName } from "@/lib/provider-definitions";
 const DEFAULT_PROVIDER_TIMEOUT_MS = 90_000;
 const providerAttemptTokens = new Map<string, symbol>();
 
@@ -262,7 +263,7 @@ export async function fetchAllDueProviders(): Promise<FetchAllProvidersResult> {
         failed: 1,
       };
     }
-    const providers = await prisma.provider.findMany({
+    const storedProviders = await prisma.provider.findMany({
       where: { isActive: true },
       include: {
         snapshots: {
@@ -272,6 +273,13 @@ export async function fetchAllDueProviders(): Promise<FetchAllProvidersResult> {
         },
       },
     });
+
+    // A startup failure or a row created by an older client must not turn a
+    // retired service into a provider call. Startup normally deactivates
+    // these rows; this filter is the fail-closed boundary.
+    const providers = storedProviders.filter(
+      (provider) => !isDecommissionedProviderName(provider.name)
+    );
 
     let successes = 0;
     let failures = 0;

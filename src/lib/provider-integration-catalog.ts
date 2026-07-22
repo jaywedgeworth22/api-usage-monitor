@@ -1,4 +1,8 @@
-import type { BuiltInProviderName } from "@/lib/provider-definitions";
+import {
+  BUILT_IN_PROVIDERS,
+  isBuiltInProviderActive,
+  type BuiltInProviderName,
+} from "@/lib/provider-definitions";
 import { canonicalProviderKey } from "@/lib/provider-identity";
 
 export type IntegrationMode =
@@ -23,6 +27,10 @@ export type CatalogProviderName =
   | "agent-sync-relay"
   | "custom"
   | "generic";
+
+const BUILT_IN_PROVIDER_NAMES = new Set<string>(
+  BUILT_IN_PROVIDERS.map((provider) => provider.name)
+);
 
 export interface ProviderIntegrationProfile {
   name: CatalogProviderName;
@@ -527,7 +535,13 @@ const ALIASES: Readonly<Record<string, CatalogProviderName>> = {
   agent_sync_relay: "agent-sync-relay",
 };
 
-export const PROVIDER_INTEGRATION_PROFILES = Object.values(CATALOG);
+// The connection catalog is intentionally narrower than CATALOG: CATALOG
+// retains profiles needed to explain historical rows, while dormant/retired
+// built-ins are not offered as new integrations.
+export const PROVIDER_INTEGRATION_PROFILES = Object.values(CATALOG).filter(
+  (profile) =>
+    !BUILT_IN_PROVIDER_NAMES.has(profile.name) || isBuiltInProviderActive(profile.name)
+);
 
 export function getProviderIntegrationProfile(
   providerName: string,

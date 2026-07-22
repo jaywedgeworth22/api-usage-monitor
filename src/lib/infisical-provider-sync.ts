@@ -9,7 +9,10 @@ import {
 import { geminiApiKeyFingerprint } from "@/lib/gemini-key-status";
 import { withInternalUsageWriteAdmission } from "@/lib/ingest-admission";
 import { prisma } from "@/lib/prisma";
-import { BUILT_IN_PROVIDERS } from "@/lib/provider-definitions";
+import {
+  BUILT_IN_PROVIDERS,
+  isBuiltInProviderActive,
+} from "@/lib/provider-definitions";
 import {
   readStPrimaryCredentialBinding,
   ST_PRIMARY_MANAGED_LABEL,
@@ -314,8 +317,67 @@ const CREDENTIAL_MAPPINGS: readonly CredentialMapping[] = [
   {
     scope: "ct",
     providerName: "openai",
-    attempts: appAttempts("ct", ["OPENAI_API_KEY"]),
-    build: (values) => ({ apiKey: values.get("OPENAI_API_KEY") }),
+    // Wave H / E2: optional OPENAI_ADMIN_KEY → secretConfig.adminApiKey for
+    // organization Costs authority (see adapters/openai.ts). Prefer pairing
+    // with OPENAI_API_KEY; a pure admin-only mapping is not registered so we
+    // never create a second openai Provider row when both keys exist.
+    attempts: appAttempts("ct", ["OPENAI_API_KEY"], true, ["OPENAI_ADMIN_KEY"]),
+    build: (values) => ({
+      apiKey: values.get("OPENAI_API_KEY"),
+      ...(values.get("OPENAI_ADMIN_KEY")
+        ? { secretConfig: { adminApiKey: values.get("OPENAI_ADMIN_KEY")! } }
+        : {}),
+    }),
+  },
+  {
+    scope: "ct",
+    providerName: "anthropic",
+    attempts: appAttempts("ct", ["ANTHROPIC_ADMIN_KEY"], true),
+    build: (values) => ({
+      secretConfig: { adminApiKey: values.get("ANTHROPIC_ADMIN_KEY")! },
+    }),
+  },
+  {
+    scope: "st",
+    providerName: "anthropic",
+    attempts: appAttempts("st", ["ANTHROPIC_ADMIN_KEY"], true),
+    build: (values) => ({
+      secretConfig: { adminApiKey: values.get("ANTHROPIC_ADMIN_KEY")! },
+    }),
+  },
+  {
+    scope: "st",
+    providerName: "xai",
+    attempts: appAttempts("st", ["XAI_API_KEY"], true, [
+      "XAI_TEAM_ID",
+      "XAI_MANAGEMENT_KEY",
+    ]),
+    build: (values) => {
+      const teamId = values.get("XAI_TEAM_ID");
+      const managementKey = values.get("XAI_MANAGEMENT_KEY");
+      return {
+        apiKey: values.get("XAI_API_KEY"),
+        ...(teamId ? { publicConfig: { teamId } } : {}),
+        ...(managementKey ? { secretConfig: { managementKey } } : {}),
+      };
+    },
+  },
+  {
+    scope: "ct",
+    providerName: "xai",
+    attempts: appAttempts("ct", ["XAI_API_KEY"], true, [
+      "XAI_TEAM_ID",
+      "XAI_MANAGEMENT_KEY",
+    ]),
+    build: (values) => {
+      const teamId = values.get("XAI_TEAM_ID");
+      const managementKey = values.get("XAI_MANAGEMENT_KEY");
+      return {
+        apiKey: values.get("XAI_API_KEY"),
+        ...(teamId ? { publicConfig: { teamId } } : {}),
+        ...(managementKey ? { secretConfig: { managementKey } } : {}),
+      };
+    },
   },
   {
     scope: "ct",
@@ -328,12 +390,6 @@ const CREDENTIAL_MAPPINGS: readonly CredentialMapping[] = [
     providerName: "google-ai",
     attempts: appAttempts("ct", ["GEMINI_API_KEY"]),
     build: (values) => ({ apiKey: values.get("GEMINI_API_KEY") }),
-  },
-  {
-    scope: "ct",
-    providerName: "intrinio",
-    attempts: appAttempts("ct", ["INTRINIO_API_KEY"]),
-    build: (values) => ({ apiKey: values.get("INTRINIO_API_KEY") }),
   },
   {
     scope: "ct",
@@ -351,8 +407,13 @@ const CREDENTIAL_MAPPINGS: readonly CredentialMapping[] = [
   {
     scope: "ct",
     providerName: "mistral",
-    attempts: appAttempts("ct", ["MISTRAL_API_KEY"]),
-    build: (values) => ({ apiKey: values.get("MISTRAL_API_KEY") }),
+    attempts: appAttempts("ct", ["MISTRAL_API_KEY"], true, ["MISTRAL_ADMIN_KEY"]),
+    build: (values) => ({
+      apiKey: values.get("MISTRAL_API_KEY"),
+      ...(values.get("MISTRAL_ADMIN_KEY")
+        ? { secretConfig: { adminApiKey: values.get("MISTRAL_ADMIN_KEY")! } }
+        : {}),
+    }),
   },
   {
     scope: "ct",
@@ -377,12 +438,6 @@ const CREDENTIAL_MAPPINGS: readonly CredentialMapping[] = [
     providerName: "twelvedata",
     attempts: appAttempts("ct", ["TWELVEDATA_API_KEY"], true),
     build: (values) => ({ apiKey: values.get("TWELVEDATA_API_KEY") }),
-  },
-  {
-    scope: "shared",
-    providerName: "firecrawl",
-    attempts: [{ source: "shared", required: ["FIRECRAWL_API_KEY"] }],
-    build: (values) => ({ apiKey: values.get("FIRECRAWL_API_KEY") }),
   },
   {
     scope: "shared",
@@ -489,15 +544,16 @@ const SECRET_NAME_TO_PROVIDER: ReadonlyMap<string, string> = new Map<string, str
   ["GOOGLE_SERVICE_ACCOUNT_JSON", "google-ai"],
   ["DEEPSEEK_API_KEY", "deepseek"],
   ["XAI_API_KEY", "xai"],
+  ["XAI_MANAGEMENT_KEY", "xai"],
+  ["XAI_TEAM_ID", "xai"],
   ["GROK_API_KEY", "xai"],
   ["MISTRAL_API_KEY", "mistral"],
+  ["MISTRAL_ADMIN_KEY", "mistral"],
   ["OPENROUTER_API_KEY", "openrouter"],
   // Developer Platform
   ["GITHUB_TOKEN", "github"],
   ["GITHUB_API_TOKEN", "github"],
   ["GITHUB_PAT", "github"],
-  ["VERCEL_API_TOKEN", "vercel"],
-  ["VERCEL_TOKEN", "vercel"],
   // Infrastructure
   ["RENDER_API_KEY", "render"],
   ["RENDER_API_TOKEN", "render"],
@@ -523,10 +579,7 @@ const SECRET_NAME_TO_PROVIDER: ReadonlyMap<string, string> = new Map<string, str
   ["FINNHUB_API_KEY", "finnhub"],
   ["ALPHAVANTAGE_API_KEY", "alphavantage"],
   ["ALPHA_VANTAGE_API_KEY", "alphavantage"],
-  ["TRADIER_API_TOKEN", "tradier"],
-  ["TRADIER_ACCESS_TOKEN", "tradier"],
   ["MARKETSTACK_API_KEY", "marketstack"],
-  ["INTRINIO_API_KEY", "intrinio"],
   ["TIINGO_API_KEY", "tiingo"],
   ["TWELVEDATA_API_KEY", "twelvedata"],
   ["TWELVE_DATA_API_KEY", "twelvedata"],
@@ -550,7 +603,6 @@ const SECRET_NAME_TO_PROVIDER: ReadonlyMap<string, string> = new Map<string, str
   // Data
   ["APIFY_API_TOKEN", "apify"],
   ["APIFY_TOKEN", "apify"],
-  ["FIRECRAWL_API_KEY", "firecrawl"],
   ["LLAMAPARSE_API_KEY", "llamaindex"],
   ["LLAMA_CLOUD_API_KEY", "llamaindex"],
   ["LLAMAINDEX_API_KEY", "llamaindex"],
@@ -558,8 +610,6 @@ const SECRET_NAME_TO_PROVIDER: ReadonlyMap<string, string> = new Map<string, str
   ["STRIPE_SECRET_KEY", "stripe"],
   ["STRIPE_API_KEY", "stripe"],
   // Brokerage
-  ["ALPACA_API_KEY", "alpaca"],
-  ["ALPACA_API_SECRET", "alpaca"],
 ]);
 
 const PROJECT_NAMES: Readonly<Record<"st" | "ct", string>> = {
@@ -1825,6 +1875,9 @@ async function applyCandidates(candidates: readonly CredentialCandidate[]): Prom
         (item) => item.name === candidate.providerName
       );
       if (!definition) throw new InfisicalSyncError("unknown_provider_mapping");
+      if (!isBuiltInProviderActive(definition.name)) {
+        throw new InfisicalSyncError("decommissioned_provider_mapping");
+      }
       const binding: StoredBinding = {
         scope: candidate.scope,
         source: candidate.source,

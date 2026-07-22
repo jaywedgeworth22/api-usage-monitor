@@ -3,6 +3,7 @@ import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { decrypt, encrypt, encryptJson } from "@/lib/crypto";
 import { parseProviderUpdateInput, readJsonBody } from "@/lib/provider-input";
+import { isDecommissionedProviderName } from "@/lib/provider-definitions";
 import { buildProviderAlertState } from "@/lib/provider-alerts";
 import { computeBudgetStatus, bustBudgetStatusCache } from "@/lib/budget-status";
 import { toPrismaProviderPlanData } from "@/lib/provider-plan";
@@ -39,6 +40,7 @@ import {
   hashProviderBillingAccountId,
   projectProviderBillingAccountMatches,
 } from "@/lib/provider-billing-account";
+import { hasValidDashboardSession, shouldEnforceDashboardSession } from "@/lib/auth";
 
 function decryptKey(encryptedKey: string | null): string | null {
   if (!encryptedKey) return null;
@@ -354,6 +356,10 @@ export async function PUT(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
+  if (shouldEnforceDashboardSession() && !hasValidDashboardSession(request)) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
   const { id } = await params;
 
   const existing = await prisma.provider.findUnique({
@@ -371,6 +377,13 @@ export async function PUT(
     return NextResponse.json(
       { error: error instanceof Error ? error.message : "Invalid request" },
       { status: 400 }
+    );
+  }
+
+  if (input.isActive === true && isDecommissionedProviderName(existing.name)) {
+    return NextResponse.json(
+      { error: "This built-in provider is dormant or retired and cannot be reactivated" },
+      { status: 409 }
     );
   }
 
@@ -570,9 +583,13 @@ export async function PUT(
 }
 
 export async function DELETE(
-  _request: NextRequest,
+  request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
+  if (shouldEnforceDashboardSession() && !hasValidDashboardSession(request)) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
   const { id } = await params;
 
   const existing = await prisma.provider.findUnique({ where: { id } });
