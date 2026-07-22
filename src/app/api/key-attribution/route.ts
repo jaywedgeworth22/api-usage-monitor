@@ -426,11 +426,15 @@ export async function POST(request: NextRequest) {
             data: { effectiveTo: effectiveFrom },
           });
         }
+        // Overlap is per-provider: producers may reuse local key refs (e.g. "primary")
+        // across different providers. Scope the candidate set through the identity's
+        // providerId so a second-provider mapping is not rejected as binding_overlap.
         const candidates = await tx.providerKeyBinding.findMany({
           where: {
             ...(replaceBindingId ? { id: { not: replaceBindingId } } : {}),
             producerId,
             producerKeyRef,
+            identity: { providerId: identity.providerId },
             OR: [{ effectiveTo: null }, { effectiveTo: { gt: effectiveFrom } }],
           },
         });
