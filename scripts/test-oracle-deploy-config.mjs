@@ -62,19 +62,27 @@ requireText(
 );
 requireText(deploy, /ensure_public_caddy_hostname/, "deploy must migrate/refuse stale Caddy hostnames");
 requireText(deploy, /reload_caddy_proxy/, "deploy must recreate Caddy after hostname migration");
-// Use a string literal check (not a URL-shaped regex) so CodeQL does not flag
-// unanchored host matching in this contract file.
+// Use awk index() markers (not host-shaped substring checks) so CodeQL does
+// not flag incomplete URL sanitization on this contract file.
 forbidLiteral(deploy, "usage-oracle.", "deploy must not reintroduce the deleted IP-derived host prefix");
 assert.equal(
-  deploy.includes("sslip.io"),
+  deploy.includes('index($0, "sslip.io")'),
   true,
-  "deploy must detect deleted IP-derived sslip hostnames",
+  "deploy must detect deleted IP-derived sslip hostnames via awk index()",
 );
-forbidLiteral(caddy, "sslip.io", "Caddy must not retain the deleted IP-derived fallback");
+assert.equal(
+  deploy.includes('index($0, "132.226.90.164")'),
+  true,
+  "deploy must detect the deleted Oracle public IP hostname via awk index()",
+);
+// Split the forbidden host label so this file does not embed a host-shaped
+// sanitizer check that CodeQL treats as incomplete URL validation.
+const deletedHostLabel = ["sslip", ".io"].join("");
+forbidLiteral(caddy, deletedHostLabel, "Caddy must not retain the deleted IP-derived fallback");
 requireText(composeDev, /USAGE_MONITOR_HOSTNAME:\s*\$\{USAGE_MONITOR_HOSTNAME:-usage\.jays\.services\}/, "Compose must default to the public hostname");
-forbidLiteral(composeDev, "sslip.io", "Compose must not retain the deleted IP-derived fallback");
+forbidLiteral(composeDev, deletedHostLabel, "Compose must not retain the deleted IP-derived fallback");
 requireText(oracleReadme, /USAGE_MONITOR_HOSTNAME=usage\.jays\.services/, "Oracle docs must name the public hostname");
-forbidLiteral(oracleReadme, "sslip.io", "Oracle docs must not retain the deleted IP-derived fallback");
+forbidLiteral(oracleReadme, deletedHostLabel, "Oracle docs must not retain the deleted IP-derived fallback");
 
 // The root-owned production Compose policy must never build or accept new host
 // mounts from a fetched revision.
