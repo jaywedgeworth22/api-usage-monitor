@@ -1278,24 +1278,6 @@ export default function DashboardProviderWorkspace({
               </button>
             ))}
           </div>
-          <div role="group" aria-label="Row density" className="flex items-center gap-2 sm:border-l sm:border-gray-200 sm:pl-2 dark:sm:border-gray-700">
-            <button
-              type="button"
-              aria-pressed={density === "compact"}
-              onClick={() => setDensity("compact")}
-              className={toggleButtonClass(density === "compact")}
-            >
-              Compact
-            </button>
-            <button
-              type="button"
-              aria-pressed={density === "comfortable"}
-              onClick={() => setDensity("comfortable")}
-              className={toggleButtonClass(density === "comfortable")}
-            >
-              Comfortable
-            </button>
-          </div>
         </div>
       </div>
 

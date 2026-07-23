@@ -687,13 +687,10 @@ describe("Lane B compact markup (default state: compact density, attention sort,
     }
   });
 
-  it("defaults to Compact density (global), the All filter chip, and the Attention preset all pressed", () => {
+  it("defaults to the All filter chip and the Attention preset pressed", () => {
     const html = renderWorkspace([provider("p1")]);
-    expect(html).toContain('aria-label="Row density"');
     expect(html).toContain('aria-label="Filter provider families"');
-    // Global display-density default is compact (Wave D / D3 unify).
-    expect(html).toContain("Compact");
-    expect((html.match(/aria-pressed="true"/g) ?? []).length).toBe(3);
+    expect((html.match(/aria-pressed="true"/g) ?? []).length).toBe(2);
   });
 
   it("renders all six sortable headers with aria-sort=\"none\" by default", () => {

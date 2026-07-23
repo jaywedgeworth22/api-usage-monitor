@@ -184,10 +184,10 @@ export default function ProviderCard({
 
   return (
     <div
-      className="provider-card relative block rounded-xl border border-gray-200 bg-white p-6 transition-all duration-200 hover:-translate-y-0.5 hover:border-gray-300 hover:shadow-md dark:border-gray-700 dark:bg-gray-800 dark:hover:border-gray-600"
+      className="provider-card relative block rounded-xl border border-gray-200 bg-white p-4 sm:p-5 transition-all duration-200 hover:-translate-y-0.5 hover:border-gray-300 hover:shadow-md dark:border-gray-700 dark:bg-gray-800 dark:hover:border-gray-600"
       title={cardDetailTitle}
     >
-      <div className="flex items-center gap-3 mb-4">
+      <div className="flex items-center gap-3 mb-2.5">
         <div className={`w-3 h-3 rounded-full ${dotColor} flex-shrink-0`} />
         <div className="min-w-0 flex-1">
           <h3 className="truncate text-lg font-semibold text-gray-900 dark:text-gray-100">
@@ -294,7 +294,7 @@ export default function ProviderCard({
         </div>
       </div>
 
-      <div className="grid grid-cols-2 gap-4">
+      <div className="grid grid-cols-2 gap-2.5">
         <div>
           <p className="mb-1 text-xs text-gray-500 dark:text-gray-400">Balance</p>
           <BalanceBadge amount={latestSnapshot?.balance ?? null} />

@@ -4,7 +4,7 @@ import { useState, useEffect } from "react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useTheme } from "next-themes";
-import { Moon, Sun } from "lucide-react";
+import { Monitor, Moon, Sun } from "lucide-react";
 import { useDisplayDensity, setStoredDisplayDensity } from "@/lib/display-density";
 
 export default function Nav() {
@@ -98,32 +98,43 @@ export default function Nav() {
               })}
             </div>
           </div>
-          <div className="hidden items-center gap-2 sm:flex">
+          <div className="hidden items-center gap-3 sm:flex">
             {mounted && (
               <>
+                {/* Theme Segmented Control Pill (Socratic.Trade style) */}
+                <div className="flex items-center gap-0.5 rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-100 dark:bg-gray-800/80 p-0.5" role="group" aria-label="Theme selector">
+                  {(["light", "dark", "system"] as const).map((t) => {
+                    const active = theme === t;
+                    const Icon = t === "dark" ? Moon : t === "light" ? Sun : Monitor;
+                    const label = t.charAt(0).toUpperCase() + t.slice(1);
+                    return (
+                      <button
+                        key={t}
+                        type="button"
+                        onClick={() => setTheme(t)}
+                        title={`Set theme to ${label}`}
+                        aria-label={`Set theme to ${label}`}
+                        className={`flex items-center gap-1.5 rounded-md px-2.5 py-1 text-xs font-medium transition-all ${
+                          active
+                            ? "bg-white dark:bg-gray-900 text-gray-900 dark:text-gray-100 shadow-sm border border-gray-200/80 dark:border-gray-700"
+                            : "text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-100 border border-transparent"
+                        }`}
+                      >
+                        <Icon size={13} />
+                        <span>{label}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+
                 <button
                   type="button"
                   onClick={toggleDensity}
-                  className="p-2 rounded-md text-gray-600 hover:text-gray-900 hover:bg-gray-50 dark:text-gray-400 dark:hover:text-gray-100 dark:hover:bg-gray-800 transition-colors"
+                  className="px-2.5 py-1 text-xs font-medium rounded-lg border border-gray-200 dark:border-gray-700 text-gray-600 hover:text-gray-900 hover:bg-gray-50 dark:text-gray-400 dark:hover:text-gray-100 dark:hover:bg-gray-800 transition-colors"
                   aria-label={`Toggle display density (currently ${density})`}
+                  title={`Click to switch to ${density === "compact" ? "comfortable" : "compact"} view`}
                 >
-                  {density === "compact" ? (
-                    <svg className="w-[18px] h-[18px]" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" d="M4 6h16M4 10h16M4 14h16M4 18h16" />
-                    </svg>
-                  ) : (
-                    <svg className="w-[18px] h-[18px]" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" d="M4 6h16M4 12h16M4 18h16" />
-                    </svg>
-                  )}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setTheme(theme === "dark" ? "light" : "dark")}
-                  className="p-2 rounded-md text-gray-600 hover:text-gray-900 hover:bg-gray-50 dark:text-gray-400 dark:hover:text-gray-100 dark:hover:bg-gray-800 transition-colors"
-                  aria-label="Toggle dark mode"
-                >
-                  {theme === "dark" ? <Sun size={18} /> : <Moon size={18} />}
+                  {density === "compact" ? "Compact" : "Comfortable"}
                 </button>
               </>
             )}
@@ -156,7 +167,7 @@ export default function Nav() {
           </button>
         </div>
         {menuOpen && (
-          <div id="mobile-navigation" className="space-y-1 border-t border-gray-200 py-3 dark:border-gray-800 sm:hidden">
+          <div id="mobile-navigation" className="space-y-2 border-t border-gray-200 py-3 dark:border-gray-800 sm:hidden">
             {links.map((link) => {
               const isActive = pathname === link.href || pathname.startsWith(`${link.href}/`);
               return (
@@ -175,32 +186,39 @@ export default function Nav() {
                 </Link>
               );
             })}
-            <div className="flex items-center gap-2 px-3 py-2">
+            <div className="px-3 py-2 space-y-2">
               {mounted && (
                 <>
-                  <button
-                    type="button"
-                    onClick={() => setTheme(theme === "dark" ? "light" : "dark")}
-                    className="flex-1 flex items-center justify-center gap-2 px-3 py-2 rounded-lg text-sm font-medium border border-gray-200 dark:border-gray-700 text-gray-600 hover:bg-gray-50 dark:text-gray-300 dark:hover:bg-gray-800 transition-colors"
-                  >
-                    {theme === "dark" ? <Sun size={16} /> : <Moon size={16} />}
-                    <span>Theme</span>
-                  </button>
+                  <div className="text-xs font-medium text-gray-500 dark:text-gray-400">Theme</div>
+                  <div className="flex items-center gap-1 rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-100 dark:bg-gray-800/80 p-0.5">
+                    {(["light", "dark", "system"] as const).map((t) => {
+                      const active = theme === t;
+                      const Icon = t === "dark" ? Moon : t === "light" ? Sun : Monitor;
+                      const label = t.charAt(0).toUpperCase() + t.slice(1);
+                      return (
+                        <button
+                          key={t}
+                          type="button"
+                          onClick={() => setTheme(t)}
+                          className={`flex-1 flex items-center justify-center gap-1.5 rounded-md px-2 py-1.5 text-xs font-medium transition-all ${
+                            active
+                              ? "bg-white dark:bg-gray-900 text-gray-900 dark:text-gray-100 shadow-sm border border-gray-200/80 dark:border-gray-700"
+                              : "text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-100 border border-transparent"
+                          }`}
+                        >
+                          <Icon size={14} />
+                          <span>{label}</span>
+                        </button>
+                      );
+                    })}
+                  </div>
                   <button
                     type="button"
                     onClick={toggleDensity}
-                    className="flex-1 flex items-center justify-center gap-2 px-3 py-2 rounded-lg text-sm font-medium border border-gray-200 dark:border-gray-700 text-gray-600 hover:bg-gray-50 dark:text-gray-300 dark:hover:bg-gray-800 transition-colors"
+                    className="w-full flex items-center justify-between px-3 py-2 rounded-lg text-xs font-medium border border-gray-200 dark:border-gray-700 text-gray-600 hover:bg-gray-50 dark:text-gray-300 dark:hover:bg-gray-800 transition-colors mt-2"
                   >
-                    {density === "compact" ? (
-                      <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" d="M4 6h16M4 10h16M4 14h16M4 18h16" />
-                      </svg>
-                    ) : (
-                      <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" d="M4 6h16M4 12h16M4 18h16" />
-                      </svg>
-                    )}
-                    <span>{density === "compact" ? "Compact" : "Comfortable"}</span>
+                    <span>Display Density</span>
+                    <span className="font-semibold text-gray-900 dark:text-gray-100">{density === "compact" ? "Compact" : "Comfortable"}</span>
                   </button>
                 </>
               )}
