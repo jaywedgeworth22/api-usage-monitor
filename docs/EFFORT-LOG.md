@@ -298,7 +298,7 @@ Protocol: /Users/jay/apps/EFFORT-LOG-PROTOCOL.md (canonical). Live board: this f
 
 ## Completed
 
-- **[CURSOR] Stale In Progress / Planned board closeout + sync/D6/D10 polish — COMPLETED 2026-07-23.** Verified Waves A–H (PRs #640/#701/#702/#711/#728/#734/#743), telemetry v2 (#742), provider retirement (#733), Oracle retention/acceptance (#760/#766), key attribution (#761), ST theme (#785) already on `main`. Moved matching rows to Completed **without rewriting first lines** so effort-keys stay stable and mirrored issues close via sync. Shipped `BOARD_SOURCE_REF=main` body-churn fix + login Suspense skeleton + 44pt table actions + always-visible Last fetched + ProjectTable dark tokens. Branch `cursor/resolve-stale-efforts-5b8c`.
+- **[CURSOR] Stale In Progress / Planned board closeout + sync/D6/D10 polish — COMPLETED 2026-07-23.** Verified Waves A–H (PRs #640/#701/#702/#711/#728/#734/#743), telemetry v2 (#742), provider retirement (#733), Oracle retention/acceptance (#760/#766), key attribution (#761), ST theme (#785) already on `main`. Moved matching rows to Completed **without rewriting first lines** so effort-keys stay stable and mirrored issues close via sync. Shipped `BOARD_SOURCE_REF=main` body-churn fix, Link-header pagination + PR filtering so sync actually sees issues (was PR-only under page=N), login Suspense skeleton + 44pt table actions + always-visible Last fetched + ProjectTable dark tokens. Branch `cursor/resolve-stale-efforts-5b8c`.
 
 - **[AG] ST-style Theme & Compact UI Improvements + xAI/OpenAI Data Attribution Audit — WIP 2026-07-22.** Branch `antigravity/st-theme-ui-improvements`.
   _Board closeout (CURSOR 2026-07-23): verified already on `origin/main` (Waves A–H PRs #640/#701/#702/#711/#728/#734/#743; #742/#733/#760/#766/#761/#785 as applicable). First line left unchanged so effort-key identity survives; section move closes the mirrored issue._
@@ -1013,7 +1013,7 @@ Jul 8 18:10 CT)._
 - **Integration P1 (CT-side): Congress.Trade never reads GET /api/budget-status** — no spend-feedback loop; wire periodic read + self-throttle. _(filed by MONET 2026-07-15 from eval-sweep audit)_
 - **Integration P1: quota_sync/credit_balance receiver (PR #90) has ZERO producers on ST/CT** — wire a producer or park the receiver. _(filed by MONET 2026-07-15 from eval-sweep audit)_
 ## Changelog of this log
-- 2026-07-23 — CURSOR: stale board closeout (Waves A–H + merged rows → Completed, first lines preserved); effort-issue sync Source link pinned to `main`; D6/D10 login skeleton + 44pt actions + Last fetched + ProjectTable dark tokens. Branch `cursor/resolve-stale-efforts-5b8c`.
+- 2026-07-23 — CURSOR: stale board closeout (Waves A–H + merged rows → Completed, first lines preserved); effort-issue sync Source link pinned to `main` + Link-header pagination/PR filter so mirrored issues reconcile; D6/D10 login skeleton + 44pt actions + Last fetched + ProjectTable dark tokens. Branch `cursor/resolve-stale-efforts-5b8c`.
 - 2026-07-20 — GROK3: filed multi-expert full-app review audit + reserved Wave A–E implement tasks (GROK3-A1…E20) on Planned; review deliverable COMPLETE.
 
 
