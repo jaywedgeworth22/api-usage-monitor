@@ -16,7 +16,7 @@ name: UsageMonitor
 options:
   bundleIdPrefix: services.jays.usage
   deploymentTarget:
-    iOS: "18.0"
+    iOS: "26.0"
   createIntermediateGroups: true
   groupSortPosition: top
   generateEmptyDirectories: true
@@ -25,9 +25,9 @@ options:
   xcodeVersion: "26.0"
   # XcodeGen's highest named projectFormat is still xcode16_3 (objectVersion 77),
   # which makes the Project Format popup say "Xcode 16.0-compatible". After generate,
-  # bump objectVersion to the native format used by Xcode 26/27 projects in this repo
-  # (see safari-extension, objectVersion 110) so the document format is not stuck on 16.
-  postGenCommand: "python3 -c \"from pathlib import Path; p=Path('UsageMonitor.xcodeproj/project.pbxproj'); t=p.read_text(); t=t.replace('objectVersion = 77;', 'objectVersion = 110;', 1).replace('preferredProjectObjectVersion = 77;', 'preferredProjectObjectVersion = 110;', 1); p.write_text(t)\""
+  # bump objectVersion to the native format used by Xcode 26 projects in this repo
+  # (objectVersion 100) so the document format is Xcode 26.
+  postGenCommand: "python3 -c \"from pathlib import Path; p=Path('UsageMonitor.xcodeproj/project.pbxproj'); t=p.read_text(); t=t.replace('objectVersion = 77;', 'objectVersion = 100;', 1).replace('preferredProjectObjectVersion = 77;', 'preferredProjectObjectVersion = 100;', 1); p.write_text(t)\""
 
 packages:
   UsageMonitorKit:
@@ -36,7 +36,7 @@ packages:
 settings:
   base:
     SWIFT_VERSION: "5.0"                 # Swift 5 language mode (compiled by the Swift 6 toolchain)
-    IPHONEOS_DEPLOYMENT_TARGET: "18.0"
+    IPHONEOS_DEPLOYMENT_TARGET: "26.0"
     MARKETING_VERSION: "1.0.0"
     CURRENT_PROJECT_VERSION: "1"
     CODE_SIGN_STYLE: Automatic
