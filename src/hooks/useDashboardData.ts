@@ -51,7 +51,7 @@ export function useDashboardData() {
   const fetchProviders = useCallback(async (opts?: { background?: boolean }) => {
     const background = opts?.background === true;
     const startForegroundUiState = () => {
-      if (loadedOnce.current && hasProviderData.current) {
+      if (loadedOnce.current) {
         setRefreshing(true);
       } else {
         setLoading(true);
@@ -61,7 +61,7 @@ export function useDashboardData() {
     };
 
     if (isFetchingRef.current) {
-      if (!background && loadedOnce.current && hasProviderData.current) {
+      if (!background && loadedOnce.current) {
         setRefreshing(true);
       }
       return;
