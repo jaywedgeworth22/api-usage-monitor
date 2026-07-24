@@ -453,6 +453,18 @@ const CATALOG: Record<CatalogProviderName, ProviderIntegrationProfile> = {
     limitations: ["The current endpoint does not report credits used. The monitor never subtracts remaining credits from the plan allowance because add-on credits can make the balance exceed that allowance.", "Historical usage is bounded, rejects a malformed/overlapping collection as a whole, and is omitted on optional endpoint failure so prior valid rows are not pruned.", "Billing-period start and end are independently nullable, and a period end is not claimed as a quota reset or subscription renewal."],
     source: "src/lib/adapters/firecrawl.ts",
   }),
+  deno: defineProfile({
+    name: "deno", displayName: "Deno Deploy", category: "Developer Platform", mode: "partial",
+    summary: "Reads user/organization profile from Deno Deploy API when a Personal Access Token is provided, or tracks pushed metrics and manual plans.",
+    reads: ["User ID, name, email, and organization billing metadata."],
+    stores: ["User name/email and external billing account identity."],
+    credentialInputs: ["Deno Deploy Personal Access Token (optional, ddp_...).", "Optional organization slug."],
+    billing: { visibility: "partial", summary: "Account/organization identity is verified when a token is provided. Detailed deployment metrics (HTTP requests, CPU time, memory, outbound traffic, KV reads/writes) and plan limits are tracked via pushed telemetry or manual plans." },
+    canAdd: ["Direct analytics endpoint reads when Deno Deploy publishes structured REST endpoints for team analytics."],
+    cannotAdd: ["Inference or code execution is not performed."],
+    limitations: ["Metrics and quotas are primarily tracked via pushed telemetry from CT / producers or manual plans."],
+    source: "src/lib/adapters/deno.ts",
+  }),
   llamaindex: defineProfile({
     name: "llamaindex", displayName: "LlamaIndex Cloud", category: "Data", mode: "partial",
     summary: "Discovers accessible organizations and reads paginated UTC calendar-month-to-date product-credit usage without running parsing or inference.",

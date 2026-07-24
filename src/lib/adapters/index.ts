@@ -58,6 +58,7 @@ async function loadAdapters() {
     import("./render"),
     import("./oracle"),
     import("./coolify"),
+    import("./deno"),
   ]);
 
   const [
@@ -75,6 +76,7 @@ async function loadAdapters() {
     render,
     oracle,
     coolify,
+    deno,
   ] = modules;
 
   // Active built-ins are loaded into the poll registry. Retired and dormant
@@ -122,6 +124,7 @@ async function loadAdapters() {
     stripe: stripe.fetchUsage,
     oracle: oracle.fetchUsage,
     coolify: coolify.fetchUsage,
+    deno: deno.fetchUsage,
   };
   Object.assign(adapters, builtInAdapters);
 
