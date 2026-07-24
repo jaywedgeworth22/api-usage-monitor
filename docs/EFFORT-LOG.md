@@ -298,7 +298,18 @@ Protocol: /Users/jay/apps/EFFORT-LOG-PROTOCOL.md (canonical). Live board: this f
 
 ## Completed
 
+- **[CURSOR] Status-snapshot account identity + D9 portfolio auto-open — COMPLETED 2026-07-24.** Fail-closed `resolveStatusSnapshotProvider` (keyRef → billingAccountRef HMAC → unique name only); default-open Portfolio when critical/incomplete costs. Branch `cursor/status-account-identity-2474`.
 - **[CURSOR] Stale In Progress / Planned board closeout + sync/D6/D10 polish — COMPLETED 2026-07-23.** Verified Waves A–H (PRs #640/#701/#702/#711/#728/#734/#743), telemetry v2 (#742), provider retirement (#733), Oracle retention/acceptance (#760/#766), key attribution (#761), ST theme (#785) already on `main`. Moved matching rows to Completed **without rewriting first lines** so effort-keys stay stable and mirrored issues close via sync. Shipped `BOARD_SOURCE_REF=main` body-churn fix, Link-header pagination + PR filtering so sync actually sees issues (was PR-only under page=N), login Suspense skeleton + 44pt table actions + always-visible Last fetched + ProjectTable dark tokens. Branch `cursor/resolve-stale-efforts-5b8c`. Round-2 (2026-07-24): also moved PR-updater #721, iOS signing #716, Oracle release-gate #717, Settings handoff/#785 siblings, compliance #581/#617/#619, Safari #436, favicon `icon.tsx`, receipt-inbox code (#724), and diagnosis-complete owner handoffs to Completed; parked Coolify self-hosted CI runners in Planned; closed Planned sync-churn + #577 rows.
+
+- **[GROK3-D9] Default-open Portfolio when criticalCount or incomplete costs > 0 (P2, S) — PLANNED.**
+  _Board closeout (CURSOR 2026-07-24): default-open Portfolio once when criticalCount or incomplete costs > 0 (`src/app/page.tsx`). First line unchanged for effort-key stability._
+#### Wave E — Scale, coverage, telemetry contract (P1/P2)
+- **Add account identity to pushed status metrics before mapping duplicate provider names
+  _Board closeout (CURSOR 2026-07-24): `resolveStatusSnapshotProvider` prefers keyRef / `metadata._billingAccountRef` HMAC match and fails closed on ambiguous duplicate names (PR on `cursor/status-account-identity-2474`). First line unchanged for effort-key stability._
+  (unassigned, M).** `syncStatusToUsageSnapshot` maps `quota_sync`/`credit_balance` by provider name
+  through an unordered duplicate-name map; with multiple OpenAI/Resend/etc. accounts it can attach a
+  status sample to an arbitrary row. Extend the producer contract with stable account/key identity or
+  define a canonical owner, then backfill safely.
 
 - **UI density redesign + key-preview rule + OpenRouter + direct-connect expansion (MONET, owner-directed 2026-07-16) — IN PROGRESS.** Owner brief: dashboard cards too huge/unsorted (owner retreats to Settings to avoid them) — compress so many more providers fit per screen, sortable; ANY key mention on ANY screen must show first+last digits; add OpenRouter provider (owner-provisioned admin key via secret-handoff); push more providers from blind/manual to directly-connected. Design-panel + audits running as a workflow; build lanes to follow as monet/* PRs through normal gates. Claim posted (#agent-sync sync-4).
   _Board closeout (CURSOR 2026-07-24): density/theme compact shipped via PR #785; OpenRouter + key-preview already on main. First line unchanged for effort-key stability._
@@ -884,12 +895,8 @@ _Source: `docs/audits/2026-07-20-grok3-full-app-expert-review.md` (14 specialist
   _2026-07-15 (MONET): moved to Completed — stale duplicate row; work already merged (PR #58, squash `dfdb39e`, per this row's own trailing annotation) and docs/EFFORT-LOG.md mirror already corrected by PR #299 on 2026-07-15; the live board simply hadn't caught up. No further action needed._
 
 ## In Progress
-- **Add account identity to pushed status metrics before mapping duplicate provider names
-  (unassigned, M).** `syncStatusToUsageSnapshot` maps `quota_sync`/`credit_balance` by provider name
-  through an unordered duplicate-name map; with multiple OpenAI/Resend/etc. accounts it can attach a
-  status sample to an arbitrary row. Extend the producer contract with stable account/key identity or
-  define a canonical owner, then backfill safely.
 
+(none)
 
 ## Planned / Reserved
 - **Remaining feasible direct provider-capabilities audit (CODEX, read-only, 2026-07-18) — IN PROGRESS.** Audit current catalog/adapters plus official provider documentation for unimplemented direct money, tier/renewal, quota, balance, and paid-resource run-rate signals; excludes brokers and already completed OpenAI/GitHub/Cloudflare/Vercel work. No repository, secret, production, or external configuration changes.
@@ -917,8 +924,6 @@ _Source: `docs/audits/2026-07-20-grok3-full-app-expert-review.md` (14 specialist
 #### Wave D — Operator UX, mobile, Attention (P1)
 - **[GROK3-D7] Dark-mode pass on Projects, Attention, Sentry, dashboard chrome (P1, S) — PLANNED.** Complements residual dark-mode planned row.
 - **[GROK3-D8] Plan price ↔ Subscription mutual exclusivity copy + Settings glossary (P1, S) — PLANNED.** Expand “How data gets here”; residual allocation honesty on projects.
-- **[GROK3-D9] Default-open Portfolio when criticalCount or incomplete costs > 0 (P2, S) — PLANNED.**
-#### Wave E — Scale, coverage, telemetry contract (P1/P2)
 - **[GROK3-E4] Cross-repo telemetry contract CI lock (P1, M) — PLANNED.** Shared package vectors/enums vs `usage-telemetry.ts`; pin version. Cross: congress-trading-shared.
 - **[GROK3-E5] Producer hard rules: always occurredAt ISO + explicit per-call idempotencyKey (P1, M, cross-repo) — PLANNED.** Fix random-UUID when occurredAt missing; normalize ISO in basis only with coordinated bump.
 - **[GROK3-E14] Tombstone growth strategy + scheduled offline VACUUM + ANALYZE (P2, M) — PLANNED.** Keep money-safe; reclaim freelist off readiness path.
@@ -1035,6 +1040,7 @@ Jul 8 18:10 CT)._
 - **Integration P1 (CT-side): Congress.Trade never reads GET /api/budget-status** — no spend-feedback loop; wire periodic read + self-throttle. _(filed by MONET 2026-07-15 from eval-sweep audit)_
 - **Integration P1: quota_sync/credit_balance receiver (PR #90) has ZERO producers on ST/CT** — wire a producer or park the receiver. _(filed by MONET 2026-07-15 from eval-sweep audit)_
 ## Changelog of this log
+- 2026-07-24 — CURSOR: status-snapshot account identity fail-closed + GROK3-D9 portfolio auto-open on `cursor/status-account-identity-2474`; In Progress now empty after sync.
 - 2026-07-24 — CURSOR: round-2 stale board closeout on `cursor/resolve-stale-efforts-5b8c` — In Progress 22→1 (account-identity status mapping remains); moved merged PR rows (#721/#716/#717/#436/#577/#581/#617/#619/#785/#724) and diagnosis-complete owner handoffs to Completed; parked Oracle/owner/cross-repo audits in Planned; Coolify self-hosted CI runners Planned.
 - 2026-07-23 — CURSOR: stale board closeout (Waves A–H + merged rows → Completed, first lines preserved); effort-issue sync Source link pinned to `main` + Link-header pagination/PR filter so mirrored issues reconcile; D6/D10 login skeleton + 44pt actions + Last fetched + ProjectTable dark tokens. Branch `cursor/resolve-stale-efforts-5b8c`.
 - 2026-07-20 — GROK3: filed multi-expert full-app review audit + reserved Wave A–E implement tasks (GROK3-A1…E20) on Planned; review deliverable COMPLETE.

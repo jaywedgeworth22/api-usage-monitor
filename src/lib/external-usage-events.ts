@@ -4,8 +4,8 @@ import {
   canonicalProjectKey,
   canonicalProviderKey,
   normalizedProviderName,
-  resolveProviderIdentity,
 } from "@/lib/provider-identity";
+import { hashProviderBillingAccountId } from "@/lib/provider-billing-account";
 import {
   API_PREPAID_FUNDING_SERVICE,
   BILLING_RECEIPT_SOURCE_APP,
@@ -1219,22 +1219,103 @@ async function loadMonthToDateExternalCostMaterialUnserialized(
   };
 }
 
+type StatusSnapshotProvider = {
+  id: string;
+  name: string;
+  groupId: string | null;
+  billingAccountIdentity: string | null;
+};
+
+function billingAccountRefFromMetadata(
+  metadata: Prisma.InputJsonObject | undefined
+): string | null {
+  if (!metadata || typeof metadata !== "object" || Array.isArray(metadata)) {
+    return null;
+  }
+  const raw = metadata._billingAccountRef;
+  if (typeof raw !== "string") return null;
+  const trimmed = raw.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+/**
+ * Map a pushed status metric onto exactly one Provider row.
+ *
+ * Prefer durable identity (`keyRef` / billing-account ref) over display name.
+ * When multiple same-name providers exist and no identity selects one row,
+ * return null (fail closed) instead of `resolveProviderIdentity`'s arbitrary
+ * first-match — attaching quota/credits to the wrong account silently corrupts
+ * dashboards.
+ */
+export function resolveStatusSnapshotProvider(
+  event: Pick<
+    ExternalUsageEventInput,
+    "provider" | "keyRef" | "metadata"
+  >,
+  providers: readonly StatusSnapshotProvider[]
+): StatusSnapshotProvider | null {
+  if (event.keyRef) {
+    const byKey = providers.find(
+      (p) => p.groupId === event.keyRef || p.id === event.keyRef
+    );
+    if (byKey) return byKey;
+  }
+
+  const accountRef = billingAccountRefFromMetadata(event.metadata);
+  if (accountRef) {
+    const byAccount: StatusSnapshotProvider[] = [];
+    for (const candidate of providers) {
+      if (!candidate.billingAccountIdentity) continue;
+      try {
+        const hashed = hashProviderBillingAccountId(candidate.name, accountRef);
+        if (candidate.billingAccountIdentity === hashed) {
+          byAccount.push(candidate);
+        }
+      } catch {
+        // ENCRYPTION_KEY missing/invalid — skip account matching rather than throw mid-ingest.
+      }
+    }
+    if (byAccount.length === 1) return byAccount[0];
+    if (byAccount.length > 1) {
+      const canonical = canonicalProviderKey(event.provider);
+      const named = byAccount.filter(
+        (p) => canonicalProviderKey(p.name) === canonical
+      );
+      if (named.length === 1) return named[0];
+      return null;
+    }
+  }
+
+  const exactName = normalizedProviderName(event.provider);
+  const exact = providers.filter(
+    (p) => normalizedProviderName(p.name) === exactName
+  );
+  if (exact.length === 1) return exact[0];
+  if (exact.length > 1) return null;
+
+  const canonical = canonicalProviderKey(event.provider);
+  const aliases = providers.filter(
+    (p) => canonicalProviderKey(p.name) === canonical
+  );
+  if (aliases.length === 1) return aliases[0];
+  return null;
+}
+
 export async function syncStatusToUsageSnapshot(events: ExternalUsageEventInput[]): Promise<void> {
   const statusEvents = events.filter((e) => STATUS_METRIC_TYPES.has(e.metricType));
   if (statusEvents.length === 0) return;
 
   const allProviders = await prisma.provider.findMany({
-    select: { id: true, name: true, groupId: true },
+    select: {
+      id: true,
+      name: true,
+      groupId: true,
+      billingAccountIdentity: true,
+    },
   });
 
   for (const event of statusEvents) {
-    let provider = event.keyRef
-      ? allProviders.find((p) => p.groupId === event.keyRef || p.id === event.keyRef)
-      : undefined;
-
-    if (!provider) {
-      provider = resolveProviderIdentity(event.provider, allProviders) ?? undefined;
-    }
+    const provider = resolveStatusSnapshotProvider(event, allProviders);
     if (!provider) continue;
 
     const data: Prisma.UsageSnapshotCreateInput = {

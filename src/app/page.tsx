@@ -1,5 +1,6 @@
 "use client";
 
+import { useEffect, useRef } from "react";
 import DashboardSummaryCards from "@/components/DashboardSummaryCards";
 import CostCoverageLegend from "@/components/CostCoverageLegend";
 import DashboardAttentionPanel from "@/components/DashboardAttentionPanel";
@@ -33,6 +34,7 @@ export default function DashboardPage() {
     refreshDashboard,
     openAttentionPanel,
   } = useDashboardData();
+  const autoOpenedPortfolio = useRef(false);
 
   const totalProviderFunds = sumProviderFunds(providers);
   const portfolioMoney = aggregateProviderPortfolioMoney(providers);
@@ -72,6 +74,23 @@ export default function DashboardPage() {
   const criticalCount = attentionItems.filter(
     (item) => item.alert.severity === "critical"
   ).length;
+
+  // GROK3-D9: default-open Portfolio once when critical alerts or incomplete
+  // costs are present. Do not fight a later manual collapse.
+  useEffect(() => {
+    if (autoOpenedPortfolio.current || loading || portfolioOpen) return;
+    if (criticalCount > 0 || incompleteCostFamilyCount > 0 || incompleteCostProviderCount > 0) {
+      autoOpenedPortfolio.current = true;
+      setPortfolioOpen(true);
+    }
+  }, [
+    criticalCount,
+    incompleteCostFamilyCount,
+    incompleteCostProviderCount,
+    loading,
+    portfolioOpen,
+    setPortfolioOpen,
+  ]);
 
   const portfolioSummaryParts = [
     `${subscriptions.length} paid service${subscriptions.length === 1 ? "" : "s"}`,
