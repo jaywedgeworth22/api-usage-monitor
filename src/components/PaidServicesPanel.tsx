@@ -1,5 +1,6 @@
 "use client";
 
+import { useState } from "react";
 import Link from "next/link";
 import ProviderIntegrationInfo from "@/components/ProviderIntegrationInfo";
 import {
@@ -210,9 +211,22 @@ export default function PaidServicesPanel({
   maxItems,
   showCoverage = false,
 }: PaidServicesPanelProps) {
+  const [searchQuery, setSearchQuery] = useState("");
   const inventory = buildBillingInventory(providers, subscriptions);
-  const visibleItems = maxItems ? inventory.items.slice(0, maxItems) : inventory.items;
-  const hiddenItemCount = inventory.items.length - visibleItems.length;
+  const rawItems = maxItems ? inventory.items.slice(0, maxItems) : inventory.items;
+  const visibleItems = rawItems.filter((item) => {
+    if (!searchQuery.trim()) return true;
+    const q = searchQuery.toLowerCase();
+    return (
+      item.serviceName.toLowerCase().includes(q) ||
+      item.providerDisplayName.toLowerCase().includes(q) ||
+      (item.providerLabel && item.providerLabel.toLowerCase().includes(q)) ||
+      (item.projectName && item.projectName.toLowerCase().includes(q)) ||
+      (item.tierName && item.tierName.toLowerCase().includes(q)) ||
+      (item.source && item.source.toLowerCase().includes(q))
+    );
+  });
+  const hiddenItemCount = inventory.items.length - rawItems.length;
   const nonUsdRecurringCount = inventory.items.filter(
     (item) =>
       item.costKind === "recurring" &&
@@ -247,11 +261,33 @@ export default function PaidServicesPanel({
             Provider-reported billing, quotas, and locally tracked subscriptions in one deduplicated inventory.
           </p>
         </div>
-        {variant === "dashboard" && (
-          <Link href="/settings?tab=services" className="text-xs font-semibold text-blue-600 hover:text-blue-700 dark:text-blue-400 dark:hover:text-blue-300">
-            Manage services
-          </Link>
-        )}
+        <div className="flex items-center gap-3">
+          {variant !== "dashboard" && inventory.items.length > 5 && (
+            <div className="relative">
+              <input
+                type="text"
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                placeholder="Filter services..."
+                className="w-48 sm:w-64 rounded-lg border border-gray-200 bg-white px-3 py-1.5 text-xs text-gray-900 placeholder-gray-400 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-100 dark:placeholder-gray-500"
+              />
+              {searchQuery && (
+                <button
+                  type="button"
+                  onClick={() => setSearchQuery("")}
+                  className="absolute right-2.5 top-2 text-[10px] text-gray-400 hover:text-gray-600 dark:hover:text-gray-200"
+                >
+                  Clear
+                </button>
+              )}
+            </div>
+          )}
+          {variant === "dashboard" && (
+            <Link href="/settings?tab=services" className="text-xs font-semibold text-blue-600 hover:text-blue-700 dark:text-blue-400 dark:hover:text-blue-300">
+              Manage services
+            </Link>
+          )}
+        </div>
       </div>
 
       <div className="grid grid-cols-2 divide-x divide-y divide-gray-100 border-b border-gray-100 dark:divide-gray-700 dark:border-gray-700 sm:grid-cols-4 sm:divide-y-0">

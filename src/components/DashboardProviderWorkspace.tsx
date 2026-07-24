@@ -19,15 +19,10 @@ import type {
 import type { SubscriptionRow } from "@/components/SubscriptionsPanel";
 import SortHeader, { type SortDirection } from "@/components/table/SortHeader";
 import { costCoverageHelpText } from "@/lib/cost-coverage-help";
-import {
-  useDisplayDensity,
-  setStoredDisplayDensity,
-  getStoredDisplayDensity,
-  type DisplayDensity,
-} from "@/lib/display-density";
 import { providerFinancialSemantics } from "@/lib/provider-financial-semantics";
 import { aggregateProviderFamilyMoney } from "@/lib/provider-money-aggregation";
 import { canonicalProviderKey } from "@/lib/provider-identity";
+import { type DisplayDensity } from "@/lib/display-density";
 
 interface WorkspaceProvider {
   id: string;
@@ -174,7 +169,7 @@ export type WorkspaceSortField =
 
 export type FilterChip = "all" | "alerts" | "active" | "incomplete";
 
-type Density = "compact" | "comfortable";
+
 
 const WORKSPACE_SORT_FIELDS: readonly WorkspaceSortField[] = [
   "attention",
@@ -200,8 +195,6 @@ export const INITIAL_SORT_DIRECTION = {
 } as const;
 
 const SORT_STORAGE_KEY = "usage-monitor:dashboard-sort";
-/** Legacy key — migrated once into the global display-density store (Wave D / D3). */
-const LEGACY_DENSITY_STORAGE_KEY = "usage-monitor:dashboard-density";
 
 const FILTER_CHIPS: ReadonlyArray<readonly [FilterChip, string]> = [
   ["all", "All"],
@@ -573,7 +566,7 @@ function isSortDirection(value: unknown): value is SortDirection {
   return value === "asc" || value === "desc";
 }
 
-function isDensity(value: unknown): value is Density {
+function isDensity(value: unknown): value is DisplayDensity {
   return value === "compact" || value === "comfortable";
 }
 
@@ -772,145 +765,6 @@ function CompactFamilyCells({
   );
 }
 
-/** Byte-identical to the pre-density-redesign markup; gated behind
- * density === "comfortable". */
-function ComfortableFamilyCells({
-  family,
-  isCollapsed,
-  onToggle,
-  familySpendLabel,
-}: {
-  family: ProviderFamily;
-  isCollapsed: boolean;
-  onToggle: () => void;
-  familySpendLabel: string;
-}) {
-  const financialSemantics = providerFinancialSemantics(family.providerName);
-  return (
-    <>
-      <td data-label="Provider family" className="px-4 py-4 sm:px-6">
-        <button
-          type="button"
-          aria-expanded={!isCollapsed}
-          aria-controls={family.detailsId}
-          aria-label={`${isCollapsed ? "Show" : "Hide"} ${family.displayName} account and service details`}
-          onClick={onToggle}
-          className="flex min-w-0 items-start gap-2 text-left"
-        >
-          {isCollapsed ? (
-            <ChevronRight className="mt-0.5 h-4 w-4 shrink-0 text-gray-400" aria-hidden="true" />
-          ) : (
-            <ChevronDown className="mt-0.5 h-4 w-4 shrink-0 text-gray-400" aria-hidden="true" />
-          )}
-          <span className="min-w-0">
-            <span className="block truncate font-semibold text-gray-900 dark:text-gray-100">{family.displayName}</span>
-            <span className="mt-0.5 block text-xs text-gray-500 dark:text-gray-400">
-              {family.providers.length} account{family.providers.length === 1 ? "" : "s"} / key{family.providers.length === 1 ? "" : "s"}
-            </span>
-          </span>
-        </button>
-      </td>
-      <td data-label="Spend" className="px-4 py-4">
-        {family.financialsAggregated ? (
-          <>
-            <p
-              aria-label={`${family.displayName} month-to-date spend: ${familySpendLabel}`}
-              className="font-semibold text-gray-900 dark:text-gray-100"
-            >
-              {familySpendLabel}
-            </p>
-            <p className="text-xs text-gray-500 dark:text-gray-400">
-              {family.budgetUsd != null
-                ? `${formatCurrency(family.budgetUsd)} budget`
-                : family.projectedUsd != null
-                  ? `${formatCurrency(family.projectedUsd)} projected`
-                  : "Projection unavailable"}
-            </p>
-          </>
-        ) : (
-          <>
-            <p className="font-semibold text-gray-900 dark:text-gray-100">Account total unresolved</p>
-            <p className="text-xs text-gray-500 dark:text-gray-400">
-              See exact account values below
-            </p>
-          </>
-        )}
-        <span
-          className={`mt-1 inline-flex rounded-full px-2 py-0.5 text-[11px] font-medium ${
-            family.financialsAggregated && family.incompleteCostCount === 0
-              ? "bg-emerald-50 text-emerald-700 dark:bg-emerald-950/60 dark:text-emerald-300"
-              : "bg-amber-50 text-amber-800 dark:bg-amber-950/60 dark:text-amber-300"
-          }`}
-          title={(() => {
-            const kind = familyCostCoverageKind(family);
-            return kind && kind !== "complete" ? costCoverageHelpText(kind) : undefined;
-          })()}
-        >
-          {costCoverageLabel(family)}
-        </span>
-        {family.costCoverageCaveatCount > 0 && (
-          <span
-            className="mt-1 flex items-center gap-1 text-[11px] font-medium text-orange-700 dark:text-orange-300"
-            title={family.costCoverageCaveatMessage ?? "Usage-based costs are not fully visible for this provider."}
-          >
-            <AlertTriangle className="h-3 w-3 shrink-0" aria-hidden="true" />
-            Cost coverage gap
-          </span>
-        )}
-      </td>
-      <td data-label="Funds / quota" className="px-4 py-4">
-        {family.financialsAggregated ? (
-          <>
-            <p className="font-medium text-gray-800 dark:text-gray-200">{formatNumber(family.credits)} {financialSemantics.creditsLabel}</p>
-            <p className="text-xs text-gray-500 dark:text-gray-400">{formatCurrency(family.balance)} {financialSemantics.balanceLabel}</p>
-          </>
-        ) : (
-          <>
-            <p className="font-medium text-gray-800 dark:text-gray-200">See exact values</p>
-            <p className="text-xs text-gray-500 dark:text-gray-400">No unproven totals</p>
-          </>
-        )}
-      </td>
-      <td data-label="Services" className="px-4 py-4">
-        <p className="font-medium text-gray-800 dark:text-gray-200">
-          {family.subscriptions.length + family.providerExternalBilling.length} {family.hiddenExternalBillingCount > 0 ? "visible " : ""}record{family.subscriptions.length + family.providerExternalBilling.length === 1 ? "" : "s"}
-        </p>
-        {family.hiddenExternalBillingCount > 0 && (
-          <p className="text-xs text-gray-500 dark:text-gray-400">
-            {family.hiddenExternalBillingCount} additional detail{family.hiddenExternalBillingCount === 1 ? "" : "s"} hidden
-          </p>
-        )}
-        <p className="text-xs text-gray-500 dark:text-gray-400">
-          {family.nextRenewalAt
-            ? `Next renewal ${formatDate(family.nextRenewalAt)}`
-            : "No active future renewal"}
-        </p>
-      </td>
-      <td data-label="Health" className="px-4 py-4">
-        {family.alertCount > 0 ? (
-          <span className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-medium ${
-            family.criticalCount > 0
-              ? "bg-red-50 text-red-700 dark:bg-red-950/60 dark:text-red-300"
-              : "bg-amber-50 text-amber-800 dark:bg-amber-950/60 dark:text-amber-300"
-          }`}>
-            <AlertTriangle className="h-3 w-3" aria-hidden="true" />
-            {family.alertCount} alert{family.alertCount === 1 ? "" : "s"}
-          </span>
-        ) : (
-          <span className="inline-flex rounded-full bg-emerald-50 px-2 py-0.5 text-[11px] font-medium text-emerald-700 dark:bg-emerald-950/60 dark:text-emerald-300">
-            Clear
-          </span>
-        )}
-        <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">{family.activeCount} active</p>
-      </td>
-      <td data-label="Last sync" className="px-4 py-4 sm:px-6">
-        <p className="font-medium text-gray-800 dark:text-gray-200">{formatDate(family.latestFetchedAt)}</p>
-        <p className="text-xs text-gray-500 dark:text-gray-400">{family.providerName}</p>
-      </td>
-    </>
-  );
-}
-
 export default function DashboardProviderWorkspace({
   providers,
   subscriptions,
@@ -918,10 +772,6 @@ export default function DashboardProviderWorkspace({
 }: DashboardProviderWorkspaceProps) {
   const [query, setQuery] = useState("");
   const [filterChip, setFilterChip] = useState<FilterChip>("all");
-  // Unified with Nav global density (Wave D / D3). Legacy workspace key is
-  // migrated once into DISPLAY_DENSITY_STORAGE_KEY on first mount.
-  const density = useDisplayDensity();
-  const setDensity = (next: DisplayDensity) => setStoredDisplayDensity(next);
   const [sortField, setSortField] = useState<WorkspaceSortField>("attention");
   const [sortDirection, setSortDirection] = useState<SortDirection>("desc");
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
@@ -944,25 +794,6 @@ export default function DashboardProviderWorkspace({
             setSortField(field);
             setSortDirection(direction);
           }
-        }
-      }
-      // One-time migrate legacy workspace density into the global key.
-      const legacy = window.localStorage.getItem(LEGACY_DENSITY_STORAGE_KEY);
-      if (isDensity(legacy)) {
-        const current = getStoredDisplayDensity();
-        // Prefer explicit global if already set; otherwise adopt legacy.
-        if (
-          !window.localStorage.getItem("display-density") &&
-          isDensity(legacy)
-        ) {
-          setStoredDisplayDensity(legacy);
-        } else if (current) {
-          // no-op — global already authoritative
-        }
-        try {
-          window.localStorage.removeItem(LEGACY_DENSITY_STORAGE_KEY);
-        } catch {
-          // ignore
         }
       }
     } catch {
@@ -1309,14 +1140,7 @@ export default function DashboardProviderWorkspace({
                 setCollapsed((current) => ({ ...current, [family.key]: !isCollapsed }));
               return (
                 <Fragment key={family.key}>
-                  <tr
-                    className={
-                      density === "compact"
-                        ? "border-b border-gray-100 align-middle hover:bg-gray-50/70 dark:border-gray-700 dark:hover:bg-gray-700/40"
-                        : "border-b border-gray-100 align-top hover:bg-gray-50/70 dark:border-gray-700 dark:hover:bg-gray-700/40"
-                    }
-                  >
-                    {density === "compact" ? (
+                  <tr className="border-b border-gray-100 align-middle hover:bg-gray-50/70 dark:border-gray-700 dark:hover:bg-gray-700/40">
                       <CompactFamilyCells
                         family={family}
                         isCollapsed={isCollapsed}
@@ -1324,14 +1148,6 @@ export default function DashboardProviderWorkspace({
                         familySpendLabel={familySpendLabel}
                         nowMs={nowMs}
                       />
-                    ) : (
-                      <ComfortableFamilyCells
-                        family={family}
-                        isCollapsed={isCollapsed}
-                        onToggle={onToggle}
-                        familySpendLabel={familySpendLabel}
-                      />
-                    )}
                   </tr>
                   <tr
                     id={family.detailsId}

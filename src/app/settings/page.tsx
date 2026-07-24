@@ -573,13 +573,6 @@ function SettingsPageContent() {
           </div>
         ) : activeTab === "services" ? (
           <div className="space-y-8">
-            <PaidServicesPanel
-              providers={providers}
-              subscriptions={subscriptions}
-              variant="settings"
-              showCoverage
-            />
-
             <div className="space-y-3">
               <div>
                 <h2 className="text-base font-semibold text-gray-900 dark:text-gray-100">Tracked recurring costs</h2>
@@ -621,6 +614,13 @@ function SettingsPageContent() {
                 actionLoading={actionLoading}
               />
             </div>
+
+            <PaidServicesPanel
+              providers={providers}
+              subscriptions={subscriptions}
+              variant="settings"
+              showCoverage
+            />
           </div>
         ) : (
           <ProjectTable

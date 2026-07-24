@@ -1,5 +1,7 @@
 "use client";
 
+import { useState } from "react";
+
 export interface SubscriptionRow {
   id: string;
   name: string;
@@ -80,6 +82,8 @@ export default function SubscriptionsPanel({
   setDeleteConfirm,
   actionLoading,
 }: SubscriptionsPanelProps) {
+  const [searchQuery, setSearchQuery] = useState("");
+
   if (subscriptions.length === 0) {
     return (
       <div className="flex flex-col items-center justify-center gap-4 rounded-xl border border-gray-200 bg-white py-16 text-center dark:border-gray-700 dark:bg-gray-800">
@@ -95,7 +99,19 @@ export default function SubscriptionsPanel({
     );
   }
 
-  const orderedSubscriptions = [...subscriptions].sort((left, right) => {
+  const filteredSubscriptions = subscriptions.filter((sub) => {
+    if (!searchQuery.trim()) return true;
+    const q = searchQuery.toLowerCase();
+    return (
+      sub.name.toLowerCase().includes(q) ||
+      (sub.description && sub.description.toLowerCase().includes(q)) ||
+      sub.provider.displayName.toLowerCase().includes(q) ||
+      (sub.project && sub.project.name.toLowerCase().includes(q)) ||
+      (sub.externalBillingSource && sub.externalBillingSource.toLowerCase().includes(q))
+    );
+  });
+
+  const orderedSubscriptions = [...filteredSubscriptions].sort((left, right) => {
     const statusDifference =
       (STATUS_ORDER[displayStatus(left)] ?? 99) -
       (STATUS_ORDER[displayStatus(right)] ?? 99);
@@ -103,12 +119,27 @@ export default function SubscriptionsPanel({
   });
 
   return (
-    // overflow-x-clip (not auto/hidden) does not create a scroll container, so the
-    // sticky <thead> below stays pinned during page scroll. This table is only ever
-    // rendered on the Settings services tab, so the top offset can be the fixed
-    // top-28 (global nav h-16 + the settings sticky tabs/Add bar) rather than a
-    // variant-conditional value like PaidServicesPanel uses.
-    <div className="overflow-x-clip rounded-xl border border-gray-200 bg-white dark:border-gray-700 dark:bg-gray-800">
+    <div className="space-y-3">
+      <div className="relative">
+        <input
+          type="text"
+          value={searchQuery}
+          onChange={(e) => setSearchQuery(e.target.value)}
+          placeholder="Filter subscriptions by name, provider, or project..."
+          className="w-full rounded-lg border border-gray-200 bg-white px-4 py-2 text-sm text-gray-900 placeholder-gray-400 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-100 dark:placeholder-gray-500"
+        />
+        {searchQuery && (
+          <button
+            type="button"
+            onClick={() => setSearchQuery("")}
+            className="absolute right-3 top-2.5 text-xs text-gray-400 hover:text-gray-600 dark:hover:text-gray-200"
+          >
+            Clear
+          </button>
+        )}
+      </div>
+
+      <div className="overflow-x-clip rounded-xl border border-gray-200 bg-white dark:border-gray-700 dark:bg-gray-800">
       <table className="responsive-table w-full text-sm">
         <caption className="sr-only">Tracked subscriptions</caption>
         <thead>
@@ -225,6 +256,7 @@ export default function SubscriptionsPanel({
           })}
         </tbody>
       </table>
+    </div>
     </div>
   );
 }

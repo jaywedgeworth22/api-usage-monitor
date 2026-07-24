@@ -5,9 +5,7 @@ import BalanceBadge from "./BalanceBadge";
 import { isExternalBillingStale, type ExternalBillingRecord } from "./ExternalBillingDetails";
 import ProviderIntegrationInfo, { publicConfigFieldNames } from "./ProviderIntegrationInfo";
 import { usageUnitLabelForProvider } from "@/lib/provider-definitions";
-import { useDisplayDensity } from "@/lib/display-density";
 import { costCoverageHelpText } from "@/lib/cost-coverage-help";
-
 export type ProviderCostCoverage =
   | "complete"
   | "partial"
@@ -135,7 +133,6 @@ export default function ProviderCard({
   alerts = [],
   latestSnapshot,
 }: ProviderCardProps) {
-  const density = useDisplayDensity();
   const dotColor =
     typeColors[name.toLowerCase()] ?? "bg-purple-500";
   const usageUnitLabel = usageUnitLabelForProvider(name, type);
@@ -171,16 +168,13 @@ export default function ProviderCard({
       maximumFractionDigits: 2,
     }).format(amount);
 
-  const cardDetailTitle =
-    density === "compact"
-      ? [
-          label,
-          keyPreview,
-          latestSnapshot ? `Latest snapshot: ${new Date(latestSnapshot.fetchedAt).toLocaleString()}` : null,
-        ]
-          .filter(Boolean)
-          .join(" · ") || undefined
-      : undefined;
+  const cardDetailTitle = [
+    label,
+    keyPreview,
+    latestSnapshot ? `Latest snapshot: ${new Date(latestSnapshot.fetchedAt).toLocaleString()}` : null,
+  ]
+    .filter(Boolean)
+    .join("\n") || undefined;
 
   return (
     <div
@@ -195,12 +189,6 @@ export default function ProviderCard({
               {displayName}
             </Link>
           </h3>
-          {density === "comfortable" && label && (
-            <p className="text-xs text-gray-400 truncate">{label}</p>
-          )}
-          {density === "comfortable" && keyPreview && (
-            <p className="text-xs text-gray-400 truncate font-mono">{keyPreview}</p>
-          )}
           {geminiKeyStatus && (
             <p
               className={`mt-0.5 text-xs font-medium ${
@@ -327,25 +315,19 @@ export default function ProviderCard({
         </div>
         <div
           className={(isCreditBased || hasCredits) ? "col-span-2" : ""}
-          title={
-            density === "compact"
-              ? [
-                  `Billing mode: ${billingMode}`,
-                  snapshotCostFetchedAt
-                    ? `Cost snapshot fetched ${new Date(snapshotCostFetchedAt).toLocaleString()}`
-                    : null,
-                  resolvedSpendCoverage === "partial" && unpricedEventCount > 0
-                    ? `${unpricedEventCount} unpriced event${unpricedEventCount === 1 ? "" : "s"}`
-                    : null,
-                  (resolvedSpendCoverage === "unknown" || resolvedSpendCoverage === "legacy_unknown") &&
-                  unpricedEventCount > 0
-                    ? `${unpricedEventCount} usage event${unpricedEventCount === 1 ? "" : "s"} without cost`
-                    : null,
-                ]
-                  .filter(Boolean)
-                  .join(" · ")
-              : undefined
-          }
+          title={[
+            `Billing mode: ${billingMode}`,
+            snapshotCostFetchedAt
+              ? `Cost snapshot fetched ${new Date(snapshotCostFetchedAt).toLocaleString()}`
+              : null,
+            ...openAlerts.map((a) => `Alert: ${a.message}`),
+            resolvedSpendCoverage === "partial" && unpricedEventCount > 0
+              ? `${unpricedEventCount} unpriced event${unpricedEventCount === 1 ? "" : "s"}`
+              : null,
+            costCoverageCaveat?.message
+              ? `Coverage gap: ${costCoverageCaveat.message}`
+              : null,
+          ].filter(Boolean).join("\n") || undefined}
         >
           <p
             className="mb-1 text-xs text-gray-500 dark:text-gray-400"
@@ -368,6 +350,11 @@ export default function ProviderCard({
                 <span className="font-normal text-gray-400 dark:text-gray-500">
                   / Projection unavailable
                 </span>
+                {unpricedEventCount > 0 && (
+                  <span className="block text-xs font-normal text-gray-500 dark:text-gray-400">
+                    {unpricedEventCount} usage event{unpricedEventCount === 1 ? "" : "s"} without cost
+                  </span>
+                )}
               </>
             ) : (
               <>
@@ -380,27 +367,6 @@ export default function ProviderCard({
               </>
             )}
           </p>
-          {density === "comfortable" && (
-            <>
-              {resolvedSpendCoverage === "partial" && unpricedEventCount > 0 && (
-                <p className="text-xs text-amber-600 dark:text-amber-300">
-                  {unpricedEventCount} unpriced event{unpricedEventCount === 1 ? "" : "s"}
-                </p>
-              )}
-              {(resolvedSpendCoverage === "unknown" || resolvedSpendCoverage === "legacy_unknown") &&
-                unpricedEventCount > 0 && (
-                  <p className="text-xs text-amber-600 dark:text-amber-300">
-                    {unpricedEventCount} usage event{unpricedEventCount === 1 ? "" : "s"} without cost
-                  </p>
-                )}
-              <p className="text-xs uppercase text-gray-400">{billingMode}</p>
-              {snapshotCostFetchedAt && (
-                <p className="mt-1 text-[10px] text-gray-500 dark:text-gray-400">
-                  Cost snapshot fetched {new Date(snapshotCostFetchedAt).toLocaleString()}
-                </p>
-              )}
-            </>
-          )}
         </div>
       </div>
 
@@ -429,12 +395,6 @@ export default function ProviderCard({
           }`}
         >
           {openAlerts[0].message}
-        </p>
-      )}
-
-      {density === "comfortable" && latestSnapshot && (
-        <p className="mt-3 text-xs text-gray-400 dark:text-gray-500">
-          Latest snapshot: {new Date(latestSnapshot.fetchedAt).toLocaleString()}
         </p>
       )}
     </div>

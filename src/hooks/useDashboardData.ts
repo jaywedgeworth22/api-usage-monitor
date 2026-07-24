@@ -15,7 +15,8 @@ export interface ProjectBudgetResponse {
 }
 
 async function fetchJson<T>(url: string, label: string): Promise<T> {
-  const response = await fetch(url, { cache: "no-store" });
+  const signal = AbortSignal.timeout(20_000);
+  const response = await fetch(url, { cache: "no-store", signal });
   if (!response.ok) {
     const body = await response.json().catch(() => ({}));
     throw new Error(body.error || `Failed to fetch ${label}`);
@@ -60,7 +61,9 @@ export function useDashboardData() {
     };
 
     if (isFetchingRef.current) {
-      if (!background) startForegroundUiState();
+      if (!background && loadedOnce.current && hasProviderData.current) {
+        setRefreshing(true);
+      }
       return;
     }
     isFetchingRef.current = true;
